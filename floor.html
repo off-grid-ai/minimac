@@ -1,0 +1,1383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="icon" type="image/svg+xml" href="/assets/brand/minimac-mark.svg" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Minimac</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" />
+<style>
+  /* ---------------------------------------------------------------- tokens
+     Every colour is named here, in the bare :root, so no token exists only
+     inside a media query. The dark palette overrides the same names twice:
+     once for the system preference, once for an explicit choice. */
+
+  :root {
+    --bg: #ffffff;
+    --surface: #f4f4f4;
+    --nested: #eaeaea;
+    --sunk: #dedede;
+    --line: #c9c9c9;
+    --line-soft: #dfdfdf;
+    --text: #0d0d0d;
+    --muted: #4f4f4f;
+    --faint: #7c7c7c;
+    --accent: #059669;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(5, 150, 105, 0.12);
+    --accent-edge: rgba(5, 150, 105, 0.55);
+    --accent-glow: rgba(5, 150, 105, 0.38);
+    --danger: #c81e1e;
+    --danger-soft: rgba(200, 30, 30, 0.12);
+    --danger-edge: rgba(200, 30, 30, 0.50);
+    --floor-bg: #101010;
+
+    /* Instrument glass: the room must stay faintly readable underneath. */
+    --glass: rgba(244, 244, 244, 0.82);
+    --glass-solid: rgba(244, 244, 244, 0.94);
+
+    --mono: Menlo, "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+    --pixel: Silkscreen, Menlo, monospace;
+    --step: 4px;
+    --radius: 2px;
+    --topbar-h: 34px;
+    /* The console's live height. ui/main.mjs writes the measured value here
+       after autosizing, so the bottom slots ride up as the console grows.
+       Left alone it keeps the one-line height. */
+    --composer-h: 92px;
+    --gap: 10px;
+
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0a0a0a;
+      --surface: #101010;
+      --nested: #161616;
+      --sunk: #1e1e1e;
+      --line: #303030;
+      --line-soft: #202020;
+      --text: #eaeaea;
+      --muted: #9a9a9a;
+      --faint: #6e6e6e;
+      --accent: #34d399;
+      --accent-ink: #04120c;
+      --accent-soft: rgba(52, 211, 153, 0.14);
+      --accent-edge: rgba(52, 211, 153, 0.55);
+      --accent-glow: rgba(52, 211, 153, 0.45);
+      --danger: #f87171;
+      --danger-soft: rgba(248, 113, 113, 0.14);
+      --danger-edge: rgba(248, 113, 113, 0.52);
+      --floor-bg: #101010;
+      --glass: rgba(12, 12, 12, 0.80);
+      --glass-solid: rgba(12, 12, 12, 0.93);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0a0a0a;
+    --surface: #101010;
+    --nested: #161616;
+    --sunk: #1e1e1e;
+    --line: #303030;
+    --line-soft: #202020;
+    --text: #eaeaea;
+    --muted: #9a9a9a;
+    --faint: #6e6e6e;
+    --accent: #34d399;
+    --accent-ink: #04120c;
+    --accent-soft: rgba(52, 211, 153, 0.14);
+    --accent-edge: rgba(52, 211, 153, 0.55);
+    --accent-glow: rgba(52, 211, 153, 0.45);
+    --danger: #f87171;
+    --danger-soft: rgba(248, 113, 113, 0.14);
+    --danger-edge: rgba(248, 113, 113, 0.52);
+    --floor-bg: #101010;
+    --glass: rgba(12, 12, 12, 0.80);
+    --glass-solid: rgba(12, 12, 12, 0.93);
+  }
+
+  * { box-sizing: border-box; }
+  html { color-scheme: light dark; }
+
+  /* ----------------------------------------------------------------- shell
+     The room IS the interface. Nothing sits in normal flow: the canvas fills
+     the viewport and every panel is an instrument floating over it. */
+
+  body {
+    margin: 0;
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: var(--floor-bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
+    font-variant-ligatures: none;
+  }
+
+  #floor {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: var(--floor-bg);
+    image-rendering: pixelated;
+  }
+
+  :focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 8px -1px var(--accent-glow); }
+  ::selection { background: var(--accent-soft); }
+  [hidden] { display: none !important; }
+
+  /* ------------------------------------------------------------ hud frame
+     A drawn frame, not a box: hairline edge plus corner brackets. One
+     element, eight gradient strips, no extra markup per corner. */
+
+  .hud-frame {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    --bracket: 11px;
+    --hair: 1px;
+    background:
+      linear-gradient(var(--frame-ink), var(--frame-ink)) 0 0 / var(--bracket) var(--hair) no-repeat,
+      linear-gradient(var(--frame-ink), var(--frame-ink)) 0 0 / var(--hair) var(--bracket) no-repeat,
+      linear-gradient(var(--frame-ink), var(--frame-ink)) 100% 0 / var(--bracket) var(--hair) no-repeat,
+      linear-gradient(var(--frame-ink), var(--frame-ink)) 100% 0 / var(--hair) var(--bracket) no-repeat,
+      linear-gradient(var(--frame-ink), var(--frame-ink)) 0 100% / var(--bracket) var(--hair) no-repeat,
+      linear-gradient(var(--frame-ink), var(--frame-ink)) 0 100% / var(--hair) var(--bracket) no-repeat,
+      linear-gradient(var(--frame-ink), var(--frame-ink)) 100% 100% / var(--bracket) var(--hair) no-repeat,
+      linear-gradient(var(--frame-ink), var(--frame-ink)) 100% 100% / var(--hair) var(--bracket) no-repeat;
+    --frame-ink: var(--muted);
+    transition: filter 160ms ease-out;
+  }
+
+  /* The accent glows on the instrument that is wired to the selected agent,
+     and on whatever the keyboard is inside. Never on more than that. */
+  .win[data-wired="true"] > .hud-frame,
+  .win:focus-within > .hud-frame,
+  #composer:focus-within > .hud-frame {
+    --frame-ink: var(--accent);
+    filter: drop-shadow(0 0 3px var(--accent-glow));
+  }
+
+  /* ---------------------------------------------------------------- topbar */
+
+  #topbar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--topbar-h);
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: calc(var(--step) * 4);
+    padding: 0 calc(var(--step) * 3);
+    background: var(--glass);
+    backdrop-filter: blur(8px) saturate(1.1);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .brand {
+    font-family: var(--pixel);
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    flex: 0 0 auto;
+    text-shadow: 0 0 10px var(--accent-glow);
+  }
+
+  #repoPath {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 0;
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    padding: 2px 6px;
+    max-width: 34vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition: color 140ms ease-out, border-color 140ms ease-out;
+  }
+
+  #repoPath::before { content: "◈ "; color: var(--faint); }
+  #repoPath:hover { color: var(--text); border-color: var(--line); }
+
+  /* The only standing instruction on screen. The room teaches the rest. */
+  .hint {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--faint);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #clock {
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    flex: 0 0 auto;
+  }
+
+  /* --------------------------------------------------------------- buttons */
+
+  .btn {
+    position: relative;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    color: var(--text);
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    padding: 4px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 140ms ease-out, background-color 140ms ease-out, color 140ms ease-out, transform 120ms ease-out;
+  }
+
+  .btn:hover { border-color: var(--accent-edge); }
+  .btn:active { transform: translateY(1px); }
+
+  .btn.primary {
+    border-color: var(--accent-edge);
+    background: var(--accent-soft);
+    color: var(--accent);
+    box-shadow: 0 0 10px -3px var(--accent-glow);
+  }
+
+  .btn.primary:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+  /* The counterpart to START ALL. Outlined, not filled: a solid red button
+     would compete with the genuine failure signals in the room. */
+  .btn.stop {
+    border-color: var(--danger-edge);
+    color: var(--danger);
+  }
+
+  .btn.stop:hover { background: var(--danger); border-color: var(--danger); color: var(--bg); }
+
+  .btn.stop[disabled] {
+    border-color: var(--line);
+    color: var(--faint);
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  .btn.stop[disabled]:hover { background: transparent; color: var(--faint); border-color: var(--line); }
+
+  .icon-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 0;
+    color: var(--faint);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1;
+    padding: 3px 5px;
+    cursor: pointer;
+    transition: color 140ms ease-out, border-color 140ms ease-out;
+  }
+
+  .icon-btn:hover { color: var(--text); border-color: var(--line); }
+
+  /* ------------------------------------------------------------ world layer
+     Cards pinned to a desk. ui/main.mjs sets left/top in CSS pixels, so this
+     plane must never transform or scroll - it only exists to give the
+     bubbles a coordinate space that matches the canvas exactly. */
+
+  #bubbles {
+    position: fixed;
+    inset: 0;
+    z-index: 26;
+    pointer-events: none;
+  }
+
+  .bubble {
+    pointer-events: auto;
+    position: absolute;
+    width: 260px;
+    padding: calc(var(--step) * 1.75) calc(var(--step) * 2);
+    background: var(--glass-solid);
+    backdrop-filter: blur(6px);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--accent);
+    color: var(--text);
+    font-size: 11px;
+    line-height: 1.4;
+    cursor: pointer;
+    transform: translate(-50%, calc(-100% - 12px));
+    transition: border-color 140ms ease-out;
+  }
+
+  .bubble:hover { border-color: var(--accent-edge); }
+  .bubble.loop, .bubble.silent, .bubble.blocked, .bubble.overrun { border-left-color: var(--danger); }
+  .bubble.approval { border-left-color: var(--accent); }
+
+  .bubble::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: -5px;
+    width: 9px;
+    height: 9px;
+    margin-left: -5px;
+    transform: rotate(45deg);
+    background: var(--glass-solid);
+    border-right: 1px solid var(--accent);
+    border-bottom: 1px solid var(--accent);
+  }
+
+  .bubble.loop::after, .bubble.silent::after, .bubble.blocked::after, .bubble.overrun::after,
+  .bubble:has(.decision.loop)::after,
+  .bubble:has(.decision.silent)::after,
+  .bubble:has(.decision.blocked)::after {
+    border-right-color: var(--danger);
+    border-bottom-color: var(--danger);
+  }
+
+  .bubble[data-tail="top"] { transform: translate(-50%, 12px); }
+
+  .bubble[data-tail="top"]::after {
+    bottom: auto;
+    top: -5px;
+    border: 0;
+    border-left: 1px solid var(--accent);
+    border-top: 1px solid var(--accent);
+  }
+
+  .bubble:has(.decision) { padding: 0; background: transparent; border: 0; backdrop-filter: none; }
+
+  /* ------------------------------------------------------------ instruments
+     Small HUD windows floating over the room. Where they sit is ui/windows.
+     mjs's business - perimeter slots, dragging and resizing - so everything
+     below is how they look, never where they are. */
+
+  #windows { display: contents; }
+
+  /* ui/windows.mjs owns every window's geometry - slot, drag and resize are
+     written as inline styles - so nothing here sets position, size or edge
+     offsets. This block is appearance only. */
+  .win {
+    pointer-events: auto;
+    position: fixed;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--glass);
+    backdrop-filter: blur(10px) saturate(1.1);
+    border: 1px solid var(--line);
+    border-radius: 0;
+    animation: hud-in 170ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  }
+
+  /* The strongest control-plane cue: the instrument is visibly wired to the
+     desk it measures. ui/main.mjs supplies the length and angle it already
+     computes from scene.screenPos(agentId). */
+  .win[data-wired="true"]::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    width: var(--wire-len, 0px);
+    height: 1px;
+    background: linear-gradient(90deg, var(--accent), transparent);
+    transform: rotate(var(--wire-angle, 0deg));
+    pointer-events: none;
+    opacity: 0.7;
+  }
+
+  .win[data-wired="true"][data-wire-side="left"]::after {
+    right: 100%;
+    transform-origin: right center;
+    background: linear-gradient(270deg, var(--accent), transparent);
+  }
+
+  .win[data-wired="true"][data-wire-side="right"]::after { left: 100%; transform-origin: left center; }
+
+  /* A title bar is a telemetry line: label on the left, live number on the
+     right. Every instrument reads out at least one number. */
+
+  .win-bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: calc(var(--step) * 2);
+    padding: calc(var(--step) * 1.5) calc(var(--step) * 2) calc(var(--step) * 1.5) calc(var(--step) * 2.5);
+    background: var(--nested);
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .win-title {
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    font-size: 9px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .win-sub {
+    color: var(--accent);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .win-bar .spacer { margin-left: auto; }
+
+  .readout {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-variant-numeric: tabular-nums;
+    color: var(--faint);
+    border-left: 1px solid var(--line);
+    padding-left: calc(var(--step) * 2);
+    white-space: nowrap;
+  }
+
+  /* Scale ticks down the reading edge: what makes a panel read as a gauge. */
+  .win-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 calc(var(--step) * 2.5) calc(var(--step) * 3) calc(var(--step) * 3.5);
+    background-image: repeating-linear-gradient(to bottom, var(--line) 0 1px, transparent 1px 9px);
+    background-size: 3px 100%;
+    background-position: calc(var(--step) * 1) 0;
+    background-repeat: no-repeat;
+    scrollbar-width: thin;
+    scrollbar-color: var(--sunk) transparent;
+  }
+
+  .win-body::-webkit-scrollbar { width: 8px; }
+  .win-body::-webkit-scrollbar-thumb { background: var(--sunk); }
+  .win-body::-webkit-scrollbar-track { background: transparent; }
+
+  #queue { display: grid; gap: calc(var(--step) * 2); padding-top: calc(var(--step) * 2); align-content: start; }
+
+  /* ------------------------------------------------------------ decisions */
+
+  .decision {
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--accent);
+    padding: calc(var(--step) * 2.5);
+    background: var(--nested);
+  }
+
+  .decision.loop, .decision.silent, .decision.blocked { border-left-color: var(--danger); }
+
+  .decision > .head { display: flex; align-items: baseline; gap: calc(var(--step) * 2); margin-bottom: calc(var(--step) * 1.5); }
+  .decision .who { color: var(--accent); letter-spacing: 0.08em; }
+  .decision.loop .who, .decision.silent .who, .decision.blocked .who { color: var(--danger); }
+
+  .decision .kind {
+    margin-left: auto;
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--faint);
+    border: 1px solid var(--line);
+    padding: 0 5px;
+  }
+
+  .decision .detail { color: var(--text); font-size: 12px; margin: 0 0 calc(var(--step) * 2.5); word-break: break-word; }
+
+  /* An approval is a request, not an observation: the engine is parked until
+     it is answered, so the card carries the accent - the one colour reserved
+     for the thing that needs the user - and the answers are its loudest
+     element. Red stays for genuine failure. */
+
+  .decision.approval {
+    border-color: var(--accent-edge);
+    border-left-width: 3px;
+    background: var(--surface);
+    box-shadow: 0 0 14px -6px var(--accent-glow);
+  }
+
+  .decision.approval .who { color: var(--accent); }
+
+  .decision.approval .frozen {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    background: var(--accent);
+    padding: 0 5px;
+  }
+
+  .decision.approval .kind { color: var(--accent); border-color: var(--accent-edge); }
+
+  .decision .ask { color: var(--text); font-size: 13px; margin-bottom: calc(var(--step) * 1.5); word-break: break-word; }
+  .decision .why { color: var(--muted); font-size: 11px; margin-bottom: calc(var(--step) * 1.5); word-break: break-word; }
+
+  .decision .paths {
+    display: grid;
+    gap: 1px;
+    margin-bottom: calc(var(--step) * 1.5);
+    border-left: 1px solid var(--line);
+    padding-left: calc(var(--step) * 2);
+  }
+
+  .decision .path { color: var(--faint); font-size: 11px; word-break: break-all; }
+
+  .decision .context {
+    color: var(--faint);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    margin-bottom: calc(var(--step) * 2);
+    word-break: break-all;
+  }
+
+  .actions { display: flex; gap: calc(var(--step) * 1.5); flex-wrap: wrap; }
+
+  button.act {
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    color: var(--muted);
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    padding: 4px 9px;
+    cursor: pointer;
+    transition: color 120ms ease-out, border-color 120ms ease-out, transform 120ms ease-out;
+  }
+
+  button.act:hover { border-color: var(--accent-edge); color: var(--text); transform: translateY(-1px); }
+  button.act[data-action="kill"]:hover { border-color: var(--danger-edge); color: var(--danger); }
+
+  button.act.answer { color: var(--text); text-transform: uppercase; }
+
+  button.act.answer[data-choice="accept"] {
+    color: var(--accent);
+    border-color: var(--accent-edge);
+    background: var(--accent-soft);
+    box-shadow: 0 0 10px -4px var(--accent-glow);
+  }
+
+  button.act.answer[data-choice="accept"]:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+  button.act.answer[data-choice="decline"]:hover,
+  button.act.answer[data-choice="cancel"]:hover { border-color: var(--danger-edge); color: var(--danger); }
+
+  .steer { display: flex; align-items: center; gap: calc(var(--step) * 1.5); margin-top: calc(var(--step) * 2); }
+
+  .steer input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 0;
+    color: var(--text);
+    font: inherit;
+    font-size: 11px;
+    padding: 4px 7px;
+  }
+
+  .steer input:focus { outline: none; border-color: var(--accent); }
+  .steer .hint { flex: 0 0 auto; font-size: 10px; color: var(--faint); letter-spacing: 0.1em; text-transform: none; }
+
+  /* ------------------------------------------------------------------ runs */
+
+  .run {
+    display: grid;
+    gap: 3px;
+    padding: calc(var(--step) * 2) calc(var(--step) * 1.5);
+    border-left: 2px solid transparent;
+    border-bottom: 1px solid var(--line-soft);
+    cursor: pointer;
+    transition: background-color 140ms ease-out;
+  }
+
+  .run:hover { background: var(--nested); }
+  .run.is-live { border-left-color: var(--accent); }
+
+  .run-head { display: flex; align-items: baseline; gap: calc(var(--step) * 2); }
+
+  .run-mission {
+    color: var(--text);
+    font-size: 12px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .run.is-live .run-mission { color: var(--accent); }
+
+  .run-live {
+    margin-left: auto;
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    background: var(--accent);
+    padding: 0 5px;
+    white-space: nowrap;
+  }
+
+  .run-meta {
+    display: flex;
+    gap: calc(var(--step) * 1.5);
+    color: var(--faint);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    flex-wrap: wrap;
+  }
+
+  .run-meta .sep { color: var(--line); }
+  .run-meta .running { color: var(--accent); }
+
+  /* The tail of a path identifies it, so it truncates from the left. */
+  .run-repo, .picker-head {
+    direction: rtl;
+    text-align: left;
+    unicode-bidi: plaintext;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .run-repo { color: var(--faint); font-size: 10px; }
+
+  button.run-stop {
+    background: transparent;
+    border: 1px solid var(--danger-edge);
+    color: var(--danger);
+    font: inherit;
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    padding: 0 6px;
+    cursor: pointer;
+    transition: background-color 120ms ease-out, color 120ms ease-out;
+  }
+
+  button.run-stop:hover { background: var(--danger); color: var(--bg); }
+
+  button.run.new {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 1px dashed var(--line);
+    border-radius: 0;
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    padding: calc(var(--step) * 2);
+    margin: calc(var(--step) * 2) 0;
+    cursor: pointer;
+    transition: color 140ms ease-out, border-color 140ms ease-out, background-color 140ms ease-out;
+  }
+
+  button.run.new:hover { color: var(--accent); border-color: var(--accent-edge); background: var(--accent-soft); }
+
+  /* ------------------------------------------------------------ folder picker */
+
+  .picker {
+    position: fixed;
+    top: calc(var(--topbar-h) + var(--gap) * 2);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 60;
+    width: min(520px, calc(100vw - var(--gap) * 4));
+    display: flex;
+    flex-direction: column;
+    max-height: min(60vh, 460px);
+    background: var(--glass-solid);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--line);
+    animation: hud-in 160ms ease-out;
+  }
+
+  .picker-head {
+    flex: 0 0 auto;
+    padding: calc(var(--step) * 2) calc(var(--step) * 2.5);
+    background: var(--nested);
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .picker-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: calc(var(--step) * 1) 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--sunk) transparent;
+  }
+
+  .picker-list::-webkit-scrollbar { width: 8px; }
+  .picker-list::-webkit-scrollbar-thumb { background: var(--sunk); }
+  .picker-list::-webkit-scrollbar-track { background: transparent; }
+
+  .picker-row {
+    padding: calc(var(--step) * 1.5) calc(var(--step) * 2.5);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background-color 120ms ease-out;
+  }
+
+  .picker-row::before { content: "\25B8  "; color: var(--faint); }
+  .picker-row:hover { background: var(--nested); }
+
+  /* The list is walked with the keyboard, so plain :focus is the state that
+     matters here - not only :focus-visible. */
+  .picker-row:focus,
+  .picker-row:focus-visible {
+    outline: none;
+    background: var(--accent-soft);
+    border-left-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .picker > .act {
+    flex: 0 0 auto;
+    margin: calc(var(--step) * 2);
+    padding: calc(var(--step) * 1.5) calc(var(--step) * 2);
+    border-color: var(--accent-edge);
+    background: var(--accent-soft);
+    color: var(--accent);
+    letter-spacing: 0.14em;
+  }
+
+  .picker > .act:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+  /* --------------------------------------------------------- teaching bits */
+
+  .teach { padding-top: calc(var(--step) * 2); }
+  .teach-lede { color: var(--text); font-size: 12px; padding-bottom: calc(var(--step) * 1); }
+  .teach-note { color: var(--muted); font-size: 11px; line-height: 1.55; padding-bottom: calc(var(--step) * 2); }
+
+  .teach-head {
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    font-size: 9px;
+    color: var(--faint);
+    padding: calc(var(--step) * 2) 0 calc(var(--step) * 1.5);
+    border-top: 1px solid var(--line-soft);
+  }
+
+  .teach-list { display: grid; gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); }
+
+  .teach-item {
+    display: grid;
+    grid-template-columns: 70px minmax(0, 1fr);
+    gap: calc(var(--step) * 2);
+    align-items: baseline;
+    background: var(--surface);
+    padding: calc(var(--step) * 1.5) calc(var(--step) * 2);
+  }
+
+  .teach-key { text-transform: uppercase; letter-spacing: 0.14em; font-size: 9px; color: var(--muted); }
+  .teach-val { color: var(--faint); font-size: 11px; }
+
+  .ghost { opacity: 0.5; }
+
+  .ghost-tag {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--faint);
+    border: 1px dashed var(--line);
+    padding: 0 4px;
+    margin-left: calc(var(--step) * 2);
+    white-space: nowrap;
+    vertical-align: 1px;
+  }
+
+  .decision.hollow { border-left-color: var(--line); background: transparent; box-shadow: none; }
+  .decision.hollow .teach { padding-top: 0; }
+
+  /* --------------------------------------------------------- flow contract */
+
+  .flow {
+    display: grid;
+    gap: calc(var(--step) * 1.5);
+    padding: calc(var(--step) * 2) 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .flow:last-child { border-bottom: 0; }
+
+  .flow-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: calc(var(--step) * 2);
+    align-items: baseline;
+  }
+
+  .flow-result { font-size: 12px; color: var(--text); }
+  .flow.is-verified .flow-result { color: var(--accent); }
+
+  .ladder { display: inline-flex; align-items: center; gap: calc(var(--step) * 1.5); white-space: nowrap; }
+  .ladder .pips { display: inline-flex; gap: 2px; }
+  .ladder .pips i { width: 8px; height: 3px; background: var(--sunk); display: block; }
+  .ladder .pips i.on { background: var(--muted); }
+  .ladder[data-status="verified"] .pips i.on { background: var(--accent); }
+  .ladder .word { text-transform: uppercase; letter-spacing: 0.16em; font-size: 9px; color: var(--faint); }
+  .ladder[data-status="wired"] .word { color: var(--muted); }
+  .ladder[data-status="verified"] .word { color: var(--accent); }
+
+  .burn { display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: calc(var(--step) * 2); align-items: center; }
+
+  .bar { height: 6px; background: var(--sunk); position: relative; overflow: hidden; }
+
+  .bar > span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 100%;
+    background: var(--accent);
+    transform-origin: left center;
+    transform: scaleX(0);
+    transition: transform 240ms ease-out;
+  }
+
+  /* Scale ticks turn a bar into a gauge. */
+  .bar::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(90deg, transparent 0 11px, var(--surface) 11px 12px);
+    pointer-events: none;
+  }
+
+  /* Over estimate the gauge inverts: the track carries the alarm, the fill is
+     solid, and the raw multiple is stated rather than implied. */
+  .burn.over .bar { background: var(--danger-soft); box-shadow: inset 0 0 0 1px var(--danger-edge); }
+  .burn.over .bar > span { background: var(--danger); }
+  .burn.none .bar { background: repeating-linear-gradient(90deg, var(--sunk) 0 3px, transparent 3px 6px); }
+
+  .ratio { font-variant-numeric: tabular-nums; font-size: 11px; text-align: right; color: var(--faint); }
+  .burn.over .ratio { color: var(--danger); }
+
+  /* -------------------------------------------------------------- evidence */
+
+  .claim {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: calc(var(--step) * 2);
+    padding: calc(var(--step) * 1.5) 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .claim:last-child { border-bottom: 0; }
+
+  .grade {
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    text-align: center;
+    padding: 1px 0;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    height: fit-content;
+  }
+
+  .claim.observed .grade { color: var(--accent); border-color: var(--accent-edge); background: var(--accent-soft); }
+  .claim.guessed .grade { color: var(--faint); border-style: dashed; }
+
+  .claim .text { color: var(--text); word-break: break-word; }
+  .claim .receipt { color: var(--faint); font-size: 11px; margin-top: 2px; word-break: break-word; }
+
+  /* A claim with no command behind it must LOOK unbacked. */
+  .claim.guessed { opacity: 0.42; }
+  .claim.guessed .text { text-decoration: line-through; text-decoration-thickness: 1px; }
+
+  /* ------------------------------------------------------------------ crew */
+
+  .agent {
+    padding-block: calc(var(--step) * 3);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "id engine" "goal goal";
+    gap: calc(var(--step) * 1) calc(var(--step) * 2);
+    align-items: center;
+    padding: calc(var(--step) * 2) calc(var(--step) * 1.5);
+    border-left: 2px solid transparent;
+    border-bottom: 1px solid var(--line-soft);
+    cursor: pointer;
+    transition: background-color 140ms ease-out;
+  }
+
+  .agent:last-child { border-bottom: 0; }
+  .agent:hover { background: var(--nested); }
+  .agent[aria-selected="true"] { border-left-color: var(--accent); background: var(--nested); }
+
+  .agent .ident { grid-area: id; display: flex; align-items: baseline; gap: calc(var(--step) * 2); min-width: 0; flex-wrap: wrap; }
+
+  /* A persona label carries its seat, so it can get long. It shortens rather
+     than wrapping the row onto two lines. */
+  .agent .name {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: var(--text);
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent .role { flex: 0 0 auto; }
+  .agent[aria-selected="true"] .name { color: var(--accent); text-shadow: 0 0 8px var(--accent-glow); }
+  .agent .role { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); }
+
+  .status { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; white-space: nowrap; }
+  .status .dot { width: 5px; height: 5px; background: var(--faint); flex: 0 0 auto; }
+  .status .word { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); }
+  .status[data-status="running"] .dot { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
+  .status[data-status="running"] .word { color: var(--accent); }
+  .status[data-status="blocked"] .dot { background: var(--danger); }
+  .status[data-status="blocked"] .word { color: var(--danger); }
+
+  .agent .goal { grid-area: goal; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .agent .goal-label {
+    font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint);
+  }
+
+  .agent .goal-input {
+    width: 100%;
+    min-height: 3.9em;
+    resize: vertical;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font: inherit;
+    line-height: 1.45;
+    padding: 5px 7px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .agent .goal-input:hover { border-color: var(--muted); }
+  .agent .goal-input:focus { outline: none; border-color: var(--accent); }
+
+  .agent .goal-input::placeholder { color: var(--faint); }
+  .agent input.goal-input:hover { color: var(--text); border-bottom-color: var(--line); }
+  .agent input.goal-input:focus { outline: none; color: var(--text); border-bottom-color: var(--accent); }
+
+  .engine { grid-area: engine; display: inline-flex; background: var(--sunk); padding: 1px; gap: 1px; }
+
+  .engine button {
+    background: transparent;
+    border: 0;
+    color: var(--faint);
+    font: inherit;
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    padding: 2px 6px;
+    cursor: pointer;
+    transition: color 140ms ease-out, background-color 140ms ease-out;
+  }
+
+  .engine button:hover { color: var(--text); }
+  .engine button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1px var(--line); }
+
+  .agent[aria-selected="true"] .engine button[aria-pressed="true"] {
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent-edge);
+  }
+
+  /* --------------------------------------------------------------- console
+     The composer is the console: same glass and brackets, dock buttons as
+     instrument switches, and one warning lamp. */
+
+  #composer {
+    position: fixed;
+    left: 50%;
+    bottom: var(--gap);
+    transform: translateX(-50%);
+    z-index: 50;
+    width: min(920px, calc(100vw - var(--gap) * 2));
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "attach attach attach" "target input send" "dock dock dock";
+    align-items: center;
+    gap: calc(var(--step) * 2);
+    padding: calc(var(--step) * 2.5);
+    background: var(--glass);
+    backdrop-filter: blur(10px) saturate(1.1);
+    border: 1px solid var(--line);
+  }
+
+  #composerTarget {
+    grid-area: target;
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-edge);
+    padding: 4px 8px;
+    white-space: nowrap;
+  }
+
+  #composerTarget[data-target="mission"] { color: var(--muted); background: transparent; border-color: var(--line); }
+
+  /* The console grows upward with the text: its bottom edge is pinned, so
+     the send button and the switch row never move. ui/composer.mjs sets the
+     height from scrollHeight; the cap here matches its own 35vh cap, so its
+     switch to internal scrolling lands exactly where the growth stops. */
+  #composerInput {
+    grid-area: input;
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 35vh;
+    resize: none;
+    overflow-y: hidden;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.4;
+    padding: 6px 10px;
+    transition: border-color 140ms ease-out, box-shadow 140ms ease-out;
+  }
+
+  #composerInput::placeholder { color: var(--faint); }
+  #composerInput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 12px -4px var(--accent-glow); }
+  #composerSend { grid-area: send; }
+
+  .dock { grid-area: dock; display: flex; align-items: center; gap: calc(var(--step) * 1.5); flex-wrap: wrap; }
+
+  .dock-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font: inherit;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    cursor: pointer;
+    transition: color 140ms ease-out, border-color 140ms ease-out, background-color 140ms ease-out, box-shadow 140ms ease-out;
+  }
+
+  .dock-btn:hover { color: var(--text); border-color: var(--accent-edge); }
+
+  /* A lit switch. */
+  .dock-btn[aria-pressed="true"] {
+    color: var(--accent);
+    border-color: var(--accent-edge);
+    background: var(--accent-soft);
+    box-shadow: 0 0 12px -3px var(--accent-glow), inset 0 0 10px -6px var(--accent-glow);
+  }
+
+  #queueCount {
+    font-variant-numeric: tabular-nums;
+    min-width: 15px;
+    text-align: center;
+    padding: 0 4px;
+    border: 1px solid var(--line);
+    color: var(--faint);
+    letter-spacing: 0.04em;
+  }
+
+  /* The warning lamp. It lights only when the queue actually holds a card,
+     read straight off the rendered DOM so there is no second source of truth
+     for "is anything waiting". */
+  body:has(#queue .decision:not(.hollow)) #btnDecisions {
+    color: var(--accent);
+    border-color: var(--accent-edge);
+  }
+
+  body:has(#queue .decision:not(.hollow)) #queueCount {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+    box-shadow: 0 0 10px -1px var(--accent-glow);
+    animation: lamp 1.8s ease-in-out infinite;
+  }
+
+  /* ----------------------------------------------------------- attachments
+     A wrapping chip row above the input. It must never push the input off
+     the bottom of the screen, so it scrolls once it gets tall. */
+
+  #attachments {
+    grid-area: attach;
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--step) * 1.5);
+    max-height: 76px;
+    overflow: auto;
+    padding-bottom: calc(var(--step) * 0.5);
+    scrollbar-width: thin;
+    scrollbar-color: var(--sunk) transparent;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 260px;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    padding: 2px 4px 2px 7px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .chip::before { content: "\2317"; color: var(--faint); }
+
+  .chip.error {
+    border-color: var(--danger-edge);
+    color: var(--danger);
+    background: var(--danger-soft);
+    padding-right: 7px;
+  }
+
+  .chip.error::before { content: "!"; color: var(--danger); }
+
+  .chip-x {
+    background: transparent;
+    border: 0;
+    color: var(--faint);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    padding: 0 3px;
+    cursor: pointer;
+    transition: color 120ms ease-out;
+  }
+
+  .chip-x:hover { color: var(--danger); }
+
+  .dock-btn.mini { padding: 3px 7px; letter-spacing: 0.12em; }
+
+  /* A drop target in the HUD language: an inset emerald frame with corner
+     brackets over the whole window. It is an overlay, so nothing shifts. */
+  body.dropping::after {
+    content: "DROP TO ATTACH";
+    position: fixed;
+    inset: var(--gap);
+    z-index: 70;
+    pointer-events: none;
+    display: grid;
+    align-content: start;
+    justify-content: center;
+    padding-top: calc(var(--topbar-h) + var(--gap) * 3);
+    font-size: 11px;
+    letter-spacing: 0.32em;
+    color: var(--accent);
+    text-shadow: 0 0 10px var(--accent-glow);
+    --bracket: 26px;
+    --hair: 1px;
+    background:
+      linear-gradient(var(--accent), var(--accent)) 0 0 / var(--bracket) var(--hair) no-repeat,
+      linear-gradient(var(--accent), var(--accent)) 0 0 / var(--hair) var(--bracket) no-repeat,
+      linear-gradient(var(--accent), var(--accent)) 100% 0 / var(--bracket) var(--hair) no-repeat,
+      linear-gradient(var(--accent), var(--accent)) 100% 0 / var(--hair) var(--bracket) no-repeat,
+      linear-gradient(var(--accent), var(--accent)) 0 100% / var(--bracket) var(--hair) no-repeat,
+      linear-gradient(var(--accent), var(--accent)) 0 100% / var(--hair) var(--bracket) no-repeat,
+      linear-gradient(var(--accent), var(--accent)) 100% 100% / var(--bracket) var(--hair) no-repeat,
+      linear-gradient(var(--accent), var(--accent)) 100% 100% / var(--hair) var(--bracket) no-repeat,
+      var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent-edge);
+    animation: hud-in 140ms ease-out;
+  }
+
+  /* Completions open upward, so the console never leaves the bottom edge. */
+  #mentionMenu {
+    position: absolute;
+    left: calc(var(--step) * 2);
+    right: calc(var(--step) * 2);
+    bottom: calc(100% + var(--step));
+    max-height: 260px;
+    overflow: auto;
+    background: var(--glass-solid);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--line);
+    padding: calc(var(--step) * 1) 0;
+  }
+
+  #mentionMenu .mention {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    gap: calc(var(--step) * 2);
+    align-items: baseline;
+    padding: calc(var(--step) * 1.25) calc(var(--step) * 3);
+    cursor: pointer;
+    border-left: 2px solid transparent;
+  }
+
+  #mentionMenu .mention .key { color: var(--text); }
+  #mentionMenu .mention .hint { color: var(--faint); font-size: 11px; text-transform: none; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #mentionMenu .mention:hover { background: var(--nested); }
+  #mentionMenu .mention[aria-selected="true"] { background: var(--accent-soft); border-left-color: var(--accent); }
+  #mentionMenu .mention[aria-selected="true"] .key { color: var(--accent); }
+
+  /* ---------------------------------------------------------------- motion
+     A HUD boots: a quick wipe in, transform and opacity only, no bounce. */
+
+  @keyframes hud-in {
+    from { opacity: 0; transform: scaleY(0.94) translateY(6px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  @keyframes lamp {
+    0%, 100% { box-shadow: 0 0 10px -1px var(--accent-glow); }
+    50% { box-shadow: 0 0 16px 1px var(--accent-glow); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+
+  @media (max-width: 900px) {
+    .hint { display: none; }
+    .win[data-wired="true"]::after { display: none; }
+  }
+
+  /* ------------------------------------------------------------------ brand
+     The mark ships as flat black artwork, so it is used as a MASK rather than
+     an image: the colour then comes from the theme and never disappears
+     against a dark bar. */
+  .brand { display: inline-flex; align-items: center; }
+  .brand-logo {
+    display: block;
+    width: 116px;
+    height: 26px;
+    background-color: var(--accent);
+    -webkit-mask: url("/assets/brand/minimac-logo-transparent.svg") no-repeat left center;
+    mask: url("/assets/brand/minimac-logo-transparent.svg") no-repeat left center;
+    -webkit-mask-size: contain;
+    mask-size: contain;
+  }
+</style>
+</head>
+<body>
+  <canvas id="floor"></canvas>
+  <div id="bubbles"></div>
+
+  <div id="topbar">
+    <span class="brand" role="img" aria-label="MINIMAC"><span class="brand-logo"></span></span>
+    <button id="repoPath" type="button" title="Open the repo this fleet works in">~/wednesday/minimac</button>
+    <button class="btn primary" id="startAll" type="button">START ALL</button>
+    <button class="btn stop" id="stopAll" type="button" title="Interrupt every running agent and close the run">STOP</button>
+  </div>
+
+  <!-- Instruments. ui/windows.mjs places, drags and resizes these. -->
+  <div id="windows">
+    <section class="win" id="winFlows" hidden aria-label="Flow contract">
+      <i class="hud-frame" aria-hidden="true"></i>
+      <header class="win-bar" id="winFlowsBar">
+        <span class="win-title">flow</span>
+        <span class="win-sub" id="focusName">—</span>
+        <span class="spacer"></span>
+        <span class="readout" id="roFlows">0/0 VERIFIED</span>
+        <button class="icon-btn" id="winFlowsClose" type="button" aria-label="Close flow contract">✕</button>
+      </header>
+      <div class="win-body" id="flows"></div>
+    </section>
+
+    <section class="win" id="winEvidence" hidden aria-label="Evidence tape">
+      <i class="hud-frame" aria-hidden="true"></i>
+      <header class="win-bar" id="winEvidenceBar">
+        <span class="win-title">evidence</span>
+        <span class="spacer"></span>
+        <span class="readout" id="roEvidence">0 CLAIMS · 0 GUESSED</span>
+        <button class="icon-btn" id="winEvidenceClose" type="button" aria-label="Close evidence tape">✕</button>
+      </header>
+      <div class="win-body" id="evidence"></div>
+    </section>
+
+    <section class="win" id="winCrew" hidden aria-label="Crew">
+      <i class="hud-frame" aria-hidden="true"></i>
+      <header class="win-bar" id="winCrewBar">
+        <span class="win-title">crew</span>
+        <span class="spacer"></span>
+        <span class="readout" id="roCrew">0/0 RUNNING</span>
+        <button class="icon-btn" id="winCrewClose" type="button" aria-label="Close crew">✕</button>
+      </header>
+      <div class="win-body" id="roster"></div>
+    </section>
+
+    <section class="win" id="winDecisions" hidden aria-label="Decisions">
+      <i class="hud-frame" aria-hidden="true"></i>
+      <header class="win-bar" id="winDecisionsBar">
+        <span class="win-title">decisions</span>
+        <span class="spacer"></span>
+        <span class="readout" id="roDecisions">0 WAITING</span>
+        <button class="icon-btn" id="winDecisionsClose" type="button" aria-label="Close decisions">✕</button>
+      </header>
+      <div class="win-body"><div id="queue" aria-live="polite"></div></div>
+    </section>
+
+    <section class="win" id="winRuns" hidden aria-label="Runs">
+      <i class="hud-frame" aria-hidden="true"></i>
+      <header class="win-bar" id="winRunsBar">
+        <span class="win-title">runs</span>
+        <span class="spacer"></span>
+        <span class="readout" id="roRuns">0 RUNS</span>
+        <button class="icon-btn" id="winRunsClose" type="button" aria-label="Close runs">✕</button>
+      </header>
+      <div class="win-body" id="runs"></div>
+    </section>
+  </div>
+
+  <div id="composer">
+    <i class="hud-frame" aria-hidden="true"></i>
+    <div id="attachments" hidden aria-label="Attached files"></div>
+    <input type="file" id="fileInput" multiple hidden />
+    <span id="composerTarget" data-target="mission">mission</span>
+    <textarea id="composerInput" rows="1" autocomplete="off" spellcheck="false"
+              aria-label="Command the fleet"
+              placeholder="set the mission, or steer CODER · @file  /skill  @agent"></textarea>
+    <button class="btn primary" id="composerSend" type="button">SEND</button>
+
+    <div class="dock">
+      <button class="dock-btn" id="btnFlows" type="button" aria-pressed="false" aria-controls="winFlows">flow</button>
+      <button class="dock-btn" id="btnEvidence" type="button" aria-pressed="false" aria-controls="winEvidence">evidence</button>
+      <button class="dock-btn" id="btnCrew" type="button" aria-pressed="false" aria-controls="winCrew">crew</button>
+      <button class="dock-btn" id="btnDecisions" type="button" aria-pressed="false" aria-controls="winDecisions">
+        decisions <span id="queueCount" aria-label="decisions waiting on you">0</span>
+      </button>
+      <button class="dock-btn" id="btnRuns" type="button" aria-pressed="false" aria-controls="winRuns">runs</button>
+      <button class="dock-btn mini" id="btnAttach" type="button"
+              aria-label="Attach a file" title="Attach a file — or just drop one on the window">+file</button>
+    </div>
+
+    <div id="mentionMenu" hidden role="listbox" aria-label="Completions"></div>
+  </div>
+
+  <script type="module" src="./ui/main.mjs"></script>
+</body>
+</html>

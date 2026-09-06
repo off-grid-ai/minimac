@@ -1,0 +1,12 @@
+{
+  "name": "minimac",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A floor for watching and steering a fleet of AI coding agents.",
+  "scripts": {
+    "start": "node server.mjs",
+    "demo": "node server.mjs --engine sim --mission 'demo run'"
+  },
+  "engines": { "node": ">=22" }
+}

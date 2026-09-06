@@ -1,0 +1,39 @@
+{
+  "$team": "the Avengers",
+  "minimac": {
+    "name": "Thor",
+    "mesh": "assets/characters/minimac.glb",
+    "color": "#2b2f36",
+    "move": "lightning"
+  },
+  "coder": {
+    "name": "Ironman",
+    "mesh": "assets/characters/coder.glb",
+    "color": "#c8541f",
+    "move": "repulsor"
+  },
+  "tester": {
+    "name": "Hulk",
+    "mesh": "assets/characters/tester.glb",
+    "color": "#4f8a4a",
+    "move": "smash"
+  },
+  "auditor": {
+    "name": "Strange",
+    "mesh": "assets/characters/auditor.glb",
+    "color": "#1f8f8a",
+    "move": "portal"
+  },
+  "ux": {
+    "name": "Vision",
+    "mesh": "assets/characters/ux.glb",
+    "color": "#d99a3f",
+    "move": "beam"
+  },
+  "pm": {
+    "name": "Wanda",
+    "mesh": "assets/characters/pm.glb",
+    "color": "#a33a4a",
+    "move": "hex"
+  }
+}
