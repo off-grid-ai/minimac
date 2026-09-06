@@ -427,7 +427,9 @@ function makeSmash(scene, colours) {
   group.add(drop);
 
   const shockMaterial = glow(WHITE, 0.95);
-  const shock = new THREE.Mesh(GEO.ring, shockMaterial);
+  // The thin ring, not the wide one: scaled out to a 3m wave, a wide band goes
+  // soft and reads as fog on a lit floor.
+  const shock = new THREE.Mesh(GEO.thinRing, shockMaterial);
   shock.rotation.x = -Math.PI / 2;
   shock.position.y = 0.05;
   const echoMaterial = glow(colours.accent, 0.8);
@@ -462,7 +464,7 @@ function makeSmash(scene, colours) {
       fistMaterial.color.copy(tone).lerp(WHITE, 0.12);
       shockMaterial.color.copy(tone).lerp(WHITE, 0.1);
       echoMaterial.color.copy(tone);
-      flashMaterial.color.copy(tone).lerp(WHITE, 0.5);
+      flashMaterial.color.copy(tone).lerp(WHITE, 0.35);
       dustMaterial.color.copy(tone).lerp(WHITE, 0.25);
       // A fresh scatter per hit, so no two impacts throw the same dust.
       for (let i = 0; i < MOTES; i += 1) {
@@ -478,7 +480,7 @@ function makeSmash(scene, colours) {
       const settle = Math.sin(q * 22) * Math.exp(-q * 9) * (failed ? 0.11 : 0.055);
       drop.position.y = p < IMPACT ? TOP - (TOP - REST) * fall * fall : REST + settle;
       // Additive on a closed box draws both faces, so half opacity is full weight.
-      fistMaterial.opacity = clamp(life * 2.6, 0, 1) * 0.5;
+      fistMaterial.opacity = clamp(life * 2.6, 0, 1) * 0.62;
 
       // The recoil, taken by the rig rather than the camera: a short squash and
       // spread that dies out inside the first fifth of the settle.
@@ -490,7 +492,7 @@ function makeSmash(scene, colours) {
       const stutter = failed ? 0.6 + 0.4 * Math.abs(Math.sin(q * 16)) : 1;
       shock.visible = q > 0;
       shock.scale.setScalar(0.25 + ease(q) * reach);
-      shockMaterial.opacity = (1 - q) * (1 - q) * 0.95 * stutter;
+      shockMaterial.opacity = (1 - q) * (1 - q) * 1.1 * stutter;
       const trail = clamp((q - 0.16) / 0.84, 0, 1);
       echo.visible = trail > 0;
       echo.scale.setScalar(0.25 + ease(trail) * reach * 0.62);
@@ -498,8 +500,8 @@ function makeSmash(scene, colours) {
 
       // Short and bright: a lingering faint disc reads as a stain on the desk.
       flash.visible = q > 0 && q < 0.2;
-      flash.scale.setScalar(0.7 + q * 2.2);
-      flashMaterial.opacity = clamp(1 - q / 0.18, 0, 1) * 0.8;
+      flash.scale.setScalar(0.45 + q * 1.4);
+      flashMaterial.opacity = clamp(1 - q / 0.18, 0, 1) * 0.45;
 
       const push = ease(q) * (failed ? 1.6 : 1.0);
       for (let i = 0; i < MOTES; i += 1) {
