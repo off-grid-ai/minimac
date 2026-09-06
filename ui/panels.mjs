@@ -73,10 +73,14 @@ function agentRow(agent, handlers) {
   };
 
   const ident = el('div', 'ident');
-  ident.append(el('span', 'name', nameOf(agent)), el('span', 'role', agent.role), statusChip(agent));
+  ident.append(
+    enabledToggle(agent, handlers),
+    el('span', 'name', nameOf(agent)),
+    el('span', 'role', agent.role),
+    statusChip(agent),
+  );
 
-  row.append(ident, engineToggle(agent, handlers), enabledToggle(agent, handlers),
-    goalEditor(agent, handlers));
+  row.append(ident, engineToggle(agent, handlers), goalEditor(agent, handlers));
   return row;
 }
 
@@ -93,7 +97,7 @@ function goalEditor(agent, handlers) {
   const label = el('div', 'goal-label', 'GOAL');
   const box = document.createElement('textarea');
   box.className = 'goal-input';
-  box.rows = 3;
+  box.rows = 2;
   box.value = agent.goal?.objective ?? '';
   box.placeholder = 'no goal - this agent would start blind';
   box.setAttribute('aria-label', `${nameOf(agent)} goal`);
@@ -135,7 +139,8 @@ function enabledToggle(agent, handlers) {
   button.setAttribute('aria-label', `${nameOf(agent)} on this mission`);
   button.title = off ? `Bring ${nameOf(agent)} onto this mission` : `Take ${nameOf(agent)} off this mission`;
   button.style.cssText = [
-    'flex:none', 'position:relative', 'width:30px', 'height:16px', 'padding:0',
+    'flex:none', 'box-sizing:border-box', 'position:relative',
+    'width:26px', 'height:14px', 'min-width:26px', 'padding:0', 'margin:0',
     'cursor:pointer', 'border-radius:9px',
     `border:1px solid ${off ? 'var(--line)' : 'var(--accent)'}`,
     `background:${off ? 'transparent' : 'var(--accent)'}`,
@@ -143,8 +148,8 @@ function enabledToggle(agent, handlers) {
 
   const knob = el('span');
   knob.style.cssText = [
-    'position:absolute', 'top:2px', 'width:10px', 'height:10px', 'border-radius:50%',
-    `left:${off ? '2px' : '16px'}`,
+    'position:absolute', 'top:2px', 'width:8px', 'height:8px', 'border-radius:50%',
+    `left:${off ? '2px' : '14px'}`,
     `background:${off ? 'var(--muted)' : 'var(--bg)'}`,
     'transition:left 120ms ease-out',
   ].join(';');
@@ -378,7 +383,8 @@ function approvalCard(decision, handlers) {
     const button = el('button', 'act answer', choiceLabel(choice));
     button.type = 'button';
     button.dataset.choice = choiceKey(choice);
-    button.onclick = () => handlers.approve(decision.agentId, approval.id, choice);
+    button.onclick = (event) =>
+      handlers.approve(decision.agentId, approval.id, choice, event.currentTarget.getBoundingClientRect());
     answers.append(button);
   }
   card.append(answers);
@@ -414,7 +420,9 @@ function actionRow(decision, handlers) {
     const button = el('button', 'act', action.toUpperCase());
     button.type = 'button';
     button.dataset.action = action;
-    button.onclick = () => handlers.act(action, decision);
+    // The rect is where the action was pressed: main.mjs flies a token from
+    // there to the desk, so nothing you click is silent.
+    button.onclick = (event) => handlers.act(action, decision, event.currentTarget.getBoundingClientRect());
     actions.append(button);
   }
   return actions;
@@ -429,7 +437,7 @@ function steerRow(decision, handlers) {
   input.onkeydown = (event) => {
     event.stopPropagation();
     if (event.key === 'Enter' && input.value.trim()) {
-      handlers.steer(decision.agentId, input.value.trim());
+      handlers.steer(decision.agentId, input.value.trim(), input.getBoundingClientRect());
       input.value = '';
     }
   };

@@ -13,11 +13,20 @@ import {
 } from '../core/derive.mjs';
 import { createScene, deskSpot } from './scene.mjs';
 import * as panels from './panels.mjs';
-import { renderRoster, renderFlows, renderEvidence, renderQueue } from './panels.mjs';
+import { renderQueue, renderRoster, renderFlows, renderEvidence } from './panels.mjs';
 import { createComposer, MISSION_TARGET } from './composer.mjs';
 import { createSidePanel } from './sidepanel.mjs';
+import { createGoalStrip } from './goalstrip.mjs';
+import { createSound } from './sound.mjs';
 import { renderMarkdown, markdownReady } from './markdown.mjs';
-import { describeEvent, plainText, shortenDetail, summariseCommand } from '../core/readable.mjs';
+import { CUES, cueFor, keyOf, neglect, trackWaiting } from '../core/attention.mjs';
+import {
+  describeEvent,
+  firstLine,
+  plainText,
+  shortenDetail,
+  summariseCommand,
+} from '../core/readable.mjs';
 
 const PULSE_MS = 900;
 const PING_MS = 700;
@@ -43,11 +52,18 @@ const state = {
   runId: null,
   mission: '',
   feedFilter: null,
+  // When each unanswered decision was first seen, and what ignoring them has
+  // cost so far. core/attention.mjs owns both rules; this only holds the
+  // record it hands back.
+  waiting: {},
+  neglect: 0,
 };
 
 const palette = readPalette();
 let scene = null;
 let composer = null;
+let strip = null;
+const sound = createSound();
 
 // ------------------------------------------------------------------ server
 
@@ -101,6 +117,7 @@ function subscribe() {
 
 function applySnapshot(snapshot) {
   state.agents = snapshot.agents;
+  noticeHandouts(state.goals, snapshot.goals);
   state.goals = snapshot.goals;
   state.claims = snapshot.claims;
   state.repo = snapshot.repo ?? state.repo;
@@ -110,8 +127,34 @@ function applySnapshot(snapshot) {
     seeded = true;
     seedFromRun(state.runId);
   }
-  state.focus ??= firstWorker()?.id ?? null;
+  // Nothing is selected at boot: the first thing you see is the whole room,
+  // not one desk already pushed into your face.
   if (dom.repoPath) dom.repoPath.textContent = state.repo;
+}
+
+// Setting the mission gives every agent a goal. That is the orchestrator doing
+// its job, so it is shown as its job: a bolt at Thor's desk and a courier
+// crossing the floor to each agent, carrying the goal it was handed.
+let goalsSeen = false;
+
+function noticeHandouts(before, after) {
+  if (!after) return;
+  if (!goalsSeen) {
+    goalsSeen = true;
+    return; // the first snapshot is history, not news
+  }
+  const boss = orchestratorId();
+  let handed = 0;
+  for (const [agentId, goal] of Object.entries(after)) {
+    const objective = goal?.objective ?? '';
+    if (!objective || objective === (before?.[agentId]?.objective ?? '')) continue;
+    handed += 1;
+    if (agentId !== boss) addPing(boss, agentId);
+    // The desk says what it was just told to do, in one line, for as long as
+    // any other bubble would hold.
+    shownBubble.set(agentId, { text: firstLine(objective), at: Date.now() });
+  }
+  if (handed > 0) fireMove(boss, 'neutral');
 }
 
 // An event this page made up, so a client-side refusal can appear in the same
@@ -126,6 +169,7 @@ function ingest(event, agent) {
   state.eventsByAgent[event.agentId] = [...list.slice(-800), event];
 
   queueMove(event);
+  if (!event.payload?.local) sound.play(cueFor(event));
   if (event.kind === EVENT_KINDS.PING) {
     if (event.payload.kind === 'verified') addPulse(event.agentId);
     if (event.payload.to) addPing(event.agentId, event.payload.to);
@@ -199,22 +243,15 @@ function moveTrigger(agent, event) {
 
 // -------------------------------------------------------------- view model
 
+// An agent taken off the mission keeps its desk: dark, empty, and still there
+// to be clicked. Hiding it would leave no way to bring it back now that the
+// crew panel is gone - the room is the only roster there is.
 function orderedAgents() {
-  const all = Object.values(state.agents).filter((agent) => agent.enabled !== false);
+  const all = Object.values(state.agents);
   return [
     ...all.filter((agent) => agent.role !== 'orchestrator'),
     ...all.filter((agent) => agent.role === 'orchestrator'),
   ];
-}
-
-// The crew panel is the one place that shows disabled agents, so they can be
-// switched back on.
-function allAgents(now) {
-  const shown = new Map(viewAgents(now).map((agent) => [agent.id, agent]));
-  return Object.values(state.agents).map((agent) => shown.get(agent.id) ?? {
-    ...agent, selected: false, pose: 'idle', eventsPerMin: 0, loopCount: 0,
-    goal: state.goals[agent.id] ?? null,
-  });
 }
 
 function firstWorker() {
@@ -231,6 +268,7 @@ function viewAgents(now) {
       index: isOrchestrator ? 0 : index,
       isOrchestrator,
       selected: agent.id === state.focus,
+      offDuty: agent.enabled === false,
       pose: agentPose(agent, events, now),
       eventsPerMin: eventsPerMin(events, now),
       loopCount: detectLoops(events)[0]?.count ?? 0,
@@ -270,7 +308,7 @@ function claimsFor(agentId) {
 }
 
 function decisions(now) {
-  return orderedAgents().flatMap((agent) => {
+  return orderedAgents().filter((agent) => agent.enabled !== false).flatMap((agent) => {
     const events = state.eventsByAgent[agent.id] ?? [];
     const approval = pendingApproval(events);
     const cards = pendingDecisions(agent, events, now).map((decision) => ({
@@ -338,24 +376,60 @@ function schedulePanels() {
   }, PANEL_THROTTLE_MS);
 }
 
+function isTypingIn(root) {
+  const active = document.activeElement;
+  return !!active && root.contains(active)
+    && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement);
+}
+
 function renderPanels() {
   const now = Date.now();
   const agents = viewAgents(now);
-  const focused = agents.find((agent) => agent.selected) ?? agents[0];
   const queue = decisions(now);
 
-  if (dom.roster) renderRoster(dom.roster, allAgents(now), handlers);
+  // How long the fleet has been waiting on you, and what that costs the room.
+  const before = state.waiting;
+  state.waiting = trackWaiting(state.waiting, queue, now);
+  // Most decisions are derived from history rather than announced by an event,
+  // so the cue belongs to the QUEUE gaining a card, not to any one message.
+  if (queue.some((decision) => !(keyOf(decision) in before))) sound.play(CUES.DECISION);
+  const owed = neglect(state.waiting, now);
+  state.neglect = owed.level;
+  sound.setNeglect(owed.level);
+  document.body.dataset.owed = queue.length ? 'yes' : '';
+
+  // FLOW and EVIDENCE follow whoever is focused: they are one agent's contract
+  // and one agent's claims, and the room is what says which agent that is.
+  const focused = agents.find((agent) => agent.selected) ?? agents[0];
+  if (dom.roster) renderRoster(dom.roster, agents, handlers);
+  if (dom.roCrew) {
+    const running = agents.filter((agent) => agent.status === 'running').length;
+    dom.roCrew.textContent = `${running}/${agents.length} RUNNING`;
+  }
   if (dom.flows && focused) renderFlows(dom.flows, { ...focused, flows: measuredFlows(focused) });
-  if (dom.evidence) renderEvidence(dom.evidence, focused ? claimsFor(focused.id) : []);
-  if (dom.queue) renderQueue(dom.queue, queue, handlers);
-  if (dom.queueCount) dom.queueCount.textContent = String(queue.length);
   if (dom.focusName) dom.focusName.textContent = focused?.name ?? '';
+  if (dom.evidence) renderEvidence(dom.evidence, focused ? claimsFor(focused.id) : []);
+  // Never rebuild a panel while the user is typing in it: replaceChildren
+  // destroys the field mid-keystroke. The redraw waits for the blur.
+  if (dom.queue && !isTypingIn(dom.queue)) renderQueue(dom.queue, queue, handlers);
+  if (dom.queueCount) dom.queueCount.textContent = String(queue.length);
   composer?.setTarget(state.target, agents);
   renderBubbles(queue);
+  renderStrip(agents);
   renderHeader(agents);
   renderFeed();
   if (dom.runs) panels.renderRuns?.(dom.runs, state.runs, handlers);
   if (dom.roRuns) dom.roRuns.textContent = `${state.runs.length} RUNS`;
+}
+
+// Standing at a desk adds exactly one row to the console: that agent's goal,
+// editable in place. The goal itself still lives on the server - this only
+// shows it and hands an edit straight back.
+function renderStrip(agents) {
+  if (!strip) return;
+  const agent = agents.find((candidate) => candidate.id === state.focus);
+  if (agent) strip.render(agent);
+  else strip.close();
 }
 
 // A decision belongs to a desk, so it is shown at that desk. Only the most
@@ -368,27 +442,43 @@ function renderPanels() {
 const BUBBLE_HOLD_MS = 30_000;
 const shownBubble = new Map(); // agentId -> { text, at }
 
+const FRESH_MS = 8_000; // how long a bubble reads as newly arrived
+
 function bubbleTextFor(agentId, latest, now) {
   const held = shownBubble.get(agentId);
-  if (held && now - held.at < BUBBLE_HOLD_MS) return held.text;
+  if (held && now - held.at < BUBBLE_HOLD_MS) {
+    return { text: held.text, fresh: now - held.at < FRESH_MS };
+  }
   const text = plainText(describeEvent(latest));
   if (!held || held.text !== text) shownBubble.set(agentId, { text, at: now });
-  return text;
+  return { text, fresh: true };
 }
 
 function renderActivity(agents) {
   if (!dom.bubbles) return [];
   const now = Date.now();
+  // Zoomed into a desk, the room falls quiet: only that agent speaks, so the
+  // focused conversation is not competing with five others. `state.focus` is
+  // the one record of which desk you are standing at - the camera, the console
+  // target and the goal strip all read the same field.
   return agents
+    .filter((agent) => !agent.offDuty)
+    .filter((agent) => !state.focus || agent.id === state.focus)
     .map((agent) => {
       const events = state.eventsByAgent[agent.id] ?? [];
+      // A claim is the one thing an agent says that comes with a receipt, so
+      // it outranks the command it happens to be running right now.
       const last = [...events].reverse().find((event) =>
-        event.kind === EVENT_KINDS.TOOL || event.kind === EVENT_KINDS.MESSAGE);
+        event.kind === EVENT_KINDS.TOOL
+        || event.kind === EVENT_KINDS.MESSAGE
+        || event.kind === EVENT_KINDS.CLAIM);
       if (!last) return null;
       const at = scene?.screenPos?.(agent.id);
       if (!at) return null;
+      const said = bubbleTextFor(agent.id, last, now);
       return speechBubble({
-        text: bubbleTextFor(agent.id, last, now),
+        text: said.text,
+        fresh: said.fresh,
         x: at.x,
         y: at.y,
         tone: agent.status === 'running' ? 'live' : 'quiet',
@@ -400,7 +490,7 @@ function renderActivity(agents) {
 
 // A speech bubble: rounded, wrapping, sitting ABOVE the head with a tail
 // pointing down at it - so it never lands on the nameplate under the desk.
-function speechBubble({ text, x, y, tone, onClick }) {
+function speechBubble({ text, x, y, tone, onClick, fresh = false }) {
   const bubble = document.createElement('div');
   bubble.className = `bubble ${tone}`;
   bubble.textContent = text;
@@ -458,6 +548,21 @@ function speechBubble({ text, x, y, tone, onClick }) {
     bubble.style.zIndex = '30';
   });
 
+  // A new message announces itself: a dot on the corner, and a brief pulse of
+  // the border. It settles after a few seconds so the room does not shout.
+  if (fresh) {
+    const dot = document.createElement('span');
+    dot.setAttribute('aria-label', 'new');
+    dot.style.cssText = [
+      'position:absolute', 'top:-4px', 'right:-4px', 'width:8px', 'height:8px',
+      'border-radius:50%', `background:${edge}`,
+      'box-shadow:0 0 0 2px var(--surface,#121212)',
+      'animation:bubble-new 1.2s ease-out 3',
+    ].join(';');
+    bubble.append(dot);
+    bubble.style.borderWidth = '2px';
+  }
+
   const tail = document.createElement('span');
   tail.style.cssText = [
     'position:absolute', 'left:50%', 'bottom:-5px', 'width:9px', 'height:9px',
@@ -476,6 +581,7 @@ function renderBubbles(queue) {
   if (!dom.bubbles) return;
   const byAgent = new Map();
   for (const decision of queue) {
+    if (state.focus && decision.agentId !== state.focus) continue;
     if (!byAgent.has(decision.agentId)) byAgent.set(decision.agentId, decision);
   }
 
@@ -559,6 +665,7 @@ function frame() {
   state.moves = state.moves.filter((move) => now - move.born < MOVE_LIFE_MS);
 
   scene?.render({
+    neglect: state.neglect,
     agents: viewAgents(now),
     pulses: state.pulses.map((pulse) => ({ ...pulse, life: 1 - (now - pulse.born) / PULSE_MS })),
     pings: state.pings.map((ping) => ({ ...ping, life: 1 - (now - ping.born) / PING_MS })),
@@ -568,19 +675,28 @@ function frame() {
   if (now - lastBubbleAt > 500) {
     lastBubbleAt = now;
     renderBubbles(decisions(now));
+    // Neglect is a clock, not an event: the room keeps going down while
+    // nobody touches it, so it is re-read here and not only on the next event.
+    const owed = neglect(state.waiting, now);
+    state.neglect = owed.level;
+    sound.setNeglect(owed.level);
   }
   requestAnimationFrame(frame);
 }
 
 // ------------------------------------------------------------- the windows
 
+// What is left of the panels. FEED and DECISIONS are the two things you read
+// about the whole floor; RUNS and MIDDLEWARE are settings. Flow, evidence and
+// crew are gone from here: they belong to one agent, and they are now at that
+// agent's desk.
 const WINDOW_IDS = {
+  feed: ['winFeed', 'btnFeed'],
   flows: ['winFlows', 'btnFlows'],
   evidence: ['winEvidence', 'btnEvidence'],
   crew: ['winCrew', 'btnCrew'],
   decisions: ['winDecisions', 'btnDecisions'],
   runs: ['winRuns', 'btnRuns'],
-  feed: ['winFeed', 'btnFeed'],
   middleware: ['winMiddleware', 'btnMiddleware'],
 };
 
@@ -631,8 +747,19 @@ const handlers = {
   setGoal: (agentId, objective) => send('setGoal', { agentId, objective }),
   assignEngine: (agentId, engine) => send('assignEngine', { agentId, engine }),
   setEnabled: (agentId, enabled) => send('setEnabled', { agentId, enabled }),
-  steer: (agentId, text) => send('say', { target: agentId, text }),
-  approve: (agentId, approvalId, decision) => send('approve', { agentId, approvalId, decision }),
+  close: () => focus(null),
+
+  // Every steer is watched all the way to the desk: it leaves whatever you
+  // typed it into, crosses the room, and the agent answers when it lands.
+  steer: (agentId, text, from) => {
+    flyTo({ agentId, text, from, tone: 'neutral' });
+    return send('say', { target: agentId, text });
+  },
+
+  approve: (agentId, approvalId, decision, from) => {
+    flyTo({ agentId, text: 'answered', from, tone: 'ok' });
+    return send('approve', { agentId, approvalId, decision });
+  },
 
   // A run is a conversation with the fleet. Past ones stay readable; a new one
   // resets the floor without losing them.
@@ -666,8 +793,11 @@ const handlers = {
     }
     renderPanels();
   },
-  act: (action, decision) => {
-    if (action === 'kill') return send('interrupt', { agentId: decision.agentId });
+  act: (action, decision, from) => {
+    if (action === 'kill') {
+      flyTo({ agentId: decision.agentId, text: 'stop', from, tone: 'fail' });
+      return send('interrupt', { agentId: decision.agentId });
+    }
     if (action === 'split') {
       return send('say', {
         target: decision.agentId,
@@ -680,10 +810,16 @@ const handlers = {
   },
 };
 
+// Selecting an agent is walking up to their desk: the camera goes there, the
+// conversation opens there, and the console is now addressed to them. Passing
+// null - Escape, or a click on the empty floor - walks back out.
 function focus(agentId) {
-  state.focus = agentId;
-  state.target = agentId;
-  fireMove(agentId, 'neutral'); // selecting an agent plays its signature move
+  const id = agentId && state.agents[agentId] ? agentId : null;
+  state.focus = id;
+  state.target = id ?? MISSION_TARGET;
+  scene?.focusOn?.(id);
+  if (id) fireMove(id, 'neutral'); // the room answers the click
+  else strip?.close();
   renderPanels();
 }
 
@@ -725,8 +861,22 @@ function addPing(fromId, toId) {
 
 function wireChrome() {
   dom.startAll?.addEventListener('click', () => {
-    for (const agent of orderedAgents()) send('start', { agentId: agent.id });
+    for (const agent of orderedAgents()) {
+      if (agent.enabled !== false) send('start', { agentId: agent.id });
+    }
   });
+
+  // The floor's voice. A switch, so it says which state it is in without a
+  // word, and the choice survives a reload. It can only be started from a real
+  // click - that is the browser's rule, not ours.
+  if (dom.btnSound) {
+    const paint = () => dom.btnSound.setAttribute('aria-checked', String(sound.enabled));
+    paint();
+    dom.btnSound.addEventListener('click', () => {
+      sound.toggle();
+      paint();
+    });
+  }
 
   dom.stopAll?.addEventListener('click', () => handlers.stopRun());
 
@@ -747,9 +897,15 @@ function wireChrome() {
     dom.repoPath.addEventListener('click', () => openPicker(state.repo));
   }
 
-  // One shortcut only: Cmd+\\ shows and hides the panel. Everything else on the
-  // keyboard belongs to the browser and to whatever is being typed.
+  // Two keys. Escape steps back out of a desk to the whole room; Cmd+\\ shows
+  // and hides the panel. Everything else belongs to the browser and to
+  // whatever is being typed.
   addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.focus) {
+      event.preventDefault();
+      focus(null);
+      return;
+    }
     if (event.key !== '\\' || !(event.metaKey || event.ctrlKey) || event.shiftKey) return;
     event.preventDefault();
     if (windows?.openNames().length) windows.close();
@@ -951,7 +1107,7 @@ function mountMiddleware() {
   document.body.append(win);
   dom.winMiddleware = win;
 
-  const sibling = dom.btnFlows ?? dom.btnCrew;
+  const sibling = dom.btnDecisions ?? dom.btnRuns ?? dom.btnCrew;
   if (sibling?.parentElement) {
     const button = sibling.cloneNode(false);
     button.id = 'btnMiddleware';
@@ -1031,12 +1187,17 @@ function stepEditor(step) {
   return wrap;
 }
 
-// A sent message should be seen arriving. It leaves the console and lands on
-// the desk it was addressed to, so "sent" is something you watch, not infer.
+// Nothing you press may be silent. Whatever the action was - a steer, an
+// answer, a kill - a token leaves the control you pressed, crosses the room,
+// lands on that desk, and the agent reacts to it arriving.
 function flyMessage({ target, text, from }) {
-  const agentId = target === MISSION_TARGET ? orchestratorId() : target;
+  flyTo({ agentId: target === MISSION_TARGET ? orchestratorId() : target, text, from });
+}
+
+function flyTo({ agentId, text = '', from, tone = 'neutral' }) {
   const to = scene?.screenPos?.(agentId);
   if (!to || !from) return;
+  const ink = tone === 'fail' ? 'var(--danger, #f87171)' : 'var(--accent, #34d399)';
 
   const note = document.createElement('div');
   note.className = 'flyer';
@@ -1045,8 +1206,8 @@ function flyMessage({ target, text, from }) {
     'position:fixed', 'z-index:55', 'pointer-events:none', 'max-width:280px',
     'padding:4px 8px', 'font:11px/1.4 Menlo, monospace', 'white-space:nowrap',
     'overflow:hidden', 'text-overflow:ellipsis',
-    'background:var(--surface, #121212)', 'color:var(--accent, #34d399)',
-    'border:1px solid var(--accent, #34d399)',
+    'background:var(--surface, #121212)', `color:${ink}`,
+    `border:1px solid ${ink}`,
     `left:${from.left + 16}px`, `top:${from.top}px`,
   ].join(';');
   document.body.append(note);
@@ -1055,8 +1216,10 @@ function flyMessage({ target, text, from }) {
   const dx = canvas.left + to.x - (from.left + 16);
   const dy = canvas.top + to.y - from.top;
 
+  // Reduced motion still lands: no flight, but the same arrival.
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    setTimeout(() => note.remove(), 200);
+    note.remove();
+    land(agentId, tone);
     return;
   }
 
@@ -1071,10 +1234,18 @@ function flyMessage({ target, text, from }) {
     )
     .addEventListener('finish', () => {
       note.remove();
-      // It landed: the desk acknowledges with the same pulse a verified step uses.
-      const agent = viewAgents(Date.now()).find((candidate) => candidate.id === agentId);
-      if (agent) state.pulses.push({ ...deskSpot(agent), born: Date.now() });
+      land(agentId, tone);
     });
+}
+
+// The arrival. The desk rings with the same pulse a verified step uses, and
+// the agent plays its own move, so a message is answered by the agent it was
+// sent to rather than by a generic flash.
+function land(agentId, tone) {
+  const agent = viewAgents(Date.now()).find((candidate) => candidate.id === agentId);
+  if (!agent) return;
+  state.pulses.push({ ...deskSpot(agent), born: Date.now() });
+  fireMove(agentId, tone);
 }
 
 function orchestratorId() {
@@ -1167,7 +1338,9 @@ function row(label, onPick) {
 // the reason is on screen.
 function boot() {
   try {
-    scene = createScene({ canvas: dom.floor, palette, onSelect: focus });
+    // Clicking a desk selects the agent AND opens their side of the story -
+    // the feed, filtered to them. Selecting in silence was the complaint.
+    scene = createScene({ canvas: dom.floor, palette, onSelect: openAgentFeed });
   } catch (error) {
     note(`floor unavailable: ${error.message}. The windows still work.`);
   }
@@ -1199,15 +1372,20 @@ function boot() {
   mountFeed();
   mountMiddleware();
 
+  // The console's extra row when a desk is focused.
+  strip = createGoalStrip({ handlers, console: dom.composer });
+
   windows = createSidePanel({
     entries: windowEntries(),
-    labels: { flows: 'FLOW', evidence: 'EVIDENCE', crew: 'CREW',
-              decisions: 'DECISIONS', runs: 'RUNS', feed: 'FEED',
-              middleware: 'MIDDLEWARE' },
+    labels: { feed: 'FEED', flows: 'FLOW', evidence: 'EVIDENCE', crew: 'CREW',
+              decisions: 'DECISIONS', runs: 'RUNS', middleware: 'MIDDLEWARE' },
     onChange: () => renderPanels(),
   });
 
   wireChrome();
+  // A read-only window onto the one part of the floor you cannot see. It
+  // reports; nothing in the app ever reads it back.
+  window.minimac = Object.freeze({ sound: () => sound.probe() });
   dom.btnAttach?.addEventListener('click', () => dom.fileInput?.click());
   subscribe();
   loadRuns();
@@ -1246,11 +1424,11 @@ function pickDom() {
     'floor', 'topbar', 'repoPath', 'queueCount', 'startAll',
     'composer', 'composerTarget', 'composerInput', 'composerSend', 'mentionMenu',
     'attachments', 'fileInput', 'btnAttach',
-    'winFlows', 'winFlowsClose', 'winEvidence', 'winEvidenceClose',
-    'winCrew', 'winCrewClose', 'winDecisions', 'winDecisionsClose',
-    'focusName', 'flows', 'evidence', 'roster', 'queue', 'bubbles',
-      'btnFlows', 'btnEvidence', 'btnCrew', 'btnDecisions',
-    'winRuns', 'winRunsClose', 'runs', 'roRuns', 'btnRuns', 'stopAll',
+    'winDecisions', 'winDecisionsClose', 'queue', 'bubbles', 'btnDecisions',
+    'winCrew', 'winCrewClose', 'roster', 'roCrew', 'btnCrew',
+    'winFlows', 'winFlowsClose', 'flows', 'roFlows', 'btnFlows', 'focusName',
+    'winEvidence', 'winEvidenceClose', 'evidence', 'roEvidence', 'btnEvidence',
+    'winRuns', 'winRunsClose', 'runs', 'roRuns', 'btnRuns', 'stopAll', 'btnSound',
   ];
   return Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 }
@@ -1286,6 +1464,14 @@ boot();
 function mountMarkdownStyles() {
   const style = document.createElement('style');
   style.textContent = `
+    @keyframes bubble-new {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.6); opacity: .55; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      [style*="bubble-new"] { animation: none !important; }
+    }
     .md { white-space: normal; }
     .md p { margin: 2px 0; }
     .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {

@@ -279,6 +279,42 @@
 
   .btn.stop[disabled]:hover { background: transparent; color: var(--faint); border-color: var(--line); }
 
+  /* A boolean is a switch, never a button that says ON. Same shape as the
+     per-agent switch in the crew row, so one gesture means one thing. */
+  .switch-cell { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .switch-icon { color: var(--faint); font-size: 13px; line-height: 1; }
+  .switch[aria-checked="true"] + .switch-icon,
+  .switch-cell:has(.switch[aria-checked="true"]) .switch-icon { color: var(--accent); }
+
+  .switch {
+    position: relative;
+    box-sizing: border-box;
+    width: 26px;
+    height: 14px;
+    min-width: 26px;
+    padding: 0;
+    margin: 0;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: transparent;
+    cursor: pointer;
+    transition: background-color 120ms ease-out, border-color 120ms ease-out;
+  }
+
+  .switch > i {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: left 120ms ease-out, background-color 120ms ease-out;
+  }
+
+  .switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+  .switch[aria-checked="true"] > i { left: 14px; background: var(--bg); }
+
   .icon-btn {
     background: transparent;
     border: 1px solid transparent;
@@ -912,7 +948,7 @@
   /* ------------------------------------------------------------------ crew */
 
   .agent {
-    padding-block: calc(var(--step) * 3);
+    padding-block: calc(var(--step) * 2);
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas: "id engine" "goal goal";
@@ -966,7 +1002,7 @@
 
   .agent .goal-input {
     width: 100%;
-    min-height: 3.9em;
+    min-height: 2.6em;
     resize: vertical;
     background: var(--bg);
     border: 1px solid var(--line);
@@ -1121,6 +1157,18 @@
     color: var(--accent-ink);
     box-shadow: 0 0 10px -1px var(--accent-glow);
     animation: lamp 1.8s ease-in-out infinite;
+  }
+
+  /* Something is waiting on you, and it keeps saying so. The attribute is set
+     by ui/main.mjs from the same queue the cards are rendered from, so there
+     is no second answer to "is anything waiting". */
+  body[data-owed="yes"] #btnDecisions { color: var(--accent); border-color: var(--accent-edge); }
+
+  body[data-owed="yes"] #queueCount {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+    animation: lamp 1.4s ease-in-out infinite;
   }
 
   /* ----------------------------------------------------------- attachments
@@ -1292,6 +1340,14 @@
     <button id="repoPath" type="button" title="Open the repo this fleet works in">~/wednesday/minimac</button>
     <button class="btn primary" id="startAll" type="button">START ALL</button>
     <button class="btn stop" id="stopAll" type="button" title="Interrupt every running agent and close the run">STOP</button>
+    <!-- The floor's voice. A switch, not a button: it has two states and you
+         can see which one it is in without reading a word. -->
+    <span class="switch-cell">
+      <span class="switch-icon" aria-hidden="true">&#9834;</span>
+      <button class="switch" id="btnSound" type="button" role="switch" aria-checked="false"
+              aria-label="Floor sound"
+              title="Ambient sound, and one cue per event"><i></i></button>
+    </span>
   </div>
 
   <!-- Instruments. ui/windows.mjs places, drags and resizes these. -->
@@ -1319,6 +1375,9 @@
       <div class="win-body" id="evidence"></div>
     </section>
 
+    <!-- The whole crew at once. Flow and evidence belong to ONE agent and now
+         live at that agent's desk; who is on the mission is a fleet-wide
+         question, so it keeps a fleet-wide list. -->
     <section class="win" id="winCrew" hidden aria-label="Crew">
       <i class="hud-frame" aria-hidden="true"></i>
       <header class="win-bar" id="winCrewBar">

@@ -13,6 +13,13 @@ import { createMoves } from './moves.mjs';
 
 const VIEW_HEIGHT = 6.2;  // world units visible top to bottom at a wide aspect
 const VIEW_WIDTH = 11.0;  // world units the desk row needs end to end
+// Pushed in on one desk: enough of the neighbours stay in frame that you never
+// lose your bearings, and the desk itself is legible.
+const FOCUS_HEIGHT = 3.5;
+const FOCUS_WIDTH = 5.6;
+// The desk sits low in frame when focused, so the thread has room above it.
+const FOCUS_LEAD = 1.35;
+const HOME = new THREE.Vector3(0.15, 0.5, 0.15);
 // Close to front-on, so every face reads. Enough offset to keep it isometric.
 const CAMERA_DIR = new THREE.Vector3(3.2, 6.4, 9.6).normalize();
 const POOL = 8;
@@ -40,11 +47,20 @@ export function createScene({ canvas, palette, onSelect }) {
   scene.fog = new THREE.Fog(colours.void, 14, 26);
 
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
-  const target = new THREE.Vector3(0.15, 0.5, 0.15);
-  camera.position.copy(CAMERA_DIR).multiplyScalar(18).add(target);
-  camera.lookAt(target);
+  // Where the camera is, and where it is going. One agent focused pushes it in
+  // on that desk; nothing focused pulls it back out to the whole room.
+  const here = HOME.clone();
+  const wanted = HOME.clone();
+  let focusId = null;
+  let aspect = 1;
+  let roomHeight = VIEW_HEIGHT;
+  let nowHeight = VIEW_HEIGHT;
+  let wantHeight = VIEW_HEIGHT;
+  camera.position.copy(CAMERA_DIR).multiplyScalar(18).add(here);
+  camera.lookAt(here);
 
-  addLights(scene, colours);
+  const lights = addLights(scene, colours);
+  const lamps = [];
 
   const signals = createSignals(scene, colours);
   const moves = createMoves(scene, colours);
@@ -73,7 +89,7 @@ export function createScene({ canvas, palette, onSelect }) {
   loadModels()
     .then((loaded) => {
       models = loaded;
-      buildRoom(room, models, colours);
+      buildRoom(room, models, colours, lamps);
     })
     .catch((error) => {
       failure = error;
@@ -85,18 +101,42 @@ export function createScene({ canvas, palette, onSelect }) {
   const resize = () => {
     const width = Math.max(canvas.clientWidth, 1);
     const height = Math.max(canvas.clientHeight, 1);
-    const aspect = width / height;
+    aspect = width / height;
     // Fit the whole crew however narrow the canvas gets: when the panel takes
     // half the screen the camera pulls back rather than cropping Vision and
     // Wanda off the right-hand edge.
-    const viewHeight = Math.max(VIEW_HEIGHT, VIEW_WIDTH / aspect);
-    camera.top = viewHeight / 2;
-    camera.bottom = -viewHeight / 2;
-    camera.left = (-viewHeight * aspect) / 2;
-    camera.right = (viewHeight * aspect) / 2;
-    camera.updateProjectionMatrix();
+    roomHeight = Math.max(VIEW_HEIGHT, VIEW_WIDTH / aspect);
     renderer.setSize(width, height, false);
+    aimCamera();
+    stepCamera(1);
   };
+
+  // Where the camera should be, given what is focused. Read every frame, so a
+  // desk that has not arrived from the server yet cannot strand the camera.
+  function aimCamera() {
+    const agent = focusId ? byId.get(focusId) : null;
+    if (agent) {
+      const seat = seatOf(agent);
+      wanted.set(seat.x, 0.5, seat.z + FOCUS_LEAD);
+      wantHeight = Math.max(FOCUS_HEIGHT, FOCUS_WIDTH / aspect);
+      return;
+    }
+    wanted.copy(HOME);
+    wantHeight = roomHeight;
+  }
+
+  function stepCamera(k) {
+    nowHeight += (wantHeight - nowHeight) * k;
+    here.lerp(wanted, k);
+    camera.top = nowHeight / 2;
+    camera.bottom = -nowHeight / 2;
+    camera.left = (-nowHeight * aspect) / 2;
+    camera.right = (nowHeight * aspect) / 2;
+    camera.position.copy(CAMERA_DIR).multiplyScalar(18).add(here);
+    camera.lookAt(here);
+    camera.updateProjectionMatrix();
+  }
+
   resize();
   new ResizeObserver(resize).observe(canvas);
 
@@ -111,7 +151,9 @@ export function createScene({ canvas, palette, onSelect }) {
     raycaster.setFromCamera(pointer, camera);
     const targets = [...stations.values()].map((station) => station.parts.pick);
     const hit = raycaster.intersectObjects(targets, false)[0];
-    if (hit) onSelect(hit.object.userData.agentId);
+    // Clicking the floor is how you step back out of a desk, so a miss is an
+    // answer too - never a click that does nothing.
+    onSelect(hit ? hit.object.userData.agentId : null);
   });
 
   // ------------------------------------------------------------------ loop
@@ -121,11 +163,14 @@ export function createScene({ canvas, palette, onSelect }) {
     requestAnimationFrame(frame);
     const dt = Math.min(clock.getDelta(), 0.05);
     const t = reduced ? 0 : clock.elapsedTime;
-    if (models) syncStations(t, dt);
-    signals.update(view, t, reduced);
     byId.clear();
     for (const agent of view.agents) byId.set(agent.id, agent);
+    if (models) syncStations(t, dt);
+    signals.update(view, t, reduced);
     moves.update(view.moves, stage, t, reduced);
+    aimCamera();
+    stepCamera(reduced ? 1 : 1 - Math.exp(-dt * 4.5));
+    applyMood(clamp(view.neglect ?? 0, 0, 1));
     renderer.render(scene, camera);
   };
   requestAnimationFrame(frame);
@@ -155,11 +200,34 @@ export function createScene({ canvas, palette, onSelect }) {
     }
   }
 
+  // Ignoring the room costs something you can see: the lights go down and the
+  // colour drains out of it. It comes straight back the moment you answer.
+  let mood = -1;
+  function applyMood(level) {
+    if (Math.abs(level - mood) < 0.01) return;
+    mood = level;
+    // Far enough down that you cannot miss it, never so far that the room
+    // stops being readable - a dark floor still has to be worked in.
+    const dim = 1 - level * 0.5;
+    lights.hemi.intensity = lights.base.hemi * dim;
+    lights.key.intensity = lights.base.key * dim;
+    lights.fill.intensity = lights.base.fill * dim;
+    for (const lamp of lamps) lamp.intensity = 1.4 * (1 - level * 0.8);
+    renderer.toneMappingExposure = 1.32 * (1 - level * 0.35);
+    scene.fog.near = 14 - level * 7;
+  }
+
   // -------------------------------------------------------------- contract
 
   return {
     render(next) {
       view = next;
+    },
+
+    // Push the camera in on one desk, or pull it back out to the whole room.
+    // The scene owns the camera, so nobody outside has to know how it moves.
+    focusOn(agentId) {
+      focusId = agentId ?? null;
     },
     // Where to hang floating HTML for an agent: the point just above their
     // head, projected into CSS pixels on the canvas.
@@ -185,7 +253,8 @@ export function createScene({ canvas, palette, onSelect }) {
 
 function addLights(scene, colours) {
   // Cool dark ambient over the whole room; everything warm is a real lamp.
-  scene.add(new THREE.HemisphereLight(colours.sky, colours.ground, 0.95));
+  const hemi = new THREE.HemisphereLight(colours.sky, colours.ground, 0.95);
+  scene.add(hemi);
 
   const key = new THREE.DirectionalLight(colours.key, 1.25);
   key.position.set(-5, 9, 6);
@@ -206,11 +275,15 @@ function addLights(scene, colours) {
   const fill = new THREE.DirectionalLight(colours.fill, 0.45);
   fill.position.set(6, 4, -6);
   scene.add(fill);
+
+  // Handed back so the room can be dimmed: the intensities live here, and the
+  // originals are kept so dimming is always measured from full brightness.
+  return { hemi, key, fill, base: { hemi: 0.95, key: 1.25, fill: 0.45 } };
 }
 
 // -------------------------------------------------------------------- room
 
-function buildRoom(room, models, colours) {
+function buildRoom(room, models, colours, lamps) {
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(24, 24),
     new THREE.MeshStandardMaterial({ color: colours.floor, roughness: 0.92, metalness: 0 }),
@@ -244,6 +317,7 @@ function buildRoom(room, models, colours) {
       const lamp = new THREE.PointLight(colours.lamp, 1.4, 4, 2);
       lamp.position.set(prop.x, 0.85, prop.z);
       room.add(lamp);
+      lamps.push(lamp);
     }
   }
 }

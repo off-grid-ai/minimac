@@ -20,6 +20,17 @@ const ORCHESTRATOR_Z = 2.0;
 // Kenney's mini characters are ~0.67 units tall; the plate floats just clear.
 export const HEAD_HEIGHT = 0.62;
 
+// Where a blocked agent goes to wait. Standing at their own desk is easy to
+// miss; a queue forming in front of the orchestrator is not - it is the one
+// thing in the room that says "this is waiting on a person".
+const QUEUE_Z = 0.95;
+const QUEUE_SPACING = 0.62;
+
+export function queueSpot(index, count = SLOTS) {
+  const centred = clamp(index ?? 0, 0, count - 1) - (count - 1) / 2;
+  return { x: centred * QUEUE_SPACING, z: QUEUE_Z };
+}
+
 export function seatOf(agent) {
   if (agent.isOrchestrator) return { x: 0, z: ORCHESTRATOR_Z };
   const index = clamp(agent.index ?? 0, 0, SLOTS - 1);

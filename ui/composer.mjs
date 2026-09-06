@@ -111,10 +111,22 @@ export function createComposer({ dom, send, getAgents, getTarget, setTarget, onS
           'padding:2px 6px', 'border:1px solid var(--line,#262626)', 'margin:0 4px 4px 0',
         ].join(';');
 
-        const label = document.createElement('span');
-        label.textContent = file.name;
-        label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-        chip.append(label);
+        // An image says what it is far better than its filename does.
+        if (String(file.type ?? '').startsWith('image/')) {
+          const thumb = document.createElement('img');
+          thumb.src = `/attachment?path=${encodeURIComponent(file.path)}`;
+          thumb.alt = file.name;
+          thumb.style.cssText =
+            'width:34px;height:34px;object-fit:cover;display:block;flex:none;'
+            + 'border:1px solid var(--line,#262626)';
+          chip.style.padding = '2px 6px 2px 2px';
+          chip.append(thumb);
+        } else {
+          const label = document.createElement('span');
+          label.textContent = file.name;
+          label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+          chip.append(label);
+        }
 
         const remove = document.createElement('button');
         remove.type = 'button';

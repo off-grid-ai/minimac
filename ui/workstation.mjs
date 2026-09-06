@@ -4,7 +4,7 @@
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/+esm';
 import { POSE } from '../core/derive.mjs';
-import { HEAD_HEIGHT, clamp } from './layout.mjs';
+import { HEAD_HEIGHT, clamp, seatOf, queueSpot } from './layout.mjs';
 import { instance, build, customModel, isolateMaterials, findMaterial } from './models.mjs';
 import { identityOf, hashId } from './identity.mjs';
 
@@ -21,7 +21,7 @@ const MAX_SHEETS = 8;
 // pose + clock -> where the body is, how it is held, and which clip plays.
 // No three.js in here, so the reading of a state is testable on its own.
 
-export function poseState(agent, t, reduced) {
+export function poseState(agent, t, reduced, waypoint = null) {
   const seed = (hashId(agent.id) % 97) / 97;
   const time = t + seed * 7;
   const rate = clamp(agent.eventsPerMin / 24, 0, 1);
@@ -46,18 +46,40 @@ export function poseState(agent, t, reduced) {
   }
 
   if (agent.pose === POSE.BLOCKED) {
-    // Standing, turned to the front of the room, waiting on you.
+    // Out of the chair and over to the orchestrator's desk, where they stand
+    // and wait. `waypoint` is that spot in this station's own coordinates -
+    // the caller does the arithmetic, so this stays pure.
     return {
       clip: 'idle',
       seated: false,
-      x: 0.78,
+      travels: true,
+      x: waypoint?.x ?? 0.78,
       y: 0,
-      z: 0.18,
+      z: waypoint?.z ?? 0.18,
       yaw: 0,
       lean: 0,
       marker: 'blocked',
       screen: 0,
       timeScale: reduced ? 0 : 0.6,
+    };
+  }
+
+  // Killed, or taken off the mission. The chair is empty and the monitor is
+  // off: a stopped desk must look stopped from across the room, not merely
+  // idle. The desk itself stays, so it can be clicked and switched back on.
+  if (agent.status === 'stopped' || agent.offDuty) {
+    return {
+      clip: 'sit',
+      seated: true,
+      away: true,
+      x: SEAT.x,
+      y: SEAT.y,
+      z: SEAT.z,
+      yaw: 0,
+      lean: 0,
+      marker: null,
+      screen: 0,
+      timeScale: 0,
     };
   }
 
@@ -285,35 +307,48 @@ export function createWorkstation({ models, agent, palette }) {
 }
 
 function update(parts, palette, agent, t, dt, reduced) {
-  const state = poseState(agent, t, reduced);
+  const state = poseState(agent, t, reduced, waypointFor(agent));
   applyIdentity(parts, palette, agent);
   applyMesh(parts, agent);
 
-  playClip(parts, state.clip, reduced ? 0 : state.timeScale ?? 1, reduced);
+  // A body does not teleport. Anything more than a step away is walked to,
+  // in either direction, so leaving the desk and coming back are both seen.
+  const walk = travel(parts, state, dt, reduced);
+
+  playClip(parts, walk.walking ? 'walk' : state.clip, reduced ? 0 : walk.walking ? 1.2 : state.timeScale ?? 1, reduced);
   // Reduced motion is a held pose, not an unposed body: the mixer still has to
   // evaluate the clip once, it just never advances.
   parts.mixer.update(reduced ? 0 : dt);
 
-  parts.slot.position.set(state.x, state.y + (state.bob ?? 0), state.z);
-  parts.slot.rotation.set(state.lean ?? 0, state.yaw, 0);
+  parts.slot.visible = !state.away;
+  parts.slot.position.set(walk.x, state.y + (state.bob ?? 0), walk.z);
+  parts.slot.rotation.set(state.lean ?? 0, walk.walking ? walk.yaw : state.yaw, 0);
 
   // Screen: brightness and the cold light it throws are the event rate.
+  const off = Boolean(state.away);
   const level = clamp(state.screen, 0, 1);
   const failing = agent.pose === POSE.BLOCKED;
   const tint = failing ? palette.danger : agent.selected ? palette.accent : palette.screen;
   parts.panel.material.color.set(tint);
-  parts.panel.material.opacity = 0.25 + level * 0.75;
+  parts.panel.material.opacity = off ? 0 : 0.25 + level * 0.75;
   parts.bar.material.color.set(tint);
-  parts.bar.material.opacity = 0.3 + level * 0.7;
+  parts.bar.material.opacity = off ? 0 : 0.3 + level * 0.7;
   parts.cold.color.set(tint);
   // The screen's light is what you read from the front: it lands on the face.
-  parts.cold.intensity = failing ? 0.9 : 0.35 + level * 3.4;
+  parts.cold.intensity = off ? 0 : failing ? 0.9 : 0.35 + level * 3.4;
   if (parts.screenMaterial) {
     parts.screenMaterial.emissive.set(tint);
-    parts.screenMaterial.emissiveIntensity = failing ? 0.35 : level * 0.9;
+    parts.screenMaterial.emissiveIntensity = off ? 0 : failing ? 0.35 : level * 0.9;
   }
   const floorLight = parts.identity.lampFloor ?? 1.1;
-  parts.warm.intensity = agent.pose === POSE.IDLE ? floorLight : Math.max(2.6, floorLight);
+  parts.warm.intensity = off
+    ? floorLight * 0.18
+    : agent.pose === POSE.IDLE
+      ? floorLight
+      : Math.max(2.6, floorLight);
+  // A dark desk: the identity pool goes out with the lamp, so a killed station
+  // reads as abandoned rather than merely quiet.
+  parts.decal.material.opacity = off ? 0.03 : 0.14;
 
   const sheets = Math.round(clamp(agent.diffLines / 60, 0, MAX_SHEETS));
   parts.sheets.forEach((sheet, i) => {
@@ -325,8 +360,11 @@ function update(parts, palette, agent, t, dt, reduced) {
     parts.ring.material.opacity = 0.5 + Math.sin(t * 2.4) * 0.22;
   }
 
-  updateMarker(parts.marker, state, t, reduced);
-  parts.head.position.set(state.x, HEAD_HEIGHT + (state.seated ? 0 : 0.16), state.z);
+  // The marker and the anchor for floating HTML follow the BODY, not the pose
+  // it is heading for: a bubble must not wait at the desk while its agent
+  // walks away from it.
+  updateMarker(parts.marker, { ...state, x: walk.x, z: walk.z }, t, reduced);
+  parts.head.position.set(walk.x, HEAD_HEIGHT + (state.seated ? 0 : 0.16), walk.z);
 }
 
 function playClip(parts, name, timeScale, reduced) {
@@ -418,6 +456,35 @@ function tintPerson(parts) {
     const base = node.isMesh ? node.material?.userData?.base : null;
     if (base) node.material.color.copy(base).lerp(parts.badge, amount);
   });
+}
+
+// Where this agent stands when it is waiting on you, in its own coordinates.
+function waypointFor(agent) {
+  if (agent.isOrchestrator) return null; // it is already its own desk
+  const seat = seatOf(agent);
+  const spot = queueSpot(agent.index ?? 0);
+  return { x: spot.x - seat.x, z: spot.z - seat.z };
+}
+
+// Smooth the body toward wherever the pose says it should be. Close enough to
+// be a fidget, and it snaps - a damped seat would eat the typing bob. Far
+// enough to be a journey, and it walks, facing the way it is going.
+const STEP = 0.3;
+
+function travel(parts, state, dt, reduced) {
+  const at = (parts.at ??= { x: state.x, z: state.z });
+  const dx = state.x - at.x;
+  const dz = state.z - at.z;
+  const distance = Math.hypot(dx, dz);
+  if (distance < STEP || reduced) {
+    at.x = state.x;
+    at.z = state.z;
+    return { x: at.x, z: at.z, walking: false, yaw: state.yaw };
+  }
+  const k = 1 - Math.exp(-dt * 1.6);
+  at.x += dx * k;
+  at.z += dz * k;
+  return { x: at.x, z: at.z, walking: true, yaw: Math.atan2(dx, dz) };
 }
 
 // ------------------------------------------------------------------ markers

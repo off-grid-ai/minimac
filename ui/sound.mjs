@@ -9,8 +9,11 @@
 import { CUES } from '../core/attention.mjs';
 
 const STORE_KEY = 'minimac.sound';
-const BED_GAIN = 0.045;   // the bed must never be the thing you notice
-const CUE_GAIN = 0.16;
+// Quiet enough to sit under a conversation, loud enough that switching it on
+// is unmistakably something happening. Too quiet and the switch reads broken.
+const BED_GAIN = 0.11;
+const CUE_GAIN = 0.3;
+const BED_RAMP = 0.25; // seconds; the room comes up while your finger is still on the switch
 
 // Every cue in one table: a shape you can read without listening to it.
 // notes are [frequency, startOffset, duration]; `type` is the oscillator.
@@ -35,6 +38,7 @@ export function createSound() {
   let master = null;
   let bed = null;
   let level = 1;          // scaled down by neglect, so a dark room is quiet
+  let played = 0;
   const lastCueAt = new Map();
 
   function build() {
@@ -49,11 +53,33 @@ export function createSound() {
     return ctx;
   }
 
+  // The context can only be started from a real gesture, and resume() is a
+  // promise: setting the gain against a clock that has not started yet leaves
+  // the bed silent, so the ramp is scheduled again once it is actually running.
   function apply() {
     if (!ctx) return;
-    const target = enabled ? BED_GAIN * level : 0;
-    bed.gain.gain.setTargetAtTime(target, ctx.currentTime, 0.6);
-    if (enabled && ctx.state === 'suspended') ctx.resume();
+    const ramp = () => {
+      const target = enabled ? BED_GAIN * level : 0;
+      bed.gain.gain.cancelScheduledValues(ctx.currentTime);
+      bed.gain.gain.setTargetAtTime(target, ctx.currentTime, BED_RAMP);
+    };
+    if (enabled && ctx.state !== 'running') ctx.resume().then(ramp, ramp);
+    else ramp();
+  }
+
+  // A remembered "on" cannot start a context: the browser only allows that
+  // from a real gesture. Without this the switch comes back lit and silent,
+  // and the next click - the one meant to fix it - turns it OFF instead.
+  if (enabled) {
+    const arm = () => {
+      removeEventListener('pointerdown', arm, true);
+      removeEventListener('keydown', arm, true);
+      if (!enabled) return;
+      build();
+      apply();
+    };
+    addEventListener('pointerdown', arm, true);
+    addEventListener('keydown', arm, true);
   }
 
   return {
@@ -67,6 +93,9 @@ export function createSound() {
       save(enabled);
       if (enabled) build();
       apply();
+      // Switching it on IS an event, and the first thing a new switch has to
+      // prove is that it did something. You hear the floor come up.
+      if (enabled) this.play(CUES.VERIFIED);
       return enabled;
     },
 
@@ -89,8 +118,22 @@ export function createSound() {
       const now = Date.now();
       if (now - (lastCueAt.get(cue) ?? 0) < COALESCE_MS) return;
       lastCueAt.set(cue, now);
-      if (ctx.state === 'suspended') ctx.resume();
-      strike(ctx, master, voice, CUE_GAIN * level);
+      const fire = () => strike(ctx, master, voice, CUE_GAIN * level);
+      if (ctx.state !== 'running') ctx.resume().then(fire, fire);
+      else fire();
+      played += 1;
+    },
+
+    // What the speaker is actually doing, for when you cannot listen to it.
+    // Read-only: it reports, it never decides anything.
+    probe() {
+      return {
+        enabled,
+        contextState: ctx?.state ?? 'none',
+        masterGain: master?.gain.value ?? null,
+        bedGain: bed?.gain.gain.value ?? null,
+        cuesPlayed: played,
+      };
     },
   };
 }

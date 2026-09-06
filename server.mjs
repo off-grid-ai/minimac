@@ -14,7 +14,7 @@ import {
   EVENT_KINDS,
   eventsFor,
 } from './core/events.mjs';
-import { createRoster, assignEngine, DEFAULT_ROSTER, ENGINES } from './core/roster.mjs';
+import { createRoster, assignEngine, DEFAULT_ROSTER, ENGINES, ROLES } from './core/roster.mjs';
 import { setGoal, getGoal, clearGoal, deriveGoals } from './core/goals.mjs';
 import { claimFiles, releaseClaim } from './core/claims.mjs';
 import {
@@ -46,6 +46,12 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.heic': 'image/heic',
+  '.pdf': 'application/pdf',
   '.glb': 'model/gltf-binary',
   '.gltf': 'model/gltf+json',
   '.json': 'application/json; charset=utf-8',
@@ -578,6 +584,12 @@ const COMMANDS = {
   },
 
   async setGoal({ agentId, objective, tokenBudget, status }) {
+    // Giving the orchestrator a goal IS giving the fleet a mission - it would
+    // be strange to write "get the repos pushed" on Thor and have the rest of
+    // the crew sit there with nothing.
+    if (state.agents[agentId]?.role === ROLES.ORCHESTRATOR && objective?.trim()) {
+      return COMMANDS.setMission({ mission: objective.trim() });
+    }
     state.goals = setGoal(state.goals, agentId, objective, tokenBudget, status);
     store.saveGoal(agentId, getGoal(state.goals, agentId));
     const agent = state.agents[agentId];
@@ -670,6 +682,14 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/files') {
     const found = await repoIndex.search(options.repo, url.searchParams.get('q') ?? '', 20);
     return json(res, 200, { files: found });
+  }
+  // An uploaded file, read back for display. Confined to the attachments
+  // directory so a crafted path cannot read anything else.
+  if (url.pathname === '/attachment') {
+    const wanted = resolve(String(url.searchParams.get('path') ?? ''));
+    const root = join(ROOT, 'data', 'attachments');
+    if (!wanted.startsWith(root)) return json(res, 403, { error: 'forbidden' });
+    return serveStatic(wanted.slice(ROOT.length), res);
   }
   if (url.pathname === '/dirs') {
     return json(res, 200, await repoIndex.dirs(url.searchParams.get('path') ?? ''));

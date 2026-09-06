@@ -31,7 +31,29 @@ export function describeEvent(event) {
       : target.replace(/\s+/g, ' ').trim().slice(0, 90);
     return `${payload.action} ${short}`;
   }
+  // A claim without its receipt is just a confident sentence. Wherever a claim
+  // is said out loud, the command behind it - or the absence of one - is said
+  // in the same breath.
+  if (event?.kind === EVENT_KINDS.CLAIM) {
+    return `${plainText(payload.text).slice(0, 70)} ${describeReceipt(payload.receipt)}`;
+  }
   return plainText(payload.text).slice(0, 90);
+}
+
+// The receipt, in the few words a bubble can afford.
+export function describeReceipt(receipt) {
+  const text = String(receipt ?? '').trim();
+  return text ? `\u2190 ${summariseCommand(text)}` : '\u2190 no receipt';
+}
+
+// A paragraph, reduced to the one line a nameplate or a bubble can hold. The
+// first sentence carries the point; the rest is elaboration.
+export function firstLine(source, max = 90) {
+  const text = plainText(source);
+  if (!text) return '';
+  const stop = text.search(/[.:;!?](\s|$)/);
+  const head = stop > 0 ? text.slice(0, stop) : text;
+  return head.length > max ? `${head.slice(0, max - 1)}\u2026` : head;
 }
 
 // A decision's detail is often a command wearing a prefix.
