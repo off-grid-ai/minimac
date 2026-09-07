@@ -58,7 +58,8 @@ import { createStore } from './adapters/store.mjs';
 import { createWorktrees } from './adapters/git.mjs';
 import { createRepoIndex } from './adapters/fs.mjs';
 import { createUploads } from './adapters/uploads.mjs';
-import { createCiWatcher } from './adapters/ci-watcher.mjs';
+import { createGithubChecksPort } from './adapters/github-checks.mjs';
+import { createCiMonitor } from './application/ci-monitor.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
 import {
   deriveCards,
@@ -2030,35 +2031,35 @@ const COMMANDS = {
   },
 };
 
-const ciWatcher = createCiWatcher({
-  repo: options.repo,
-  context: () => ({ mission: state.mission, items: itemsOf(state.board) }),
-  onFailures: async ({ number, failures }) => {
-    const names = failures.map((check) => check.name).filter(Boolean);
-    const existing = itemsOf(state.board).find((item) =>
-      !['superseded', 'cancelled'].includes(item.disposition)
-      && new RegExp(`\\b(?:PR|pull request)\\s*#?${number}\\b`, 'i')
-        .test(`${item.title}\n${item.outcome}`));
-    const summary = names.slice(0, 3).join(', ') || 'hosted checks';
-    if (!existing) {
-      const coder = Object.values(state.agents).find((agent) => agent.role === ROLES.CODER);
-      if (coder) {
-        addBoardWork({
-          title: `Fix PR ${number} CI: ${summary}`,
-          plan: 'Read the hosted failure; make the smallest root-cause fix; run its focused proof; push the repaired head.',
-          outcome: `PR ${number} has no failing hosted checks.`,
-          verify: `gh pr checks ${number}`,
-          scope: `pr/${number}`,
-          owner: coder.id,
-          needs: ['coding', 'test', 'commits', 'push'],
-          blockedBy: [],
-          estimateMs: WORKER_LIMIT_MS,
-        }, 'minimac');
-      }
-    }
-    await tellThor('minimac', `CI changed on PR ${number}. Failing now: ${summary}. `
-      + (existing ? `Use checkpoint ${existing.id}.` : 'A new checkpoint was added for the coder.'));
+const ciBaselineKey = `ci-baseline:${options.repo}`;
+const ciOwner = Object.values(state.agents).find((agent) => agent.role === ROLES.CODER)?.id ?? null;
+const ciWatcher = createCiMonitor({
+  checks: createGithubChecksPort({ repo: options.repo }),
+  snapshot: () => ({ mission: state.mission, items: itemsOf(state.board) }),
+  loadBaseline: () => store.setting(ciBaselineKey, {}),
+  saveBaseline: (baseline) => store.saveSetting(ciBaselineKey, baseline),
+  createCheckpoint: (spec) => addBoardWork(spec, 'minimac'),
+  notify: (number, work) => tellThor(
+    'minimac',
+    `CI changed on PR ${number}. Failing now: ${work.summary}. `
+      + (work.existing
+        ? `Use checkpoint ${work.existing.id}.`
+        : 'A new checkpoint was added for the coder.'),
+  ),
+  reportHealth: ({ number, state: health, error }) => ingest(createEvent(
+    'minimac',
+    health === 'failed' ? EVENT_KINDS.BLOCKED : EVENT_KINDS.STATUS,
+    { text: health === 'failed' ? undefined : `CI watcher recovered for PR ${number}`,
+      reason: health === 'failed' ? `CI watcher failed for PR ${number}: ${error}` : undefined },
+  )),
+  owner: ciOwner,
+  estimateMs: WORKER_LIMIT_MS,
+  schedule: (action, delay) => {
+    const timer = setInterval(action, delay);
+    timer.unref?.();
+    return timer;
   },
+  cancel: clearInterval,
 });
 
 // End a live engine session without deciding mission membership. This is an
