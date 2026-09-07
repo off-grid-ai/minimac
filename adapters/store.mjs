@@ -94,6 +94,9 @@ CREATE TABLE IF NOT EXISTS worker_sessions (
 CREATE INDEX IF NOT EXISTS worker_sessions_run_agent
   ON worker_sessions(run_id, agent_id, worker_id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS worker_sessions_run_session
+  ON worker_sessions(run_id, session_id);
+
 CREATE TABLE IF NOT EXISTS engines (
   run_id   INTEGER NOT NULL REFERENCES runs(id),
   agent_id TEXT NOT NULL,

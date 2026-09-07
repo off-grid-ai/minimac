@@ -254,12 +254,11 @@ const agentsByToken = new Map();
 
 function mcpServerFor(agent) {
   const principalId = agent.workerId ?? agent.id;
-  let token = agentTokens.get(principalId);
-  if (!token) {
-    token = randomUUID();
-    agentTokens.set(principalId, token);
-    agentsByToken.set(token, { agentId: agent.id, workerId: agent.workerId ?? null });
-  }
+  const previous = agentTokens.get(principalId);
+  if (previous) agentsByToken.delete(previous);
+  const token = randomUUID();
+  agentTokens.set(principalId, token);
+  agentsByToken.set(token, { agentId: agent.id, workerId: agent.workerId ?? null });
   return {
     command: process.execPath,
     args: [join(ROOT, 'adapters', 'fleet-mcp.mjs')],
@@ -269,6 +268,12 @@ function mcpServerFor(agent) {
       MINIMAC_AGENT_ROLE: agent.role,
     },
   };
+}
+
+function revokeWorkerPrincipal(workerId) {
+  const token = agentTokens.get(workerId);
+  if (token) agentsByToken.delete(token);
+  agentTokens.delete(workerId);
 }
 // How this fleet is told to work. Survives runs and restarts.
 const middleware = store.middleware();
@@ -715,9 +720,14 @@ function persistEventWorker(event) {
 
 function ingest(rawIncoming) {
   const incoming = identifyWorker(rawIncoming);
-  if (incoming.kind === EVENT_KINDS.STATUS && incoming.payload?.state === 'stopped') {
-    const worker = workerForSession(state.agents[incoming.agentId], incoming.payload?.sessionId);
-    if (worker) clearWorkerTimer(worker.id);
+  if (incoming.kind === EVENT_KINDS.STATUS
+    && [WORKER_STATE.IDLE, WORKER_STATE.STOPPED].includes(incoming.payload?.state)) {
+    const workerId = incoming.payload?.workerId
+      ?? workerForSession(state.agents[incoming.agentId], incoming.payload?.sessionId)?.id;
+    if (workerId) {
+      clearWorkerTimer(workerId);
+      revokeWorkerPrincipal(workerId);
+    }
   }
   // A result carries its text in its own envelope and is never split, so it
   // goes straight to the parsers.
@@ -1967,16 +1977,21 @@ const ciWatcher = createCiMonitor({
 // End a live engine session without deciding mission membership. This is an
 // internal lifecycle step used by the one public active/bench transition and
 // by Thor's isolated assemble turn. It is not a command clients can call.
-async function interruptWorker(agentId, workerId, { state = WORKER_STATE.IDLE, clearCheckpoint = false } = {}) {
+async function interruptWorker(
+  agentId,
+  workerId,
+  { workerState = WORKER_STATE.IDLE, clearCheckpoint = false } = {},
+) {
   const agent = state.agents[agentId];
   if (!agent) return false;
   const worker = ensureWorkers(agent).find((candidate) => candidate.id === workerId);
   const sessionId = worker?.sessionId;
   if (!sessionId) return false;
+  revokeWorkerPrincipal(workerId);
   await getDriver(agent.engine).interrupt(sessionId);
   clearWorkerTimer(workerId);
   const next = patchWorker(state.agents[agentId], workerId, {
-    state,
+    state: workerState,
     sessionId: null,
     resumeSessionId: sessionId,
     checkpointId: clearCheckpoint ? null : worker.checkpointId,
@@ -1989,7 +2004,7 @@ async function interruptWorker(agentId, workerId, { state = WORKER_STATE.IDLE, c
       lease: {
         ...(findItem(state.board, worker.checkpointId)?.lease ?? {}),
         workerId,
-        state,
+        state: workerState,
         endedAt: Date.now(),
       },
     });
@@ -2007,7 +2022,7 @@ async function expireWorker(agentId, workerId) {
   const agent = state.agents[agentId];
   const worker = agent && ensureWorkers(agent).find((candidate) => candidate.id === workerId);
   if (!worker?.sessionId) return false;
-  const stopped = await interruptWorker(agentId, workerId, { state: WORKER_STATE.EXPIRED });
+  const stopped = await interruptWorker(agentId, workerId, { workerState: WORKER_STATE.EXPIRED });
   if (worker.checkpointId) {
     const paused = setCheckpointPaused(state.board, worker.checkpointId, true);
     if (!paused.error) {
