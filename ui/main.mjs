@@ -155,9 +155,12 @@ function applySnapshot(snapshot) {
   state.repo = snapshot.repo ?? state.repo;
   state.mission = snapshot.mission ?? state.mission;
   state.runId = snapshot.runId;
-  if (state.runId && !seeded) {
+  const requestedRun = runIdFromUrl();
+  if (!requestedRun && state.runId) setRunUrl(state.runId, { replace: true });
+  const selectedRun = requestedRun ?? state.runId;
+  if (selectedRun && !seeded) {
     seeded = true;
-    seedFromRun(state.runId);
+    seedFromRun(selectedRun);
   }
   // Nothing is selected at boot: the first thing you see is the whole room,
   // not one desk already pushed into your face.
@@ -1081,23 +1084,27 @@ const handlers = {
   newRun: async () => {
     const mission = window.prompt('What is the mission for this run?', '');
     if (mission === null) return;
-    await send('newRun', { mission });
+    const response = await send('newRun', { mission });
+    if (response.result?.runId) setRunUrl(response.result.runId);
     state.eventsByAgent = {};
     await loadRuns();
   },
 
   continueRun: async (runId) => {
-    await send('continueRun', { runId });
+    const response = await send('continueRun', { runId });
+    if (response.result?.runId) setRunUrl(response.result.runId);
     await loadRuns();
   },
 
   resumeRun: async (runId) => {
-    await send('resumeRun', { runId });
+    const response = await send('resumeRun', { runId });
+    if (response.result?.runId) setRunUrl(response.result.runId);
     state.eventsByAgent = {};
     await loadRuns();
   },
 
-  openRun: async (runId) => {
+  openRun: async (runId, { updateUrl = true } = {}) => {
+    if (updateUrl) setRunUrl(runId);
     const { events } = await fetch(`/replay?run=${runId}`).then((r) => r.json());
     state.eventsByAgent = {};
     for (const event of events) {
@@ -1131,6 +1138,20 @@ const handlers = {
     return focus(decision.agentId);
   },
 };
+
+function runIdFromUrl() {
+  const runId = Number(new URL(window.location.href).searchParams.get('run'));
+  return Number.isSafeInteger(runId) && runId > 0 ? runId : null;
+}
+
+function setRunUrl(runId, { replace = false } = {}) {
+  const selected = Number(runId);
+  if (!Number.isSafeInteger(selected) || selected <= 0) return;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('run') === String(selected)) return;
+  url.searchParams.set('run', String(selected));
+  window.history[replace ? 'replaceState' : 'pushState']({ runId: selected }, '', url);
+}
 
 // Selecting an agent is walking up to their desk: the camera goes there, the
 // conversation opens there, and the console is now addressed to them. Passing
@@ -1934,6 +1955,10 @@ function boot() {
     waypoint: viewAgents(Date.now()).find((a) => a.errand)?.errand ?? null,
   });
   dom.btnAttach?.addEventListener('click', () => dom.fileInput?.click());
+  addEventListener('popstate', () => {
+    const runId = runIdFromUrl() ?? state.runId;
+    if (runId) handlers.openRun(runId, { updateUrl: false });
+  });
   subscribe();
   loadRuns();
   loadMiddleware();
