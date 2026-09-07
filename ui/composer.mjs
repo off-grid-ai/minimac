@@ -4,8 +4,8 @@
 // It owns no state beyond what is being typed. Where a message goes and what
 // it means are decided by core/mentions.mjs and the server.
 
-import { activeMention, applyMention, parseMentions } from '../core/mentions.mjs';
-import { renderMarkdown } from './markdown.mjs';
+import { parseMentions } from '../core/mentions.mjs';
+import { createMarkdownEditor } from './markdown-editor.mjs';
 
 export const MISSION_TARGET = 'mission';
 // Speak once, three ways. MISSION replaces what the run is for. POLICY binds
@@ -30,6 +30,7 @@ export function createComposer({
   dropTarget = globalThis,
 }) {
   if (!dom.input) return { setTarget() {}, focus() {} };
+  const editor = createMarkdownEditor(dom.input);
 
   let suggestions = [];
   let highlighted = 0;
@@ -39,33 +40,7 @@ export function createComposer({
   let historyIndex = null;
   let historyDraft = '';
   let historyTarget = null;
-  let previewing = false;
   const localHistory = new Map();
-
-  function renderPreview() {
-    if (!dom.preview) return;
-    const text = dom.input.value.trim();
-    if (text) {
-      dom.preview.innerHTML = renderMarkdown(text);
-      return;
-    }
-    const empty = document.createElement('span');
-    empty.className = 'composer-preview-empty';
-    empty.textContent = 'Nothing to preview';
-    dom.preview.replaceChildren(empty);
-  }
-
-  function setPreview(open) {
-    previewing = Boolean(open && dom.preview);
-    dom.input.hidden = previewing;
-    if (dom.preview) dom.preview.hidden = !previewing;
-    if (dom.previewToggle) {
-      dom.previewToggle.textContent = previewing ? 'EDIT' : 'PREVIEW';
-      dom.previewToggle.setAttribute('aria-pressed', String(previewing));
-    }
-    if (previewing) renderPreview();
-    else dom.input.focus();
-  }
 
   function agentIds() {
     return getAgents().map((agent) => agent.id);
@@ -109,30 +84,32 @@ export function createComposer({
   }
 
   function accept(index) {
-    const mention = activeMention(dom.input.value, dom.input.selectionStart);
+    const mention = editor.mention();
     const value = suggestions[index];
     if (!mention || value === undefined) return;
-    dom.input.value = applyMention(dom.input.value, mention, value);
+    const replacement = `${mention.sigil}${value} `;
+    if (editor.rich) editor.replaceMention(mention, replacement);
+    else {
+      const text = editor.value();
+      editor.setValue(`${text.slice(0, mention.start)}${replacement}${text.slice(mention.end)}`);
+    }
     autosize();
-    dom.input.selectionStart = dom.input.value.length;
-    dom.input.selectionEnd = dom.input.value.length;
+    if (!editor.rich) editor.caretToEnd();
     closeMenu();
-    dom.input.focus();
+    editor.focus();
   }
 
   function submit() {
-    const text = dom.input.value.trim();
+    const text = editor.value().trim();
     if (!text && attachments.length === 0) return;
     const target = getTarget();
     if (text) {
       const sent = localHistory.get(target) ?? [];
       localHistory.set(target, [...sent, text]);
     }
-    const origin = previewing ? dom.preview : dom.input;
-    onSend?.({ target, text, attachments, from: origin.getBoundingClientRect() });
+    onSend?.({ target, text, attachments, from: dom.input.getBoundingClientRect() });
     send('say', { target, text, attachments });
-    dom.input.value = '';
-    setPreview(false);
+    editor.setValue('');
     historyIndex = null;
     historyDraft = '';
     autosize();
@@ -156,22 +133,17 @@ export function createComposer({
 
     if (historyIndex === null) {
       historyIndex = history.length;
-      historyDraft = dom.input.value;
+      historyDraft = editor.value();
     }
     historyIndex = Math.max(0, Math.min(history.length, historyIndex + direction));
-    dom.input.value = historyIndex === history.length ? historyDraft : history[historyIndex];
+    editor.setValue(historyIndex === history.length ? historyDraft : history[historyIndex]);
     autosize();
-    dom.input.selectionStart = dom.input.value.length;
-    dom.input.selectionEnd = dom.input.value.length;
+    editor.caretToEnd();
     return true;
   }
 
   function atHistoryEdge(direction) {
-    if (dom.input.selectionStart !== dom.input.selectionEnd) return false;
-    const value = dom.input.value;
-    if (!value.includes('\n')) return true;
-    if (direction < 0) return dom.input.selectionStart <= value.indexOf('\n');
-    return dom.input.selectionStart > value.lastIndexOf('\n');
+    return editor.atHistoryEdge(direction);
   }
 
   // Files travel to disk first: an agent is given a path, never bytes.
@@ -268,7 +240,8 @@ export function createComposer({
     historyIndex = null;
     historyDraft = '';
     autosize();
-    const mention = activeMention(dom.input.value, dom.input.selectionStart);
+    editor.formatInput();
+    const mention = editor.mention();
     if (!mention) return closeMenu();
     fetchSuggestions(mention);
   });
@@ -326,7 +299,7 @@ export function createComposer({
         ? MISSION_TARGET
         : SPEAK_TARGETS[(index + 1) % SPEAK_TARGETS.length].id;
       setTarget?.(next);
-      dom.input.focus();
+      editor.focus();
     };
     dom.targetChip.addEventListener('click', toMission);
     dom.targetChip.addEventListener('keydown', (event) => {
@@ -338,7 +311,6 @@ export function createComposer({
   }
 
   dom.send?.addEventListener('click', submit);
-  dom.previewToggle?.addEventListener('click', () => setPreview(!previewing));
   dom.file?.addEventListener('change', () => {
     attach([...dom.file.files]);
     dom.file.value = '';
@@ -372,7 +344,9 @@ export function createComposer({
     if (files.length > 0) {
       event.preventDefault();
       attach(files);
+      return;
     }
+    editor.paste(event);
   });
   dom.input.addEventListener('blur', () => setTimeout(closeMenu, 120));
 
@@ -397,30 +371,29 @@ export function createComposer({
       if (!dom.input) return;
       const targetAgent = agents.find((candidate) => candidate.id === target);
       const toMission = target === MISSION_TARGET;
-      dom.input.placeholder = toMission
+      editor.setPlaceholder(toMission
         ? 'set the mission · @file /skill @agent'
         : target === POLICY_TARGET
           ? 'a rule every agent obeys, on every message, from now on'
           : target === ROUTE_TARGET
             ? 'say it once - Thor decides who needs to hear it'
-            : `talk to ${targetAgent?.label ?? target} · @file /skill @agent`;
+            : `talk to ${targetAgent?.label ?? target} · @file /skill @agent`);
 
       const typing = document.activeElement === dom.input;
       if (typing) return;
       if (toMission) {
         // Only when the box holds nothing of yours, or the last mission we put
         // there ourselves - never clobber a draft.
-        if (!dom.input.value || dom.input.value === lastMission) {
-          dom.input.value = mission ?? '';
+        if (!editor.value() || editor.value() === lastMission) {
+          editor.setValue(mission ?? '');
           lastMission = mission ?? '';
         }
-      } else if (dom.input.value && dom.input.value === lastMission) {
-        dom.input.value = ''; // that was the mission, not a steer for this agent
+      } else if (editor.value() && editor.value() === lastMission) {
+        editor.setValue(''); // that was the mission, not a steer for this agent
       }
-      if (previewing) renderPreview();
     },
     focus() {
-      setPreview(false);
+      editor.focus();
     },
     parse(text) {
       return parseMentions(text, { agentIds: agentIds() });
