@@ -2491,16 +2491,15 @@ function ensureRun() {
   return id;
 }
 
-// A restart is NOT the end of a run. Stop live engine work, but do not finish
-// the run or delete its resumable conversation handles.
+// A restart is NOT the end of a run. Do not send an engine interrupt. Persist
+// every conversation handle, leave the run open, and reconcile it at startup.
 let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   ciWatcher.stop();
   for (const agent of Object.values(state.agents)) {
-    if (!agent.sessionId && !agent.sessionIds?.length) continue;
-    await eachSession(agent, (id) => getDriver(agent.engine).interrupt(id)).catch(() => {});
+    for (const worker of ensureWorkers(agent)) store.saveWorkerSession(worker);
   }
   process.exit(0);
 }
