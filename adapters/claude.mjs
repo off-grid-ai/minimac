@@ -89,8 +89,14 @@ export function createClaudeDriver({
     } catch {
       return;
     }
-    const workerId = sessions.get(sessionId)?.agent?.workerId ?? null;
-    const at = (kind, payload) => emit(createEvent(agentId, kind, { ...payload, sessionId, workerId }));
+    const runtimeAgent = sessions.get(sessionId)?.agent;
+    const workerId = runtimeAgent?.workerId ?? null;
+    const at = (kind, payload) => emit(createEvent(agentId, kind, {
+      ...payload,
+      sessionId,
+      workerId,
+      engine: runtimeAgent?.engine ?? 'claude',
+    }));
 
     if (message.type === 'assistant') {
       for (const block of message.message?.content ?? []) {

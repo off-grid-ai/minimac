@@ -329,7 +329,12 @@ export function createCodexDriver({
     const agentId = agentByThread.get(threadId);
     if (!agentId) return undefined;
     const workerId = workerByThread.get(threadId) ?? null;
-    const at = (kind, payload) => emit(createEvent(agentId, kind, { ...payload, sessionId: threadId, workerId }));
+    const at = (kind, payload) => emit(createEvent(agentId, kind, {
+      ...payload,
+      sessionId: threadId,
+      workerId,
+      engine: 'codex',
+    }));
 
     switch (method) {
       case 'turn/started':

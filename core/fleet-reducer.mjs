@@ -26,11 +26,19 @@ export function applyFleetEvent(agents, event) {
     const eventSessionId = event.payload?.sessionId;
     const knownSessionId = worker.sessionId ?? worker.resumeSessionId;
     if (knownSessionId && eventSessionId && knownSessionId !== eventSessionId) return agents;
+    const eventEngine = event.payload?.engine ?? null;
+    const expectedEngine = worker.engine ?? agent.engine;
+    if (eventEngine && expectedEngine && eventEngine !== expectedEngine) return agents;
 
-    let projected = next;
+    // The runtime event can arrive before startWorkers() returns. Bind the
+    // worker to its engine before persistence sees that first session event.
+    // A worker-session row is one fact and must never be half populated.
+    let projected = patchWorker(next, workerId, {
+      engine: eventEngine ?? expectedEngine ?? null,
+    });
     if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
       const ended = [WORKER_STATE.IDLE, WORKER_STATE.STOPPED].includes(event.payload.state);
-      projected = patchWorker(next, workerId, {
+      projected = patchWorker(projected, workerId, {
         state: event.payload.state,
         sessionId: ended ? null : eventSessionId,
         resumeSessionId: ended ? eventSessionId ?? worker.resumeSessionId : null,

@@ -299,7 +299,9 @@ export function createStore({ file }) {
 
     saveWorkerSession(worker) {
       const sessionId = worker?.sessionId ?? worker?.resumeSessionId;
-      if (runId === null || !worker?.id || !sessionId) return;
+      // Runtime events can race the command that launched them. Only a
+      // complete worker-session fact crosses the SQLite boundary.
+      if (runId === null || !worker?.id || !worker?.agentId || !sessionId || !worker?.engine) return;
       const now = Date.now();
       upsertWorkerSession.run(
         runId,
