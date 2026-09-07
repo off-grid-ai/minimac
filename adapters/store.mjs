@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS middleware (
   updated_at INTEGER NOT NULL
 );
 
+-- Legacy import source. Runtime code never writes or reads this table after
+-- worker_sessions is populated.
 CREATE TABLE IF NOT EXISTS sessions (
   run_id     INTEGER NOT NULL REFERENCES runs(id),
   agent_id   TEXT NOT NULL,
@@ -137,15 +139,6 @@ export function createStore({ file }) {
     `INSERT INTO engines (run_id, agent_id, engine) VALUES (?, ?, ?)
      ON CONFLICT(run_id, agent_id) DO UPDATE SET engine = excluded.engine`,
   );
-  const upsertSession = db.prepare(
-    `INSERT INTO sessions (run_id, agent_id, session_id, engine, started_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(run_id, agent_id) DO UPDATE SET
-       session_id = excluded.session_id,
-       engine = excluded.engine,
-       started_at = excluded.started_at`,
-  );
-  const selectSessions = db.prepare('SELECT * FROM sessions WHERE run_id = ?');
   const upsertWorkerSession = db.prepare(
     `INSERT INTO worker_sessions
        (run_id, worker_id, agent_id, checkpoint_id, session_id, engine, state,
@@ -206,7 +199,6 @@ export function createStore({ file }) {
     'SELECT agent_id, ts, kind, payload FROM events WHERE run_id = ? ORDER BY ts',
   );
   const countEvents = db.prepare('SELECT COUNT(*) AS n FROM events WHERE run_id = ?');
-  const countSessions = db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE run_id = ?');
   const countWorkerSessions = db.prepare(
     'SELECT COUNT(*) AS n FROM worker_sessions WHERE run_id = ?',
   );
@@ -295,14 +287,6 @@ export function createStore({ file }) {
       try { return JSON.parse(row.value); } catch { return fallback; }
     },
 
-    // A session id is what makes "continue" possible later: it is the handle
-    // both engines resume a conversation by.
-    saveSession(agentId, sessionId, engine) {
-      if (runId !== null && sessionId) {
-        upsertSession.run(runId, agentId, sessionId, engine, Date.now());
-      }
-    },
-
     saveWorkerSession(worker) {
       const sessionId = worker?.sessionId ?? worker?.resumeSessionId;
       if (runId === null || !worker?.id || !sessionId) return;
@@ -347,10 +331,6 @@ export function createStore({ file }) {
 
     middleware() {
       return Object.fromEntries(selectMiddleware.all().map((row) => [row.name, row.text]));
-    },
-
-    sessionsFor(targetRunId) {
-      return selectSessions.all(targetRunId);
     },
 
     workerSessionsFor(targetRunId) {
@@ -408,7 +388,7 @@ export function createStore({ file }) {
         events: countEvents.get(run.id)?.n ?? 0,
         // Runs recorded before sessions existed cannot be resumed, and the UI
         // must say so rather than offering a button that always fails.
-        sessions: countWorkerSessions.get(run.id)?.n ?? countSessions.get(run.id)?.n ?? 0,
+        sessions: countWorkerSessions.get(run.id)?.n ?? 0,
       }));
     },
 
