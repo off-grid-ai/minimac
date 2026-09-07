@@ -33,6 +33,7 @@ import { createCodexDriver } from './adapters/codex.mjs';
 import { createClaudeDriver } from './adapters/claude.mjs';
 import { createSimDriver } from './adapters/sim.mjs';
 import { ensureCodexServer } from './adapters/codexd.mjs';
+import { REMOTE, remoteMode, remoteName, wantsRemote } from './core/remote.mjs';
 import { createStore } from './adapters/store.mjs';
 import { createWorktrees } from './adapters/git.mjs';
 import { createRepoIndex } from './adapters/fs.mjs';
@@ -161,9 +162,17 @@ const repoIndex = createRepoIndex();
 const uploads = createUploads({ dir: join(ROOT, 'data', 'attachments') });
 // How this fleet is told to work. Survives runs and restarts.
 const middleware = store.middleware();
+// Who is reachable from your phone. core/remote decides; the drivers carry it
+// to the two CLIs, which differ in what they can honour - see core/remote.
+function remoteFor(agent) {
+  return wantsRemote(agent, options.remote)
+    ? remoteName(agent, { team: options.team })
+    : null;
+}
+
 const getDriver = createDriverRegistry({
   [ENGINES.CODEX]: createCodexDriver({ url: options.codexUrl }),
-  [ENGINES.CLAUDE]: createClaudeDriver({}),
+  [ENGINES.CLAUDE]: createClaudeDriver({ remoteName: remoteFor }),
   [ENGINES.SIM]: createSimDriver(),
 });
 
@@ -1400,6 +1409,11 @@ function forceEngine(agents, engine) {
   );
 }
 
+// A flag whose "value" is the next flag was never given a value.
+function value(raw) {
+  return typeof raw === 'string' && raw.startsWith('--') ? true : raw;
+}
+
 function parseArgs(argv) {
   const flags = new Map();
   for (let i = 0; i < argv.length; i += 1) {
@@ -1409,6 +1423,10 @@ function parseArgs(argv) {
     port: Number(flags.get('port') ?? 4600),
     repo: resolve(String(flags.get('repo') ?? process.cwd())),
     codexUrl: String(flags.get('codex-url') ?? 'ws://127.0.0.1:4573'),
+    // --remote-control on its own is the orchestrator, which is the point of
+    // the flag; `all` is every seat and `off` is nobody. A bare flag followed
+    // by another flag is still a bare flag.
+    remote: remoteMode(value(flags.get('remote-control'))),
     // --contract still names the file the standing instruction is seeded from.
     contractPath: flags.get('contract') ? String(flags.get('contract')) : null,
     hookPath: flags.get('hook') ? String(flags.get('hook')) : null,
@@ -1476,12 +1494,21 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 // Nothing is adopted: a daemon that is already running stays running when we
 // exit, and one we started dies with us.
 async function ensureEngines() {
-  const wanted = Object.values(state.agents).some((agent) => agent.engine === ENGINES.CODEX);
-  if (!wanted) return;
+  const codex = Object.values(state.agents).filter((agent) => agent.engine === ENGINES.CODEX);
+  if (codex.length === 0) return;
+  // Codex has no per-session switch, so wanting it for ONE codex seat means
+  // every session on that daemon gets it. Said out loud rather than assumed.
+  const remote = codex.some((agent) => wantsRemote(agent, options.remote));
   const result = await ensureCodexServer({
     url: options.codexUrl,
+    remoteControl: remote,
     onLog: (line) => process.stdout.write(`codex: ${line}\n`),
   });
+  if (remote && result.started) {
+    process.stdout.write(
+      `codex remote control: on for every codex seat - ${codex.map((a) => a.label).join(', ')}\n`,
+    );
+  }
   process.stdout.write(`codex app-server: ${result.reason}\n`);
   if (result.ok && result.started) {
     process.on('exit', () => result.stop?.());
@@ -1496,6 +1523,17 @@ async function ensureEngines() {
   }
 }
 
+// What the operator gets told about who is reachable from elsewhere. Named
+// seats, not a mode word: "boss" means nothing on a phone, "minimac-thor" is
+// the thing you will be looking at.
+function remoteLine() {
+  if (options.remote === REMOTE.OFF) return 'off - every session stays on this machine';
+  const named = Object.values(state.agents)
+    .filter((agent) => wantsRemote(agent, options.remote))
+    .map((agent) => `${remoteName(agent, { team: options.team })} (${agent.label})`);
+  return named.length ? named.join(', ') : 'nobody on this roster';
+}
+
 server.listen(options.port, async () => {
   process.stdout.write(
     `minimac on http://127.0.0.1:${options.port}  repo=${options.repo}\n`,
@@ -1505,5 +1543,6 @@ server.listen(options.port, async () => {
       ? `engineering contract: ${options.contractFrom}\n`
       : 'engineering contract: NONE FOUND - agents are working without one\n',
   );
+  process.stdout.write(`remote control: ${remoteLine()}\n`);
   await ensureEngines();
 });

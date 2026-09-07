@@ -10,6 +10,13 @@
 //     and it is left running when we exit.
 //   - Never block boot. A daemon that will not come up is reported as a normal
 //     blocked reason, not a crash.
+//
+// Remote control is a property of the DAEMON, not of one thread: `codex
+// app-server --listen ... --remote-control` puts every session it holds on
+// your account's remote control, and there is no per-session switch. So it can
+// only be turned on for a daemon we start ourselves. When one is already
+// listening we say plainly that its sessions are on whatever footing that
+// daemon was started with, rather than implying we changed it.
 
 import { spawn } from 'node:child_process';
 
@@ -65,18 +72,31 @@ export async function ensureCodexServer({
   bin = 'codex',
   timeoutMs = READY_TIMEOUT_MS,
   onLog = null,
+  remoteControl = false,
 } = {}) {
   if (!healthOrigin(url)) return { ok: false, reason: `not a websocket url: ${url}` };
 
-  if (await ready(url)) return { ok: true, started: false, reason: 'already listening' };
+  if (await ready(url)) {
+    return {
+      ok: true,
+      started: false,
+      remoteControl: null, // not ours, so not ours to describe
+      reason: remoteControl
+        ? 'already listening - remote control is whatever that daemon was started with'
+        : 'already listening',
+    };
+  }
 
   if (!isLocal(url)) {
     return { ok: false, started: false, reason: `nothing listening at ${url}, and it is not ours to start` };
   }
 
+  const args = ['app-server', '--listen', url];
+  if (remoteControl) args.push('--remote-control');
+
   let child;
   try {
-    child = spawn(bin, ['app-server', '--listen', url], {
+    child = spawn(bin, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false, // dies with us, so we never orphan a daemon we started
     });
@@ -110,7 +130,8 @@ export async function ensureCodexServer({
   return {
     ok: true,
     started: true,
-    reason: `started codex app-server on ${url}`,
+    remoteControl,
+    reason: `started codex app-server on ${url}${remoteControl ? ' with remote control' : ''}`,
     stop() {
       if (!child.killed) child.kill('SIGTERM');
     },

@@ -53,7 +53,11 @@ const PLAN_STATUS = Object.freeze({
 // reads it, so "blocked" means the same thing whichever tool tripped.
 const NEEDS_APPROVAL = /\b(requires? (approval|permission)|permission (denied|required)|was blocked|not allowed|user (denied|rejected))\b/i;
 
-export function createClaudeDriver({ bin = 'claude', model = null } = {}) {
+// `remoteName` is asked for every launch and answers with the name this seat
+// should appear under on your other devices, or null for a session that stays
+// on this machine. It is a function rather than a flag because the answer is
+// per-agent, and because a resumed session must come back under the same name.
+export function createClaudeDriver({ bin = 'claude', model = null, remoteName = null } = {}) {
   const sessions = new Map(); // sessionId -> { child, agentId, cwd, buffer, stderr, alive }
   const handlers = new Set();
   // tool_use_id -> the call it belongs to, so a result closes the same unit of
@@ -230,6 +234,11 @@ export function createClaudeDriver({ bin = 'claude', model = null } = {}) {
     ];
     args.push(resume ? '--resume' : '--session-id', sessionId);
     if (model) args.push('--model', model);
+    // Verified against claude 2.1.263: --remote-control is accepted alongside
+    // --print, so a headless seat can still be picked up from your phone. The
+    // name is what you choose it by there, so it carries the seat, not a uuid.
+    const remote = remoteName?.(agent) ?? null;
+    if (remote) args.push('--remote-control', remote);
     return args;
   }
 

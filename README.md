@@ -29,12 +29,31 @@ Codex daemon: minimac starts one if nothing is listening, and leaves alone one t
 | `--skills a,b` | skills every agent is told to apply, e.g. `hygiene,tests` | none |
 | `--isolate` | give each agent its own git worktree so they cannot collide | off |
 | `--codex-url <ws>` | the Codex app-server socket | `ws://127.0.0.1:4573` |
+| `--remote-control [who]` | which seats you can reach from your phone: `boss`, `all`, `off` | `boss` — the orchestrator, always |
 
 To see the floor without any CLI running, use the simulated engine:
 
 ```bash
 node server.mjs --engine sim --mission "demo run"
 ```
+
+## Remote control
+
+Thor is on your account's remote control whenever the floor is up, so the Codex or
+Claude app on another device opens the same conversation the floor is showing. He is
+the seat worth reaching that way: the crew reports to him, and he rules on everything
+the floor derives. `--remote-control all` puts every seat on it; `--remote-control off`
+keeps every session on this machine.
+
+The two engines honour it differently, and it is worth knowing which one a seat is on:
+
+- **Claude** takes it per session, so only the named seats get one. The name is what
+  you pick it out by on the other device — `minimac-the-avengers-thor`, stable across
+  restarts, so a seat resumes under the name it already had.
+- **Codex** enables it on the app-server daemon, not on one thread. Wanting it for the
+  orchestrator therefore turns it on for every Codex seat on that daemon, and minimac
+  says so on the way up. A daemon that was already listening is left exactly as it is —
+  its sessions are on whatever footing it was started with.
 
 ## Engines
 
