@@ -1328,6 +1328,17 @@ function clearFeedFilter() {
   renderPanels();
 }
 
+function sentHistoryFor(target) {
+  const missionHistory = target === MISSION_TARGET;
+  const agentId = state.agents[target] ? target : orchestratorId();
+  return (state.eventsByAgent[agentId] ?? [])
+    .filter((event) => event.kind === EVENT_KINDS.MESSAGE && event.payload?.from === 'you')
+    .sort((a, b) => a.ts - b.ts)
+    .map((event) => String(event.payload?.text ?? ''))
+    .filter((text) => missionHistory === text.startsWith('mission set: '))
+    .map((text) => missionHistory ? text.slice('mission set: '.length) : text);
+}
+
 function renderFeed() {
   // The side panel adopts the feed window and leaves the old window element
   // hidden, so testing that window meant the feed never drew while docked -
@@ -1713,6 +1724,7 @@ function mountPanelComposer(host, { getTarget, extraActions = [] }) {
     send,
     getAgents: () => orderedAgents(),
     getTarget,
+    getHistory: () => sentHistoryFor(getTarget()),
     setTarget: () => {},
     onSend: flyMessage,
     dropTarget: host,
@@ -2159,6 +2171,7 @@ function boot() {
     send,
     getAgents: () => orderedAgents(),
     getTarget: () => state.target,
+    getHistory: () => sentHistoryFor(state.target),
     setTarget: (target) => {
       state.target = target;
       renderPanels();

@@ -23,6 +23,7 @@ export function createComposer({
   send,
   getAgents,
   getTarget,
+  getHistory = () => [],
   setTarget,
   onSend,
   dropTarget = globalThis,
@@ -34,6 +35,10 @@ export function createComposer({
   let token = 0;
   let attachments = [];
   let lastMission = '';
+  let historyIndex = null;
+  let historyDraft = '';
+  let historyTarget = null;
+  const localHistory = new Map();
 
   function agentIds() {
     return getAgents().map((agent) => agent.id);
@@ -92,13 +97,52 @@ export function createComposer({
     const text = dom.input.value.trim();
     if (!text && attachments.length === 0) return;
     const target = getTarget();
+    if (text) {
+      const sent = localHistory.get(target) ?? [];
+      localHistory.set(target, [...sent, text]);
+    }
     onSend?.({ target, text, attachments, from: dom.input.getBoundingClientRect() });
     send('say', { target, text, attachments });
     dom.input.value = '';
+    historyIndex = null;
+    historyDraft = '';
     autosize();
     attachments = [];
     renderAttachments();
     closeMenu();
+  }
+
+  function browseHistory(direction) {
+    const saved = getHistory()
+      .map((message) => String(message ?? '').trim())
+      .filter(Boolean);
+    const pending = localHistory.get(getTarget()) ?? [];
+    let overlap = Math.min(saved.length, pending.length);
+    while (overlap > 0 && !pending.slice(0, overlap)
+      .every((message, index) => message === saved[saved.length - overlap + index])) {
+      overlap -= 1;
+    }
+    const history = [...saved, ...pending.slice(overlap)];
+    if (history.length === 0) return false;
+
+    if (historyIndex === null) {
+      historyIndex = history.length;
+      historyDraft = dom.input.value;
+    }
+    historyIndex = Math.max(0, Math.min(history.length, historyIndex + direction));
+    dom.input.value = historyIndex === history.length ? historyDraft : history[historyIndex];
+    autosize();
+    dom.input.selectionStart = dom.input.value.length;
+    dom.input.selectionEnd = dom.input.value.length;
+    return true;
+  }
+
+  function atHistoryEdge(direction) {
+    if (dom.input.selectionStart !== dom.input.selectionEnd) return false;
+    const value = dom.input.value;
+    if (!value.includes('\n')) return true;
+    if (direction < 0) return dom.input.selectionStart <= value.indexOf('\n');
+    return dom.input.selectionStart > value.lastIndexOf('\n');
   }
 
   // Files travel to disk first: an agent is given a path, never bytes.
@@ -192,6 +236,8 @@ export function createComposer({
   }
 
   dom.input.addEventListener('input', () => {
+    historyIndex = null;
+    historyDraft = '';
     autosize();
     const mention = activeMention(dom.input.value, dom.input.selectionStart);
     if (!mention) return closeMenu();
@@ -214,6 +260,14 @@ export function createComposer({
       if (event.key === 'Escape') {
         event.preventDefault();
         return closeMenu();
+      }
+    }
+    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown')
+      && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      const direction = event.key === 'ArrowUp' ? -1 : 1;
+      if (atHistoryEdge(direction) && browseHistory(direction)) {
+        event.preventDefault();
+        return;
       }
     }
     // Nothing to dismiss, so Escape steps back out to the mission.
@@ -297,6 +351,11 @@ export function createComposer({
     // be edited rather than retyped from memory. Never while you are typing:
     // a redraw must not overwrite what is in your hands.
     setTarget(target, agents, mission = '') {
+      if (historyTarget !== target) {
+        historyTarget = target;
+        historyIndex = null;
+        historyDraft = '';
+      }
       if (dom.targetChip) {
         const agent = agents.find((candidate) => candidate.id === target);
         const preset = SPEAK_TARGETS.find((t) => t.id === target);
