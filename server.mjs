@@ -736,10 +736,11 @@ async function applyVerdict(verdict) {
   }
 
   if (verdict.action === VERDICT.STEER) {
+    await COMMANDS.steer({ agentId: verdict.agentId, text: verdict.text });
     orders(verdict.agentId, verdict.text);
-    await COMMANDS.steer({ agentId: verdict.agentId, text: verdict.text }).catch(() => {});
   } else if (verdict.action === VERDICT.GOAL) {
     await COMMANDS.setGoal({ agentId: verdict.agentId, objective: verdict.text });
+    orders(verdict.agentId, verdict.text);
   } else if (verdict.action === VERDICT.BENCH) {
     await COMMANDS.setActive({ agentId: verdict.agentId, active: false });
   } else if (verdict.action === VERDICT.START) {
