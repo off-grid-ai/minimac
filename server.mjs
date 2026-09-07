@@ -1119,6 +1119,17 @@ const COMMANDS = {
     return {};
   },
 
+  // A prayer stays open through a conversation. Only the operator can close
+  // it, and closing it is recorded beside the question and its replies.
+  async settlePrayer({ agentId }) {
+    if (!state.agents[agentId]) throw new Error(`no agent ${agentId}`);
+    if (!answerPrayer(agentId, 'settled by Mac')) {
+      throw new Error(`${agentId} has no open question`);
+    }
+    refreshCards();
+    return { settled: true };
+  },
+
   async steer({ agentId, text }) {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`no agent ${agentId}`);
