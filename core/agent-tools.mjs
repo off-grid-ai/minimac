@@ -22,6 +22,8 @@ export const AGENT_TOOL = Object.freeze({
   GOAL: 'set_avenger_goal',
   ASSIGN: 'create_checkpoint',
   CLOSE: 'close_checkpoint',
+  PAUSE: 'pause_checkpoint',
+  RESUME: 'resume_checkpoint',
 });
 
 const object = (properties, required = []) => ({
@@ -132,6 +134,16 @@ const TOOLS = Object.freeze({
       disposition: { type: 'string', enum: ['cancelled'] },
     }, ['id', 'disposition']),
   },
+  [AGENT_TOOL.PAUSE]: {
+    name: AGENT_TOOL.PAUSE,
+    description: 'Pause one checkpoint. Its active worker stops, but its engine session remains available to resume.',
+    inputSchema: object({ id: { type: 'string' } }, ['id']),
+  },
+  [AGENT_TOOL.RESUME]: {
+    name: AGENT_TOOL.RESUME,
+    description: 'Resume one paused checkpoint on its owner and continue its saved engine session.',
+    inputSchema: object({ id: { type: 'string' } }, ['id']),
+  },
 });
 
 const WORKER_TOOLS = Object.freeze([
@@ -151,6 +163,8 @@ const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.GOAL,
   AGENT_TOOL.ASSIGN,
   AGENT_TOOL.CLOSE,
+  AGENT_TOOL.PAUSE,
+  AGENT_TOOL.RESUME,
 ]);
 
 export function toolsForRole(role) {

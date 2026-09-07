@@ -464,8 +464,13 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   const ownerBusy = owner?.sessionId && !(owner.workItemIds ?? []).includes(item.id);
   const label = item.outcome || item.title;
   const line = el('div', 'checkpoint-line');
-  line.append(
+  const title = el('div', 'checkpoint-title');
+  title.append(
+    el('span', 'checkpoint-id', item.id),
     el('span', 'checkpoint-label', label),
+  );
+  line.append(
+    title,
     el('span', 'checkpoint-state', checkpointStatus(item, running, waiting, owner)),
   );
   row.append(line);
@@ -477,12 +482,18 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
       checkpointButton('DOWN', () => handlers.move?.(item.id, 1), !movement.canMoveDown),
     );
   }
-  controls.append(
-    ownerSelect(item, agents, handlers),
-    checkpointButton(item.paused ? 'RESUME' : 'PAUSE',
-      () => handlers.pause?.(item.id, !item.paused)),
-  );
-  if (!running) {
+  controls.append(ownerSelect(item, agents, handlers));
+  if (item.paused) {
+    const cannotResume = !item.owner || waiting.length > 0 || ownerBusy;
+    const resume = checkpointButton('RESUME', () => handlers.start?.(item.id), cannotResume);
+    if (cannotResume) resume.title = !item.owner
+      ? 'Assign an owner first'
+      : waiting.length ? 'Waiting on another checkpoint' : `${owner?.name ?? 'Owner'} is already working`;
+    controls.append(resume);
+  } else {
+    controls.append(checkpointButton('PAUSE', () => handlers.pause?.(item.id, true)));
+  }
+  if (!running && !item.paused) {
     const cannotStart = !item.owner || waiting.length > 0 || ownerBusy;
     const start = checkpointButton('START NOW', () => handlers.start?.(item.id), cannotStart);
     if (cannotStart) start.title = !item.owner
@@ -534,6 +545,7 @@ function checkpointDetails(item) {
   details.append(el('summary', '', 'DETAILS'));
   const body = el('div', 'checkpoint-detail-body');
   body.append(
+    detailLine('ID', item.id),
     detailLine('TASK', item.title),
     detailLine('PLAN', item.plan),
     detailLine('PROOF', item.verify),

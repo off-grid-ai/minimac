@@ -2212,6 +2212,12 @@ async function executeAgentTool(principal, name, args) {
     if (!result?.applied) throw new Error(result?.error ?? 'assemble was not applied');
     return { assembled: true, ...result };
   }
+  if (name === AGENT_TOOL.PAUSE) {
+    return COMMANDS.pauseCheckpoint({ id: args.id, paused: true });
+  }
+  if (name === AGENT_TOOL.RESUME) {
+    return COMMANDS.forceStartCheckpoint({ id: args.id });
+  }
   const target = state.agents[args.agentId];
   if ([AGENT_TOOL.START, AGENT_TOOL.BENCH, AGENT_TOOL.GOAL].includes(name)) {
     if (!target || target.role === ROLES.ORCHESTRATOR) {
