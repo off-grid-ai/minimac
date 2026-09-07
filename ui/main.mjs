@@ -7,13 +7,10 @@ import {
   agentPose,
   detectLoops,
   eventsPerMin,
-  agentBurn,
-  fleetBurn,
   gradeClaims,
   pendingDecisions,
   stepTimings,
 } from '../core/derive.mjs';
-import { remaining } from '../core/flows.mjs';
 import {
   createQueue as createErrands,
   enqueue as enqueueErrand,
@@ -358,9 +355,6 @@ function viewAgents(now) {
         });
         return at ? { at, phase: state.errands.active?.phase } : null;
       })(),
-      // One promise against one reality, computed once here so the nameplate,
-      // the desk and the header can never disagree about it.
-      burn: agentBurn({ ...agent, flows: measuredFlows(agent) }, now),
     };
     if (!isOrchestrator) index += 1;
     return model;
@@ -2350,13 +2344,6 @@ function mountHeader() {
   dom.topbar.append(headerEl);
 }
 
-// Durations in the fewest characters that stay honest.
-function shortMs(ms) {
-  const m = Math.round((ms ?? 0) / 60000);
-  if (m < 60) return `${m}m`;
-  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}`;
-}
-
 function renderHeader(agents) {
   if (!headerEl) return;
   const running = agents.filter((agent) => agent.status === 'running').length;
@@ -2384,35 +2371,5 @@ function renderHeader(agents) {
     'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:'
     + (mission ? 'var(--text,#e8e8e8)' : 'var(--muted,#8a8a8a)');
 
-  // The north star as one number: ten minutes of agent work should take ten
-  // minutes. It sits in the top bar because it is the only figure that is
-  // always worth a glance.
-  // The question is never "how long" on its own. It is how much longer, what
-  // is left, and how far along - so the header answers all three without being
-  // asked, which is the whole reason this exists.
-  const measured = agents.map((agent) => ({ ...agent, flows: measuredFlows(agent) }));
-  const burn = fleetBurn(measured);
-  const left = remaining(measured.flatMap((agent) => agent.flows));
-  const kids = [chip, text];
-
-  const parts = [];
-  if (left.total > 0) parts.push(`${left.steps} of ${left.total} left`);
-  if (left.percentDone !== null) parts.push(`${left.percentDone}% done`);
-  if (burn) {
-    parts.push(`${shortMs(burn.actualMs)} effort / ${shortMs(burn.estimateMs)} estimate`);
-  }
-
-  if (parts.length) {
-    const late = !!burn && burn.ratio > 1;
-    const fleet = document.createElement('span');
-    fleet.textContent = parts.join(' · ');
-    fleet.title = late
-      ? 'the fleet is past the time it promised itself'
-      : 'what is left, how far along, and time against the fleet\'s own estimate';
-    fleet.style.cssText = 'flex:none;margin-left:auto;padding-left:10px;font-size:10px;'
-      + 'letter-spacing:.08em;font-variant-numeric:tabular-nums;color:'
-      + (late ? 'var(--danger,#f87171)' : 'var(--muted,#8a8a8a)');
-    kids.push(fleet);
-  }
-  headerEl.replaceChildren(...kids);
+  headerEl.replaceChildren(chip, text);
 }

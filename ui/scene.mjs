@@ -499,22 +499,10 @@ function createPlate(colours) {
   sprite.scale.set(PLATE.worldWidth, PLATE.worldWidth * aspect, 1);
   sprite.renderOrder = 10;
 
-  // Late reads on the plate, not only inside a desk. You should be able to see
-  // who is past their own promise from across the room, without clicking.
-  const lateWords = (burn) => {
-    if (!burn || burn.ratio <= 1) return null;
-    const m = (ms) => {
-      const mins = Math.round(ms / 60000);
-      return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}`;
-    };
-    return `${m(burn.actualMs)} of ${m(burn.estimateMs)}`;
-  };
-
   let signature = '';
   const set = (agent) => {
     const text = agent.label ?? agent.name;
-    const late = lateWords(agent.burn);
-    const next = `${text}|${agent.selected}|${agent.loopCount}|${late ?? ''}`;
+    const next = `${text}|${agent.selected}|${agent.loopCount}`;
     if (next === signature) return;
     signature = next;
     ctx.clearRect(0, 0, PLATE.width, PLATE.height);
@@ -523,15 +511,10 @@ function createPlate(colours) {
     ctx.fillStyle = agent.selected ? colours.accentHex : colours.mutedHex;
     ctx.font = fit(ctx, text, PLATE.nameSize);
     ctx.fillText(text, PLATE.width / 2, 56);
-    // A loop is the louder fault, so it keeps the line under the name.
     if (agent.loopCount > 0) {
       ctx.font = plateFont(PLATE.loopSize);
       ctx.fillStyle = colours.dangerHex;
       ctx.fillText(`LOOP x${agent.loopCount}`, PLATE.width / 2, 118);
-    } else if (late) {
-      ctx.font = plateFont(PLATE.loopSize);
-      ctx.fillStyle = colours.dangerHex;
-      ctx.fillText(late, PLATE.width / 2, 118);
     }
     texture.needsUpdate = true;
   };
