@@ -47,7 +47,7 @@ const TOOLS = Object.freeze({
   },
   [AGENT_TOOL.ASSEMBLE]: {
     name: AGENT_TOOL.ASSEMBLE,
-    description: 'Apply the full Avengers roster, goals, and shared checkpoint plan. False benches an Avenger. True or 1 to 4 starts the seat.',
+    description: 'Apply the roster, goals, and shortest checkpoint path to the mission. A checkpoint is a necessary result, not a role activity. False benches an Avenger. True or 1 to 4 starts the seat.',
     inputSchema: object({
       crew: {
         type: 'object',
@@ -58,6 +58,7 @@ const TOOLS = Object.freeze({
       items: {
         type: 'array',
         items: object({
+          id: { type: 'string', description: 'A unique short id such as w1. Use it in blockedBy.' },
           title: { type: 'string' },
           plan: { type: 'string', description: 'A short ordered execution plan for this one task.' },
           outcome: { type: 'string', description: 'The result a person or reviewer can verify.' },
@@ -67,7 +68,7 @@ const TOOLS = Object.freeze({
           needs: { type: 'array', items: { type: 'string', enum: GATES } },
           blockedBy: { type: 'array', items: { type: 'string' } },
           estimateMs: { type: 'integer', minimum: 1, maximum: 480000 },
-        }, ['title', 'plan', 'outcome', 'verify', 'scope', 'owner', 'needs', 'blockedBy', 'estimateMs']),
+        }, ['id', 'title', 'plan', 'outcome', 'verify', 'scope', 'owner', 'needs', 'blockedBy', 'estimateMs']),
       },
     }, ['crew', 'goals', 'items']),
   },

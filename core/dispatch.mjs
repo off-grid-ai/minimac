@@ -27,7 +27,8 @@ const ROLE_PROMPTS = Object.freeze({
   [ROLES.ORCHESTRATOR]:
     'You route work. You do not write production code. You assign tasks to workers, ' +
     'watch their flows, and escalate to the human when two workers disagree on a fact ' +
-    'or a worker fails the same step twice. Treat checkpoints as a queue of work units. ' +
+    'or a worker fails the same step twice. A checkpoint is a necessary state change on ' +
+    'the shortest path from the mission to done. It is not a role activity or a status report. ' +
     'Each worker gets one ready item that takes no more than eight minutes, with a plan, ' +
     'a verifiable outcome, and its proof. When it stops, assign and start the next ready item.',
   [ROLES.CODER]:
@@ -540,9 +541,10 @@ export function planningTask(mission, crew) {
     crew: Object.fromEntries(members.map((member, index) => [member.id, index === 0])),
     goals: { [first]: 'one sentence that says what done looks like' },
     items: [{
-      title: 'what a person gets when this is done',
+      id: 'w1',
+      title: 'one necessary result on the path to the mission',
       plan: 'read the failing result; make the smallest fix; run the proof check',
-      outcome: 'the assigned check passes on the changed head',
+      outcome: 'the required check is green on the changed head',
       verify: 'the exact command or hosted check that proves the result',
       scope: 'repo/area',
       owner: first,
@@ -595,12 +597,23 @@ export function planningTask(mission, crew) {
       + 'invents work to look busy.',
     '- Only give a goal to an agent you set true.',
     '',
-    'Rules for the checkpoints ("items") - this is the work itself:',
-    '- Split the mission into the smallest number of items that can be worked '
-      + 'INDEPENDENTLY. Two items must never need the same file at the same time.',
+    'Rules for the checkpoints ("items") - this is the shortest path to the mission:',
+    '- Start with the exact condition that makes the mission done. Work backward only '
+      + 'until every required state change has an owner.',
+    '- A checkpoint is a necessary result, not an activity. If removing an item would '
+      + 'still let the mission finish, do not create it.',
+    '- Do not create one checkpoint per role. Coding, lint, testing, review, commit, and '
+      + 'push are gates on one result unless they produce a separate result required by the mission.',
+    '- Use a short, direct title in the mission\'s own language. Write "Fix Mobile PR 635 CI", '
+      + 'not "A person opens the pull request and sees checks".',
+    '- Split only work that can run independently. Two parallel items must never need '
+      + 'the same file at the same time.',
+    '- Merge work on the same result and artifact into one checkpoint. Do not create a '
+      + 'second item only to observe or approve the first.',
     '- Every item has exactly one owner from the crew you brought on.',
     '- Every item is one task that finishes within eight minutes. Split anything larger.',
-    '- "plan" is the short execution order. "outcome" is the result to verify. '
+    '- Give every item a unique short id such as w1. Use those ids in blockedBy.',
+    '- "plan" is the short execution order. "outcome" is the observable done state. '
       + '"verify" is the exact command or real-surface check that proves it.',
     '- "needs" lists only the gates this item really has. A docs change has no '
       + 'test gate; inventing one makes an item nobody can ever finish.',
@@ -609,6 +622,8 @@ export function planningTask(mission, crew) {
     '- Give each item an estimate in milliseconds, with a maximum of 480000.',
     '- The gates are walked in order and a pass needs the command that proved it. '
       + 'Nobody can report a push over untested code.',
+    '- Read the finished list once before you submit it. Each item must answer: '
+      + '"Why must this happen for the mission to finish?" Remove any item with no direct answer.',
     '',
     'Rules for the goals:',
     '- One or two sentences each. A goal a person can hold in their head.',

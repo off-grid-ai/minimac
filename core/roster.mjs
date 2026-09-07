@@ -3,6 +3,36 @@
 
 export const ENGINES = Object.freeze({ CODEX: 'codex', CLAUDE: 'claude', SIM: 'sim' });
 
+export const MODEL_OPTIONS = Object.freeze({
+  [ENGINES.CODEX]: Object.freeze([
+    { value: '', label: 'DEFAULT' },
+    { value: 'gpt-6-astra', label: 'GPT-6 ASTRA' },
+    { value: 'gpt-5.6-sol', label: 'GPT-5.6 SOL' },
+    { value: 'gpt-5.6-terra', label: 'GPT-5.6 TERRA' },
+    { value: 'gpt-5.6-luna', label: 'GPT-5.6 LUNA' },
+    { value: 'gpt-5.5', label: 'GPT-5.5' },
+  ]),
+  [ENGINES.CLAUDE]: Object.freeze([
+    { value: 'claude-opus-5', label: 'OPUS 5' },
+    { value: 'sonnet', label: 'SONNET' },
+    { value: 'haiku', label: 'HAIKU' },
+  ]),
+  [ENGINES.SIM]: Object.freeze([{ value: '', label: 'SIM' }]),
+});
+
+export const EFFORT_OPTIONS = Object.freeze({
+  [ENGINES.CODEX]: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
+  [ENGINES.CLAUDE]: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
+  [ENGINES.SIM]: Object.freeze(['medium']),
+});
+
+export function defaultRuntime(engine) {
+  return {
+    model: engine === ENGINES.CLAUDE ? 'claude-opus-5' : '',
+    effort: 'medium',
+  };
+}
+
 export const ROLES = Object.freeze({
   ORCHESTRATOR: 'orchestrator',
   CODER: 'coder',
@@ -51,12 +81,15 @@ export function agentLabel(name, id) {
 }
 
 export function createAgent(spec) {
+  const runtime = defaultRuntime(spec.engine);
   return {
     id: spec.id,
     name: spec.name,
     label: agentLabel(spec.name, spec.id),
     role: spec.role,
     engine: spec.engine,
+    model: spec.model ?? runtime.model,
+    effort: spec.effort ?? runtime.effort,
     // Optional per-agent look, read by the scene. Never required.
     mesh: spec.mesh ?? null,
     move: spec.move ?? null,
@@ -101,7 +134,23 @@ export function assignEngine(agents, agentId, engine) {
   }
   const agent = agents[agentId];
   if (!agent) throw new Error(`unknown agent: ${agentId}`);
-  return { ...agents, [agentId]: { ...agent, engine } };
+  return { ...agents, [agentId]: { ...agent, engine, ...defaultRuntime(engine) } };
+}
+
+export function configureRuntime(agents, agentId, { model, effort }) {
+  const agent = agents[agentId];
+  if (!agent) throw new Error(`unknown agent: ${agentId}`);
+  const models = MODEL_OPTIONS[agent.engine] ?? [];
+  const efforts = EFFORT_OPTIONS[agent.engine] ?? [];
+  const nextModel = model === undefined ? agent.model : String(model);
+  const nextEffort = effort === undefined ? agent.effort : String(effort);
+  if (!models.some((option) => option.value === nextModel)) {
+    throw new Error(`unknown ${agent.engine} model: ${nextModel || 'default'}`);
+  }
+  if (!efforts.includes(nextEffort)) {
+    throw new Error(`unknown ${agent.engine} effort: ${nextEffort}`);
+  }
+  return { ...agents, [agentId]: { ...agent, model: nextModel, effort: nextEffort } };
 }
 
 export function workersOf(agents) {

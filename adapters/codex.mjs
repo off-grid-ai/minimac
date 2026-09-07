@@ -75,6 +75,7 @@ export function createCodexDriver({
   const handlers = new Set();
   const turnByThread = new Map();
   const agentByThread = new Map();
+  const runtimeByThread = new Map();
   const approvalsByThread = new Map(); // threadId -> [{ id, method, event }]
 
   function emit(event) {
@@ -438,6 +439,13 @@ export function createCodexDriver({
   // ------------------------------------------------------------------ port
 
   return {
+    async configureRuntime(sessionId, agent) {
+      runtimeByThread.set(sessionId, {
+        model: agent.model || null,
+        effort: agent.effort || null,
+      });
+    },
+
     async history(sessionId) {
       try {
         await connect();
@@ -456,6 +464,7 @@ export function createCodexDriver({
       // Register first so any status notification emitted during resume has a
       // destination. This does not start a turn.
       agentByThread.set(sessionId, agent.id);
+      runtimeByThread.set(sessionId, { model: agent.model || null, effort: agent.effort || null });
       const result = await request('thread/resume', {
         threadId: sessionId,
         cwd,
@@ -464,6 +473,7 @@ export function createCodexDriver({
       const thread = result?.thread ?? {};
       const threadId = thread.id ?? sessionId;
       agentByThread.set(threadId, agent.id);
+      runtimeByThread.set(threadId, { model: agent.model || null, effort: agent.effort || null });
       const state = threadState(thread.status);
       const activeTurn = [...(thread.turns ?? [])].reverse().find((turn) => {
         const type = typeof turn.status === 'string' ? turn.status : turn.status?.type;
@@ -477,6 +487,7 @@ export function createCodexDriver({
       await connect();
       const thread = await request('thread/start', {
         cwd,
+        model: agent.model || null,
         // No prompts: the operator asked for full autonomy, so the engine acts
         // instead of parking on an approval it will wait forever for.
         approvalPolicy: 'never',
@@ -486,9 +497,12 @@ export function createCodexDriver({
       const threadId = thread?.thread?.id;
       if (!threadId) throw new Error('thread/start returned no thread id');
       agentByThread.set(threadId, agent.id);
+      runtimeByThread.set(threadId, { model: agent.model || null, effort: agent.effort || null });
 
       const turn = await request('turn/start', {
         threadId,
+        model: agent.model || null,
+        effort: agent.effort || null,
         input: [{ type: 'text', text: prompt }],
       });
       if (turn?.turn?.id) turnByThread.set(threadId, turn.turn.id);
@@ -506,9 +520,12 @@ export function createCodexDriver({
       });
       const threadId = thread?.thread?.id ?? sessionId;
       agentByThread.set(threadId, agent.id);
+      runtimeByThread.set(threadId, { model: agent.model || null, effort: agent.effort || null });
 
       const turn = await request('turn/start', {
         threadId,
+        model: agent.model || null,
+        effort: agent.effort || null,
         input: [{ type: 'text', text: prompt }],
       });
       if (turn?.turn?.id) turnByThread.set(threadId, turn.turn.id);
@@ -533,8 +550,11 @@ export function createCodexDriver({
       const turnId = turnByThread.get(sessionId);
       if (!turnId) {
         // No live turn to steer, so the correction becomes the next turn.
+        const runtime = runtimeByThread.get(sessionId) ?? {};
         const turn = await request('turn/start', {
           threadId: sessionId,
+          model: runtime.model ?? null,
+          effort: runtime.effort ?? null,
           input: [{ type: 'text', text }],
         });
         if (turn?.turn?.id) turnByThread.set(sessionId, turn.turn.id);

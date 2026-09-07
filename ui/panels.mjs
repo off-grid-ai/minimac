@@ -13,7 +13,7 @@
 import { burnRatio } from '../core/derive.mjs';
 import { rollup, remaining } from '../core/flows.mjs';
 import { compareQueueOrder, nextGate, isDone, unmetDeps } from '../core/board.mjs';
-import { ENGINES } from '../core/roster.mjs';
+import { EFFORT_OPTIONS, ENGINES, MODEL_OPTIONS } from '../core/roster.mjs';
 
 const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
 
@@ -90,6 +90,7 @@ function agentRow(agent, handlers) {
     ident,
     crewSize(agent, handlers),
     engineToggle(agent, handlers),
+    runtimeControls(agent, handlers),
     goalEditor(agent, handlers),
     createAgentChat(agent, handlers).el,
   );
@@ -246,6 +247,42 @@ function engineToggle(agent, handlers) {
   return group;
 }
 
+function runtimeControls(agent, handlers) {
+  const group = el('div', 'runtime-controls');
+  const model = runtimeSelect(
+    `${nameOf(agent)} model`,
+    MODEL_OPTIONS[agent.engine] ?? [],
+    agent.model ?? '',
+    (value) => handlers.configureRuntime(agent.id, { model: value }),
+  );
+  const effort = runtimeSelect(
+    `${nameOf(agent)} effort`,
+    (EFFORT_OPTIONS[agent.engine] ?? []).map((value) => ({ value, label: value.toUpperCase() })),
+    agent.effort ?? 'medium',
+    (value) => handlers.configureRuntime(agent.id, { effort: value }),
+  );
+  group.append(model, effort);
+  return group;
+}
+
+function runtimeSelect(label, options, selected, change) {
+  const select = el('select');
+  select.setAttribute('aria-label', label);
+  select.title = label;
+  for (const option of options) {
+    const item = el('option', '', option.label);
+    item.value = option.value;
+    item.selected = option.value === selected;
+    select.append(item);
+  }
+  select.onclick = (event) => event.stopPropagation();
+  select.onchange = (event) => {
+    event.stopPropagation();
+    change(select.value);
+  };
+  return select;
+}
+
 // ---------------------------------------------------------- flow contract
 
 // Zoomed out is the group; zoomed in is one step. Same row shape at every
@@ -277,12 +314,11 @@ function isOpen(agentId, path, depth) {
 
 // Checkpoints, as one shared tree. Seven private self-reports could never answer
 // "which repo is the hold-up"; one list with owners and gate chains can.
+let addingCheckpoint = false;
+
 export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
   const items = board ?? [];
-  if (items.length === 0) {
-    root.replaceChildren(emptyBoard());
-    return;
-  }
+  const redraw = () => renderBoard(root, board, velocity, agents, handlers);
   const frag = document.createDocumentFragment();
   const workers = agents.filter((agent) => agent.role !== 'orchestrator');
   const activeIds = new Set(workers.flatMap((agent) =>
@@ -304,11 +340,98 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
     summaryCount(done.length, 'done'),
     summaryCount(Math.max(0, slots - inUse), 'free'),
   );
-  frag.append(summary);
+  const toolbar = el('div', 'checkpoint-toolbar');
+  const add = el('button', 'btn primary checkpoint-add', '+ CHECKPOINT');
+  add.type = 'button';
+  add.setAttribute('aria-expanded', String(addingCheckpoint));
+  add.onclick = () => {
+    addingCheckpoint = !addingCheckpoint;
+    redraw();
+  };
+  toolbar.append(summary, add);
+  frag.append(toolbar);
+
+  if (addingCheckpoint) frag.append(checkpointComposer(workers, handlers, redraw));
+  if (items.length === 0) {
+    frag.append(emptyBoard());
+    root.replaceChildren(frag);
+    return;
+  }
 
   frag.append(checkpointSection('running now', running, items, workers, activeIds, handlers));
   frag.append(checkpointSection('pending', pending, items, workers, activeIds, handlers));
   root.replaceChildren(frag);
+}
+
+function checkpointComposer(agents, handlers, redraw) {
+  const form = el('form', 'checkpoint-create');
+  form.setAttribute('aria-label', 'Add checkpoint');
+
+  const outcome = checkpointInput('CHECKPOINT', 'Required result on the path to done', true, 'is-wide');
+  const owner = checkpointOwnerInput(agents);
+  const plan = checkpointInput('PLAN', 'Steps to produce this result', true);
+  const proof = checkpointInput('PROOF', 'Command or check that proves it', true);
+  const actions = el('div', 'checkpoint-create-actions');
+  const cancel = el('button', 'btn', 'CANCEL');
+  cancel.type = 'button';
+  cancel.onclick = () => {
+    addingCheckpoint = false;
+    redraw();
+  };
+  const submit = el('button', 'btn primary', 'ADD');
+  submit.type = 'submit';
+  actions.append(cancel, submit);
+  form.append(outcome.field, owner.field, plan.field, proof.field, actions);
+
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    const response = await handlers.add?.({
+      title: outcome.control.value.trim(),
+      outcome: outcome.control.value.trim(),
+      owner: owner.control.value,
+      plan: plan.control.value.trim(),
+      verify: proof.control.value.trim(),
+      blockedBy: [],
+      estimateMs: 480_000,
+    });
+    if (response?.ok === false) {
+      submit.disabled = false;
+      return;
+    }
+    addingCheckpoint = false;
+    form.remove();
+  };
+  queueMicrotask(() => outcome.control.focus());
+  return form;
+}
+
+function checkpointInput(label, placeholder, required, className = '') {
+  const field = el('label', `checkpoint-field ${className}`.trim());
+  const control = el('input');
+  control.type = 'text';
+  control.required = required;
+  control.placeholder = placeholder;
+  field.append(el('span', '', label), control);
+  return { field, control };
+}
+
+function checkpointOwnerInput(agents) {
+  const field = el('label', 'checkpoint-field');
+  const control = el('select');
+  control.required = true;
+  const prompt = el('option', '', 'Choose an Avenger');
+  prompt.value = '';
+  prompt.disabled = true;
+  prompt.selected = true;
+  control.append(prompt);
+  for (const agent of agents) {
+    const option = el('option', '', agent.name);
+    option.value = agent.id;
+    control.append(option);
+  }
+  field.append(el('span', '', 'OWNER'), control);
+  return { field, control };
 }
 
 function summaryCount(value, label) {
@@ -430,9 +553,7 @@ function emptyBoard() {
   const card = el('div', 'decision hollow');
   const block = teach(
     'no checkpoints yet',
-    'Checkpoints are the shared truth: one checkpoint per piece of work, with an owner, '
-      + 'a gate chain walked in order, and the command behind each gate. Press '
-      + 'ASSEMBLE and Thor splits the mission into checkpoints and hands them out.',
+    'Add a checkpoint here, or press ASSEMBLE and Thor splits the mission into checkpoints.',
   );
   card.append(block);
   return card;

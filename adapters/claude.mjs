@@ -65,7 +65,8 @@ const NEEDS_APPROVAL = /\b(requires? (approval|permission)|permission (denied|re
 // per-agent, and because a resumed session must come back under the same name.
 export function createClaudeDriver({
   bin = 'claude',
-  model = null,
+  model = 'claude-opus-5',
+  effort = 'medium',
   remoteName = null,
   mcpServer = null,
 } = {}) {
@@ -251,7 +252,10 @@ export function createClaudeDriver({
       '--name', agent.name,
     ];
     args.push(resume ? '--resume' : '--session-id', sessionId);
-    if (model) args.push('--model', model);
+    const selectedModel = agent.model ?? model;
+    const selectedEffort = agent.effort ?? effort;
+    if (selectedModel) args.push('--model', selectedModel);
+    if (selectedEffort) args.push('--effort', selectedEffort);
     // Verified against claude 2.1.263: --remote-control is accepted alongside
     // --print, so a headless seat can still be picked up from your phone. The
     // name is what you choose it by there, so it carries the seat, not a uuid.
@@ -363,6 +367,11 @@ export function createClaudeDriver({
   }
 
   return {
+    async configureRuntime(sessionId, agent) {
+      const session = sessions.get(sessionId);
+      if (session) session.agent = agent;
+    },
+
     async history(sessionId, cwd = null) {
       const projectCwd = sessions.get(sessionId)?.cwd ?? cwd;
       if (!projectCwd) return '';

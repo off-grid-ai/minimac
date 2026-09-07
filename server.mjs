@@ -18,6 +18,8 @@ import {
 import {
   createRoster,
   assignEngine,
+  configureRuntime as configureAgentRuntime,
+  defaultRuntime,
   DEFAULT_ROSTER,
   ENGINES,
   ROLES,
@@ -138,6 +140,23 @@ state.goals = deriveGoals(state.goals, state.agents, state.mission);
 
 const store = createStore({ file: join(ROOT, 'data', 'minimac.db') });
 
+function runtimeKey(agentId, engine) {
+  return `agent-runtime:${agentId}:${engine}`;
+}
+
+function applySavedRuntime(agentId) {
+  const agent = state.agents[agentId];
+  if (!agent) return;
+  const runtime = store.setting(runtimeKey(agent.id, agent.engine), defaultRuntime(agent.engine));
+  try {
+    state.agents = configureAgentRuntime(state.agents, agent.id, runtime);
+  } catch {
+    state.agents = configureAgentRuntime(state.agents, agent.id, defaultRuntime(agent.engine));
+  }
+}
+
+for (const agent of Object.values(state.agents)) applySavedRuntime(agent.id);
+
 // A restart is not new work. If this repo left a run open, rejoin it and take
 // back its mission and its goals - otherwise every restart puts the whole
 // fleet back to "no goal - this agent would start blind" while the run it
@@ -150,6 +169,7 @@ if (adopted) {
   for (const row of store.enginesFor(adopted.id)) {
     state.agents = assignEngine(state.agents, row.agent_id, row.engine);
   }
+  for (const agent of Object.values(state.agents)) applySavedRuntime(agent.id);
   adoptedSessions = store.sessionsFor(adopted.id);
   if (!state.mission && adopted.mission) state.mission = adopted.mission;
   // The mission only arrives here, so the derive at boot ran against an empty
@@ -1340,6 +1360,7 @@ const COMMANDS = {
     for (const [agentId, engine] of Object.entries(selectedEngines)) {
       state.agents = assignEngine(state.agents, agentId, engine);
     }
+    for (const agent of Object.values(state.agents)) applySavedRuntime(agent.id);
     state.goals = {};
     state.claims = {};
     state.events = [];
@@ -1773,6 +1794,7 @@ const COMMANDS = {
     await captureEngineHandoff(agentId, current.engine, engine, sourceSessionId);
     if (current.sessionId || current.sessionIds?.length) await interruptAgent(agentId);
     state.agents = assignEngine(state.agents, agentId, engine);
+    applySavedRuntime(agentId);
     state.agents = patchAgent(state.agents, agentId, {
       enabled: current.enabled,
       status: 'idle',
@@ -1784,6 +1806,26 @@ const COMMANDS = {
     });
     store.saveEngine(agentId, engine);
     return { engine };
+  },
+
+  async configureRuntime({ agentId, model, effort }) {
+    const current = state.agents[agentId];
+    if (!current) throw new Error(`unknown agent: ${agentId}`);
+    state.agents = configureAgentRuntime(state.agents, agentId, { model, effort });
+    const agent = state.agents[agentId];
+    store.saveSetting(runtimeKey(agent.id, agent.engine), {
+      model: agent.model,
+      effort: agent.effort,
+    });
+    await eachSession(agent, (sessionId) =>
+      getDriver(agent.engine).configureRuntime?.(sessionId, agent));
+    return {
+      agentId,
+      engine: agent.engine,
+      model: agent.model,
+      effort: agent.effort,
+      applies: current.sessionId ? 'next turn' : 'next start',
+    };
   },
 
   async claim({ agentId, patterns }) {
@@ -2121,8 +2163,9 @@ function json(res, status, body) {
 // keeps the engine set on the roster.
 function forceEngine(agents, engine) {
   if (!engine) return agents;
-  return Object.fromEntries(
-    Object.entries(agents).map(([id, agent]) => [id, { ...agent, engine }]),
+  return Object.keys(agents).reduce(
+    (configured, agentId) => assignEngine(configured, agentId, engine),
+    agents,
   );
 }
 

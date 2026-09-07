@@ -237,6 +237,16 @@ export function createStore({ file }) {
       if (runId !== null) upsertEngine.run(runId, agentId, engine);
     },
 
+    saveSetting(name, value) {
+      upsertSetting.run(name, JSON.stringify(value), Date.now());
+    },
+
+    setting(name, fallback = null) {
+      const row = selectSetting.get(name);
+      if (!row) return fallback;
+      try { return JSON.parse(row.value); } catch { return fallback; }
+    },
+
     // A session id is what makes "continue" possible later: it is the handle
     // both engines resume a conversation by.
     saveSession(agentId, sessionId, engine) {

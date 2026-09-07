@@ -100,13 +100,14 @@ const sound = createSound();
 const ACTION_WORDS = Object.freeze({
   start: 'start', interrupt: 'kill', say: 'send', steer: 'steer',
   approve: 'answer', setGoal: 'set goal', clearGoal: 'clear goal',
-  assignEngine: 'switch engine', setMission: 'set mission', newRun: 'new run',
+  assignEngine: 'switch engine', configureRuntime: 'set model / effort', setMission: 'set mission', newRun: 'new run',
   continueRun: 'continue run', resumeRun: 'run again', stopRun: 'stop run',
   setRepo: 'change folder', claim: 'claim files', release: 'release files',
   setMiddleware: 'edit middleware', resetMiddleware: 'reset middleware',
   assemble: 'assemble', settlePrayer: 'settle', setActive: 'set active',
   moveCheckpoint: 'reorder checkpoint', pauseCheckpoint: 'pause checkpoint',
   reassignCheckpoint: 'reassign checkpoint', forceStartCheckpoint: 'start checkpoint',
+  assignWork: 'add checkpoint',
 });
 
 async function send(type, payload = {}) {
@@ -537,6 +538,8 @@ function rosterView(agents) {
     active: agent.active,
     instances: agent.instances,
     engine: agent.engine,
+    model: agent.model,
+    effort: agent.effort,
     goal: agent.goal,
   }));
 }
@@ -601,6 +604,7 @@ function renderPanels() {
         pause: (id, paused) => send('pauseCheckpoint', { id, paused }),
         start: (id) => send('forceStartCheckpoint', { id }),
         reassign: (id, owner) => send('reassignCheckpoint', { id, owner }),
+        add: (checkpoint) => send('assignWork', checkpoint),
       });
     });
   }
@@ -713,7 +717,9 @@ function renderCrewBar(agents) {
 
     cell.append(name, doing);
     cell.title = `${agent.label ?? agent.name} - ${doingNow(agent)}`;
-    cell.onclick = () => focus(agent.id === state.focus ? null : agent.id);
+    // The top strip and the scene are two handles for the same action.
+    // Both open this Avenger's feed and apply the same chat filter.
+    cell.onclick = () => openAgentFeed(agent.id);
     return cell;
   });
   dom.crewBar.replaceChildren(...cells);
@@ -1085,6 +1091,7 @@ const handlers = {
   openChat: openAgentFeed,
   setGoal: (agentId, objective) => send('setGoal', { agentId, objective }),
   assignEngine: (agentId, engine) => send('assignEngine', { agentId, engine }),
+  configureRuntime: (agentId, runtime) => send('configureRuntime', { agentId, ...runtime }),
   setActive: (agentId, active) => send('setActive', { agentId, active }),
   close: () => focus(null),
 
