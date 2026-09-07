@@ -316,11 +316,9 @@ export function createClaudeDriver({ bin = 'claude', model = null } = {}) {
       return sessionId;
     },
 
-    // Claude has no native goal object, so the goal travels in the prompt and
-    // the canonical copy stays in core/goals.
-    async setGoal(sessionId, objective) {
-      if (objective) writeOrResume(sessionId, `Your goal has changed. From now on: ${objective}`);
-    },
+    // Claude has no native goal object. The server sends the changed goal in
+    // the next full middleware prompt, while core/goals remains authoritative.
+    async setGoal() {},
 
     async steer(sessionId, text) {
       writeOrResume(sessionId, text);

@@ -525,7 +525,7 @@ async function governanceTurn(raised) {
         ));
       if (!sent.delivered) throw new Error(sent.failures[0] ?? 'the engine took nothing');
     } else {
-      await COMMANDS.start({ agentId: boss.id, task });
+      await COMMANDS.start({ agentId: boss.id, task, exclusiveOutput: true });
     }
   } catch (error) {
     // Never silent. A governance turn that failed is a fleet nobody is
@@ -887,7 +887,12 @@ const COMMANDS = {
       try {
         if (!previousSession) throw new Error('no session recorded');
         if (typeof driver.resume !== 'function') throw new Error('engine cannot resume');
-        const sessionId = await driver.resume(agent, options.repo, previousSession, prompt);
+        const sessionId = await driver.resume(
+          agent,
+          options.repo,
+          previousSession,
+          composeDispatch(promptContext(agent, prompt)),
+        );
         state.agents = patchAgent(state.agents, agent.id, { sessionId, status: 'running' });
         store.saveSession(agent.id, sessionId, agent.engine);
         resumed.push(agent.id);
@@ -966,7 +971,14 @@ const COMMANDS = {
     return { runId: id, mission: state.mission };
   },
 
-  async start({ agentId, task, mentions = null, attachments = [], planning = false }) {
+  async start({
+    agentId,
+    task,
+    mentions = null,
+    attachments = [],
+    planning = false,
+    exclusiveOutput = planning,
+  }) {
     if (state.agents[agentId]?.enabled === false) return { skipped: 'disabled' };
     ensureRun();
     const agent = state.agents[agentId];
@@ -977,7 +989,7 @@ const COMMANDS = {
       mentions,
       attachments,
       // A planning turn owns the goals fence. Do not add the report fence.
-      exclusiveOutput: planning,
+      exclusiveOutput,
     });
     let sessionId;
     try {
@@ -1098,7 +1110,10 @@ const COMMANDS = {
     if (typeof driver.approve === 'function') {
       await driver.approve(agent.sessionId, approvalId, decision);
     } else {
-      await driver.steer(agent.sessionId, decision);
+      await driver.steer(
+        agent.sessionId,
+        composeDispatch(promptContext(agent, String(decision))),
+      );
     }
     ingest(createEvent(agentId, EVENT_KINDS.STATUS, { approvalId, decision, from: 'you' }));
     return {};
@@ -1163,7 +1178,15 @@ const COMMANDS = {
     store.saveGoal(agentId, getGoal(state.goals, agentId));
     const agent = state.agents[agentId];
     if (agent?.sessionId) {
-      await getDriver(agent.engine).setGoal(agent.sessionId, objective, tokenBudget, status);
+      const message = `Your goal changed. From now on: ${objective}`;
+      const sent = await eachSession(agent, async (id) => {
+        const driver = getDriver(agent.engine);
+        await driver.setGoal(id, objective, tokenBudget, status);
+        await driver.steer(id, composeDispatch(promptContext(agent, message)));
+      });
+      if (!sent.delivered) {
+        throw new Error(`${agent.label ?? agentId} did not receive the changed goal`);
+      }
     }
     return { goal: getGoal(state.goals, agentId) };
   },
