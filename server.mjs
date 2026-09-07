@@ -1243,14 +1243,30 @@ async function startCrew(note, assembled = true, desired = null) {
     }));
     return;
   }
+  const selected = Object.values(state.agents).filter((agent) =>
+    agent.role !== ROLES.ORCHESTRATOR
+    && (desired ? desired[agent.id] === true || Number(desired[agent.id]) > 0 : agent.enabled !== false));
+  const firstReadyOwner = state.board.items
+    .find((item) => item.owner && selected.some((agent) => agent.id === item.owner)
+      && canWork(state.board, item, item.owner))?.owner;
+  const starterId = firstReadyOwner ?? selected[0]?.id ?? null;
   const changes = [];
   for (const agent of Object.values(state.agents)) {
     if (agent.role === ROLES.ORCHESTRATOR) continue;
     const active = desired
       ? desired[agent.id] === true || Number(desired[agent.id]) > 0
       : agent.enabled !== false;
-    if (active !== isActive(agent)) {
-      changes.push(COMMANDS.setActive({ agentId: agent.id, active }));
+    const shouldRun = active && agent.id === starterId;
+    if (shouldRun && !isActive(agent)) {
+      changes.push(COMMANDS.setActive({ agentId: agent.id, active: true }));
+    } else if (active && isActive(agent) && !shouldRun) {
+      changes.push(interruptAgent(agent.id).then(() => {
+        state.agents = patchAgent(state.agents, agent.id, projectWorkers({
+          ...state.agents[agent.id], enabled: true,
+        }));
+      }));
+    } else if (active && agent.enabled === false) {
+      state.agents = patchAgent(state.agents, agent.id, { enabled: true });
     } else if (!active && agent.enabled !== false) {
       changes.push(COMMANDS.setActive({ agentId: agent.id, active: false }));
     }

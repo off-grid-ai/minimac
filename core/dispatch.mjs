@@ -608,12 +608,12 @@ export function planningTask(mission, crew) {
       + 'the wrong crew.',
     '- Otherwise default to FALSE: an agent earns a place by having work on THIS '
       + 'mission that no one else would do.',
-    '- Most missions need two or three. Pushing a branch does not need a product '
-      + 'specialist or a designer; a design change does not need a tester.',
+    '- Start with Thor and one worker. Add another worker only when two ready checkpoints '
+      + 'can run independently, with separate files and separate proof.',
     '- Anything that will reach a shared branch gets a reviewer. Nobody merges '
       + 'their own work here.',
-    '- An idle seat is not free. It burns tokens, fills the floor with noise, and '
-      + 'invents work to look busy.',
+    '- Mission membership does not require a live worker. Keep a needed agent available '
+      + 'but idle until a ready checkpoint needs that role.',
     '- Only give a goal to an agent you set true.',
     '',
     'Rules for the checkpoints ("items") - this is the shortest path to the mission:',
