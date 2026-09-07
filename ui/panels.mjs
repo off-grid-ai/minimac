@@ -81,7 +81,7 @@ function agentRow(agent, handlers) {
   const ident = el('div', 'ident');
   ident.append(
     enabledToggle(agent, handlers),
-    el('span', 'name', nameOf(agent)),
+    el('span', 'name', crewName(agent)),
     el('span', 'role', agent.role),
     statusChip(agent),
   );
@@ -92,10 +92,27 @@ function agentRow(agent, handlers) {
   return row;
 }
 
+// The one word for where this seat stands. A benched agent is never dispatched,
+// so calling it "idle" said the same thing as a hero who is simply between
+// turns - and left the toggle as the only place the bench was visible.
+// Everywhere else a persona carries its seat - "Strange (auditor)" - because
+// there is nothing else on the line to say which seat it is. Here the role is
+// already its own word one gap away, so on the seats where the id IS the role
+// that parenthesis said "auditor" twice. The id survives wherever it still
+// tells you something the role does not: Thor (minimac), Wanda (pm).
+function crewName(agent) {
+  return agent.id === agent.role ? agent.name : nameOf(agent);
+}
+
 function statusChip(agent) {
+  const benched = agent.enabled === false;
+  const state = benched ? 'benched' : agent.status;
   const chip = el('span', 'status');
-  chip.dataset.status = agent.status;
-  chip.append(el('span', 'dot'), el('span', 'word', agent.status));
+  chip.dataset.status = state;
+  chip.title = benched
+    ? `${nameOf(agent)} is off this mission - nothing is dispatched to this seat`
+    : `${nameOf(agent)} is ${agent.status}`;
+  chip.append(el('span', 'dot'), el('span', 'word', state));
   return chip;
 }
 
@@ -202,6 +219,7 @@ function crewSize(agent, handlers) {
   readout.title = count > 1
     ? `${count} workers share this seat, each on its own slice`
     : 'one worker on this seat';
+  group.dataset.many = count > 1 ? 'yes' : 'no';
   group.append(step(-1, '\u2212', count > 1), readout, step(1, '+', count < 4));
   return group;
 }
@@ -489,18 +507,10 @@ function emptyFlows(agent) {
       'the user can see happen — never a command, a file or a lint count.',
   );
 
-  const exampleHead = head('what a row looks like');
-  exampleHead.append(el('span', 'ghost-tag', 'example'));
-  block.append(exampleHead);
-  const example = flowRow({
-    user_visible_result: 'user scrubs to 14:02 and the meeting card appears',
-    status: 'wired',
-    estimateMs: 240_000,
-    actualMs: 156_000,
-  });
-  example.classList.add('ghost');
-  block.append(example);
-
+  // No invented row here. A made-up contract in the same shape as a real one is
+  // the floor asserting something no agent said - and the whole point of this
+  // panel is that nothing on it is invented. The ladder says what a row means
+  // without pretending one exists.
   block.append(head('the status ladder'), list(LADDER_MEANING));
   block.append(head('the bar'), list([
     ['under', 'how much of the estimate this step has spent'],
@@ -539,20 +549,8 @@ function emptyEvidence() {
       'confident guess can never read as a measurement.',
   );
 
+  // Same rule as the flow panel: an example claim is a claim nobody made.
   block.append(head('how a claim is graded'), list(GRADE_MEANING));
-  const sampleHead = head('what a row looks like');
-  sampleHead.append(el('span', 'ghost-tag', 'example'));
-  block.append(sampleHead);
-  const sample = el('div', 'ghost');
-  sample.append(
-    claimRow({
-      grade: 'observed',
-      text: '62 type errors remain',
-      receipt: 'tsc --noEmit | grep -c error',
-    }),
-    claimRow({ grade: 'guessed', text: 'roughly 4,590 lines changed', receipt: '' }),
-  );
-  block.append(sample);
   return block;
 }
 
