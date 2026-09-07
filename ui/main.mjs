@@ -154,7 +154,7 @@ function applySnapshot(snapshot) {
   state.velocity = snapshot.velocity ?? state.velocity;
   state.repo = snapshot.repo ?? state.repo;
   state.mission = snapshot.mission ?? state.mission;
-  state.runId = snapshot.runId ?? state.runId;
+  state.runId = snapshot.runId;
   if (state.runId && !seeded) {
     seeded = true;
     seedFromRun(state.runId);

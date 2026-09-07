@@ -836,7 +836,6 @@ const COMMANDS = {
       state.agents = patchAgent(state.agents, agent.id, { status: 'stopped', sessionId: null });
       stopped.push(agent.id);
     }
-    store.finishRun();
     ingest(
       createEvent('minimac', EVENT_KINDS.STATUS, {
         state: 'idle',
@@ -844,6 +843,7 @@ const COMMANDS = {
         from: 'you',
       }),
     );
+    store.finishRun();
     return { stopped };
   },
 

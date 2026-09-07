@@ -173,7 +173,9 @@ export function createStore({ file }) {
     },
 
     finishRun() {
-      if (runId !== null) endRun.run(Date.now(), runId);
+      if (runId === null) return;
+      endRun.run(Date.now(), runId);
+      runId = null;
     },
 
     // A run is titled by its mission. The mission is usually set after the run
