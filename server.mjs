@@ -32,11 +32,30 @@ import { createDriverRegistry } from './ports/driver.mjs';
 import { createCodexDriver } from './adapters/codex.mjs';
 import { createClaudeDriver } from './adapters/claude.mjs';
 import { createSimDriver } from './adapters/sim.mjs';
+import { ensureCodexServer } from './adapters/codexd.mjs';
 import { createStore } from './adapters/store.mjs';
 import { createWorktrees } from './adapters/git.mjs';
 import { createRepoIndex } from './adapters/fs.mjs';
 import { createUploads } from './adapters/uploads.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
+import { deriveCards, diffCards, indexByAgent, cardKey, prayerOf } from './core/monitor.mjs';
+import {
+  createBoard,
+  addItem,
+  assign as assignItem,
+  advance as advanceGate,
+  itemsOf,
+  findItem,
+  progress as boardProgress,
+} from './core/board.mjs';
+import {
+  routeCard,
+  governanceTask,
+  parseVerdicts,
+  VERDICT,
+  VERDICT_FENCE,
+} from './core/governance.mjs';
+import { splitFenced, isMachineNoise } from './core/readable.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const MIME = {
@@ -76,11 +95,67 @@ const state = {
   events: [],
   awaitingGoals: false,
   mission: options.mission,
+  // What the room has noticed and nobody has reported. Derived here rather
+  // than in the browser, so the same answer reaches the screen AND anything
+  // that can act on it.
+  cards: [],
+  // What Thor has said about each card, keyed by cardKey so it dies with it.
+  verdicts: {},
+  governing: false,
+  // The shared board. One list of work every agent reads and writes, so
+  // coordination stops being prose.
+  board: createBoard(),
 };
 
 state.goals = deriveGoals(state.goals, state.agents, state.mission);
 
 const store = createStore({ file: join(ROOT, 'data', 'minimac.db') });
+
+// A restart is not new work. If this repo left a run open, rejoin it and take
+// back its mission and its goals - otherwise every restart puts the whole
+// fleet back to "no goal - this agent would start blind" while the run it
+// belongs to is still sitting in the list marked running.
+const adopted = store.adoptRun(options.repo);
+if (adopted) {
+  if (!state.mission && adopted.mission) state.mission = adopted.mission;
+  // The mission only arrives here, so the derive at boot ran against an empty
+  // one and gave every worker nothing. Derive again now that we know what the
+  // run is for - a worker with no goal is the drift this tool exists to stop.
+  state.goals = deriveGoals(state.goals, state.agents, state.mission);
+  // Saved goals are the truth and outrank anything derived, so they land last.
+  for (const row of store.goalsFor(adopted.id)) {
+    if (!row.objective) continue;
+    state.goals = setGoal(
+      state.goals,
+      row.agent_id,
+      row.objective,
+      row.token_budget,
+      row.status ?? 'active',
+      row.source ?? 'manual',
+    );
+  }
+  // Whatever the run was missing is now written down, so this cannot silently
+  // come back as blank goals on the next restart.
+  for (const [agentId, goal] of Object.entries(state.goals)) store.saveGoal(agentId, goal);
+
+  // And the run's HISTORY, not just its goals. Without this the monitor was
+  // blind to everything before the restart while the browser replayed the lot
+  // from the database - so the room could show a loop the server could not
+  // see, and no card was ever raised for it.
+  state.events = store.replayRun(adopted.id);
+  for (const event of state.events) state.agents = applyToAgent(state.agents, event);
+  // The sessions those events belonged to are gone. Nobody is running until
+  // they are started again, and saying otherwise is the dishonesty this whole
+  // tool is against.
+  for (const agent of Object.values(state.agents)) {
+    state.agents = patchAgent(state.agents, agent.id, {
+      status: 'idle', sessionId: null, sessionIds: [], blockedReason: null,
+    });
+  }
+  state.cards = deriveCards(Object.values(state.agents), indexByAgent(state.events), Date.now());
+  // The board belongs to the run, so rejoining a run rejoins its work.
+  state.board = { items: store.itemsFor(adopted.id) };
+}
 const worktrees = createWorktrees({ repo: options.repo, root: join(ROOT, 'worktrees') });
 const repoIndex = createRepoIndex();
 const uploads = createUploads({ dir: join(ROOT, 'data', 'attachments') });
@@ -118,18 +193,75 @@ function harvestGoals(event) {
     return;
   }
 
+  // Who the mission needs. An agent taken off sits it out entirely: startCrew
+  // skips anything disabled, so this is the orchestrator sizing its own crew.
+  // No crew call is a failed assemble, not a partial one. Silently leaving
+  // everyone on is how a two-hero mission ends up with seven idle seats.
+  const named = Object.keys(parsed.crew ?? {}).length;
+  if (state.awaitingGoals && named === 0) {
+    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+      text: 'assemble incomplete: no crew named, so nobody was stood down',
+      from: 'you',
+    }));
+  }
+
+  const crew = [];
+  for (const [agentId, wanted] of Object.entries(parsed.crew ?? {})) {
+    const agent = state.agents[agentId];
+    if (!agent || agent.role === ROLES.ORCHESTRATOR) continue;
+    // A number is how many of that hero the work needs; a boolean is one or none.
+    const copies = typeof wanted === 'number'
+      ? Math.min(4, Math.max(0, Math.round(wanted)))
+      : (wanted === true ? 1 : wanted === false ? 0 : null);
+    if (copies === null) continue;
+
+    const enabled = copies > 0;
+    const instances = Math.max(1, copies);
+    if (agent.enabled === enabled && agent.instances === instances) continue;
+    state.agents = patchAgent(state.agents, agentId, { enabled, instances });
+    crew.push(enabled
+      ? `+${agent.label ?? agentId}${instances > 1 ? ` x${instances}` : ''}`
+      : `-${agent.label ?? agentId}`);
+  }
+  if (crew.length) {
+    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+      text: `crew for this mission: ${crew.join(' ')}`,
+      from: 'you',
+    }));
+  }
+
+  // The work itself. Anything Thor names here becomes a real item every agent
+  // can see, with an owner and a gate chain nobody can walk out of order.
+  for (const spec of parsed.items ?? []) {
+    if (!spec?.title) continue;
+    const owner = state.agents[spec.owner] ? spec.owner : null;
+    const result = addItem(state.board, { ...spec, owner });
+    if (result.error) continue;
+    state.board = result.board;
+    store.saveItem(result.item);
+    if (result.duplicate) continue; // already on the board
+    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+      text: `${result.item.id}: ${result.item.title}`
+        + (owner ? ` \u2192 ${state.agents[owner].label ?? owner}` : ' (nobody yet)'),
+      from: 'you',
+    }));
+    // Handing work to somebody is the commonest thing he does, so it is the
+    // commonest walk across the floor.
+    if (owner) orders(owner, `${result.item.id}: ${result.item.title}`);
+  }
+
   let applied = 0;
   for (const [agentId, objective] of Object.entries(parsed.goals ?? {})) {
     if (!state.agents[agentId] || typeof objective !== 'string' || !objective.trim()) continue;
     state.goals = setGoal(state.goals, agentId, objective.trim(), null, 'active', 'derived');
     store.saveGoal(agentId, getGoal(state.goals, agentId));
+    orders(agentId, objective.trim());
     applied += 1;
   }
   if (applied > 0) startCrew(`${event.agentId} set goals for ${applied} agents`);
 }
 
 function harvestReport(event) {
-  if (event.kind !== EVENT_KINDS.MESSAGE) return;
   const match = REPORT_BLOCK.exec(String(event.payload?.text ?? ''));
   if (!match) return;
 
@@ -140,6 +272,57 @@ function harvestReport(event) {
     return; // a malformed block is not a report; the prose still stands
   }
 
+  // A hero asking for the room. It lands in the same queue as anything the
+  // monitor derived, and is governed the same way - two ways in, one way out.
+  const plea = report.escalate;
+  if (plea?.why && String(plea.why).trim()) {
+    ingest(createEvent(event.agentId, EVENT_KINDS.PRAYER, {
+      why: String(plea.why).trim(),
+      needs: ['decision', 'unblock', 'conflict'].includes(plea.needs) ? plea.needs : 'decision',
+    }));
+  }
+
+  // An agent taking itself off the floor. It is the counterpart to ASSEMBLE:
+  // Thor decides who starts, and each hero decides when it is finished. An
+  // idle seat nobody closes is exactly the noise this is against.
+  const done = report.standDown;
+  if (done?.why && String(done.why).trim()) {
+    const why = String(done.why).trim();
+    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+      text: `stood down: ${why}`,
+      from: 'you',
+    }));
+    // Its own choice, so it ends its own turn - it is not benched, and START
+    // brings it straight back.
+    COMMANDS.interrupt({ agentId: event.agentId }).catch(() => {});
+  }
+
+  // Gate moves. This is the only way the board changes from a worker, and
+  // board.mjs refuses anything out of order or without a receipt - so an agent
+  // cannot report a push over untested code however confidently it tries.
+  for (const move of report.gates ?? []) {
+    const result = advanceGate(state.board, {
+      id: move?.item,
+      gate: move?.gate,
+      state: move?.state,
+      receipt: move?.receipt ?? '',
+      by: event.agentId,
+    });
+    if (result.error) {
+      ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+        text: `gate refused: ${result.error}`,
+        from: 'you',
+      }));
+      continue;
+    }
+    state.board = result.board;
+    store.saveItem(result.item);
+    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+      text: `${move.item} ${move.gate}: ${move.state}`,
+      from: 'you',
+    }));
+  }
+
   if (Array.isArray(report.flows) && report.flows.length > 0) {
     ingest(createEvent(event.agentId, EVENT_KINDS.PLAN, { steps: report.flows }));
   }
@@ -148,13 +331,255 @@ function harvestReport(event) {
   }
 }
 
-function ingest(event) {
+// Every fenced block an agent may emit. These are payload for the tool, never
+// speech: they are parsed here and stripped before anything is shown.
+const FENCES = [REPORT_FENCE, GOALS_FENCE, VERDICT_FENCE];
+
+// One reply arrives as several flushes. Splitting each flush on its own fails
+// the moment a chunk boundary lands inside the fence marker itself - which is
+// how raw JSON reached the floor and how an empty code block was rendered.
+//
+// So the whole reply is re-split from the start every time and only the NEW
+// prose is emitted. A boundary can then fall anywhere and the answer is the
+// same, because there is no per-chunk state to get out of step.
+const wire = new Map();
+
+function partition(event) {
+  if (event.kind !== EVENT_KINDS.MESSAGE) return { event, raw: null };
+
+  const held = wire.get(event.agentId) ?? { buffer: '', shown: 0 };
+  const buffer = held.buffer + String(event.payload?.text ?? '');
+  const { prose, open } = splitFenced(buffer, FENCES, false);
+
+  // A block that has closed is complete and can be parsed. Nothing is parsed
+  // while one is still open, which is why a split report used to be dropped.
+  const raw = open ? null : buffer;
+  const delta = prose.slice(held.shown).trim();
+
+  if (open) {
+    wire.set(event.agentId, { buffer, shown: prose.length });
+  } else {
+    wire.set(event.agentId, { buffer: '', shown: 0 });
+  }
+
+  if (!delta || isMachineNoise(delta)) return { event: null, raw };
+  return { event: { ...event, payload: { ...event.payload, text: delta } }, raw };
+}
+
+function ingest(incoming) {
+  // A result carries its text in its own envelope and is never split, so it
+  // goes straight to the parsers.
+  if (incoming.kind === EVENT_KINDS.RESULT) {
+    state.events = appendEvent(state.events, incoming);
+    state.agents = applyToAgent(state.agents, incoming);
+    store.record(incoming);
+    publish({ type: 'event', event: incoming, agent: state.agents[incoming.agentId] });
+    harvestBlocks(incoming);
+    scheduleCards();
+    return;
+  }
+
+  const { event, raw } = partition(incoming);
+  // Payload with no prose still has to be parsed - it just is not said aloud.
+  if (!event) {
+    if (raw) harvestBlocks({ ...incoming, payload: { ...incoming.payload, text: raw } });
+    return;
+  }
+  if (raw !== null) event.payload = { ...event.payload, raw };
   state.events = appendEvent(state.events, event);
   state.agents = applyToAgent(state.agents, event);
   store.record(event);
   publish({ type: 'event', event, agent: state.agents[event.agentId] });
-  harvestReport(event);
-  if (event.kind === EVENT_KINDS.MESSAGE) harvestGoals(event);
+  if (raw !== null) harvestBlocks({ ...event, payload: { ...event.payload, text: raw } });
+  scheduleCards();
+}
+
+// Thor telling a hero something is an event in the ROOM, not just a row in a
+// table: the floor walks him over and has him say it. Every outbound act of
+// his goes through here, so a goal, an assignment and a ruling all look the
+// same on the floor.
+function orders(toAgentId, text) {
+  const boss = Object.values(state.agents).find((a) => a.role === ROLES.ORCHESTRATOR);
+  if (!boss || !state.agents[toAgentId] || toAgentId === boss.id) return;
+  if (!String(text ?? '').trim()) return;
+  ingest(createEvent(boss.id, EVENT_KINDS.PING, {
+    to: toAgentId,
+    toAgentId,
+    kind: 'orders',
+    text: String(text).trim(),
+  }));
+}
+
+// Close the open prayer on this agent, if there is one. Recorded as an event
+// so the answer is in the run's history beside the question.
+function answerPrayer(agentId, text) {
+  const open = prayerOf(indexByAgent(state.events)[agentId] ?? []);
+  if (!open?.why) return false;
+  ingest(createEvent(agentId, EVENT_KINDS.PRAYER, {
+    ...open,
+    answered: true,
+    answer: String(text ?? '').trim(),
+  }));
+  return true;
+}
+
+// A block already parsed is not parsed again. Codex re-sends a completed reply
+// as a final event, so the same goals block arrived twice and put every item
+// on the board twice.
+const harvested = new Map();
+
+// The parsers all read the same reassembled text.
+//
+// A fenced block can arrive as streamed prose OR inside the final result an
+// engine sends when a turn closes - Codex uses the latter for its last word.
+// Reading only messages meant a whole assemble answer, crew decision and all,
+// was produced and thrown away.
+function blockText(event) {
+  return String(event.payload?.text ?? event.payload?.report?.text ?? '');
+}
+
+function harvestBlocks(event) {
+  const text = blockText(event);
+  if (!text.includes('```')) return; // nothing fenced, nothing to parse
+  const seen = harvested.get(event.agentId);
+  if (seen === text) return;
+  harvested.set(event.agentId, text);
+
+  // Every parser reads the same normalised text, whichever envelope carried it.
+  const carrying = { ...event, payload: { ...event.payload, text } };
+  harvestReport(carrying);
+  harvestGoals(carrying);
+  harvestVerdicts(carrying);
+}
+
+// ----------------------------------------------------------------- monitor
+
+// Every event passes through ingest(), so nothing has to poll to know what the
+// fleet is doing. Deriving on each one would run the detectors hundreds of
+// times a second during a busy turn, so the pass is coalesced.
+const CARD_DEBOUNCE_MS = 250;
+let cardTimer = null;
+
+function scheduleCards() {
+  if (cardTimer) return;
+  cardTimer = setTimeout(() => {
+    cardTimer = null;
+    refreshCards();
+  }, CARD_DEBOUNCE_MS);
+}
+
+function refreshCards() {
+  const before = state.cards;
+  const next = deriveCards(
+    Object.values(state.agents),
+    indexByAgent(state.events),
+    Date.now(),
+  );
+  const { raised, cleared } = diffCards(before, next);
+  state.cards = next;
+
+  // A verdict outlives nothing: when the condition clears, so does the ruling.
+  for (const card of cleared) delete state.verdicts[cardKey(card)];
+
+  if (raised.length || cleared.length) {
+    publish({ type: 'state', state: snapshot() });
+    if (raised.length) void governanceTurn(raised);
+  }
+  return { raised, cleared };
+}
+
+// ---------------------------------------------------------------- governance
+
+// The room decides WHEN something is worth a ruling; the orchestrator decides
+// WHAT to do about it. He is woken only for cards nobody has seen, batched into
+// one turn - a turn per card would cost a turn per card and let him answer the
+// same condition three ways.
+async function governanceTurn(raised) {
+  if (state.governing) return; // one ruling at a time
+  // Never interrupt an assemble. That turn IS the plan; cutting into it with a
+  // ruling is how the plan came to be abandoned halfway through.
+  if (state.awaitingGoals) return;
+  const boss = Object.values(state.agents).find((a) => a.role === ROLES.ORCHESTRATOR);
+  if (!boss || boss.enabled === false) return;
+
+  // Nothing he could rule on: approvals are never his, nor is anything about
+  // himself.
+  const his = raised.filter((card) => routeCard(card, null, boss.id).toThor);
+  if (his.length === 0) return;
+
+  state.governing = true;
+  // Say it on the floor. A ruling happening off-screen is the same as no
+  // ruling: you cannot govern what you cannot see being governed.
+  ingest(createEvent(boss.id, EVENT_KINDS.STATUS, {
+    text: `ruling on ${his.length} card${his.length === 1 ? '' : 's'}: `
+      + his.map((card) => `${card.agentName ?? card.agentId} ${card.kind}`).join(', '),
+    from: 'you',
+  }));
+  try {
+    const task = governanceTask(his, crewRoster());
+    if (boss.sessionId) {
+      const sent = await eachSession(boss, (id) =>
+        getDriver(boss.engine).steer(
+          id,
+          withHook(
+            task, options.hookText, middleware, boss, boss.flows ?? [], state.board,
+          ),
+        ));
+      if (!sent.delivered) throw new Error(sent.failures[0] ?? 'the engine took nothing');
+    } else {
+      await COMMANDS.start({ agentId: boss.id, task });
+    }
+  } catch (error) {
+    // Never silent. A governance turn that failed is a fleet nobody is
+    // watching, and that has to reach you rather than a swallowed catch.
+    ingest(createBlockedEvent(boss.id, {
+      category: BLOCKED_REASONS.ERROR,
+      reason: `could not rule on ${his.length} cards: ${error.message}`,
+    }));
+  } finally {
+    state.governing = false;
+  }
+}
+
+// His answer, pulled out of his prose like every other block.
+function harvestVerdicts(event) {
+  const keys = new Set(state.cards.map(cardKey));
+  const verdicts = parseVerdicts(event.payload?.text ?? '', { keys });
+  if (verdicts.length === 0) return;
+  for (const verdict of verdicts) applyVerdict(verdict).catch(() => {});
+}
+
+// Only ever the verbs the floor already has, so nothing here can do something
+// you could not undo from the room.
+async function applyVerdict(verdict) {
+  state.verdicts[verdict.id] = verdict;
+
+  const agent = state.agents[verdict.agentId];
+  const who = agent?.label ?? verdict.agentId;
+
+  // Holding and escalating are answers, not actions - they only annotate.
+  if (verdict.action === VERDICT.HOLD || verdict.action === VERDICT.ESCALATE) {
+    ingest(createEvent('minimac', EVENT_KINDS.STATUS, {
+      text: `${verdict.action} on ${who}: ${verdict.note || 'no reason given'}`,
+      from: 'you',
+    }));
+    publish({ type: 'state', state: snapshot() });
+    return;
+  }
+
+  if (verdict.action === VERDICT.STEER) {
+    orders(verdict.agentId, verdict.text);
+    await COMMANDS.steer({ agentId: verdict.agentId, text: verdict.text }).catch(() => {});
+  } else if (verdict.action === VERDICT.GOAL) {
+    await COMMANDS.setGoal({ agentId: verdict.agentId, objective: verdict.text });
+  } else if (verdict.action === VERDICT.BENCH) {
+    await COMMANDS.setEnabled({ agentId: verdict.agentId, enabled: false });
+  }
+  ingest(createEvent('minimac', EVENT_KINDS.STATUS, {
+    text: `${verdict.action} on ${who}: ${verdict.note || verdict.text}`,
+    from: 'you',
+  }));
+  publish({ type: 'state', state: snapshot() });
 }
 
 function applyToAgent(agents, event) {
@@ -207,7 +632,6 @@ async function startWorkers(agent, cwd, task, mentions, attachments) {
       instance,
       goal: getGoal(state.goals, agent.id),
       task: task ?? state.mission,
-      contractText: options.contractText,
       skills: options.skills,
       claims: state.claims[agent.id] ?? [],
       mentions,
@@ -224,10 +648,24 @@ async function startWorkers(agent, cwd, task, mentions, attachments) {
   return sessionIds[0];
 }
 
-// A steer reaches every worker behind the seat, not just the first.
+// A steer reaches every worker behind the seat, not just the first. It returns
+// how many sessions actually took it: swallowing the driver error here is what
+// let a message be shown on the floor as delivered while the engine had thrown
+// it away - a claim with no receipt, which is the one thing this tool exists
+// to stop.
 async function eachSession(agent, action) {
   const ids = agent.sessionIds?.length ? agent.sessionIds : [agent.sessionId].filter(Boolean);
-  for (const id of ids) await action(id).catch(() => {});
+  let delivered = 0;
+  const failures = [];
+  for (const id of ids) {
+    try {
+      await action(id);
+      delivered += 1;
+    } catch (error) {
+      failures.push(error?.message ?? String(error));
+    }
+  }
+  return { delivered, failures, attempted: ids.length };
 }
 
 // What every agent is told about everyone else: who they are, what they are on,
@@ -240,6 +678,9 @@ function crewRoster() {
     engine: agent.engine,
     instances: agent.instances,
     objective: getGoal(state.goals, agent.id)?.objective ?? '',
+    // Whether they are currently ON this mission. Without it the orchestrator
+    // is judging who is needed without knowing who is already stood down.
+    enabled: agent.enabled !== false,
     claims: state.claims[agent.id] ?? [],
   }));
 }
@@ -248,7 +689,6 @@ function crewRoster() {
 // built-in default, otherwise whatever was loaded from a file at launch.
 function middlewareText(name) {
   if (typeof middleware[name] === 'string') return middleware[name];
-  if (name === 'contract') return options.contractText ?? '';
   if (name === 'hook') return options.hookText ?? '';
   return defaultStepText(name);
 }
@@ -256,7 +696,7 @@ function middlewareText(name) {
 const PLANNING_TIMEOUT_MS = 180_000;
 
 // Start everyone except the orchestrator, which is already running.
-function startCrew(note) {
+function startCrew(note, assembled = true) {
   if (!state.awaitingGoals) return;
   state.awaitingGoals = false;
   ingest(
@@ -265,8 +705,19 @@ function startCrew(note) {
       from: 'you',
     }),
   );
+  // An assemble that timed out has decided nothing. Starting the whole fleet
+  // on role defaults is not a safe fallback - it is the seven idle seats you
+  // pressed ASSEMBLE to avoid. Say so and start nobody.
+  if (!assembled) {
+    ingest(createEvent('minimac', EVENT_KINDS.BLOCKED, {
+      reason: 'assemble produced no crew - nobody was started. Press ASSEMBLE again, '
+        + 'or START ALL to run everyone on their role defaults.',
+    }));
+    return;
+  }
   for (const agent of Object.values(state.agents)) {
     if (agent.role === 'orchestrator' || agent.sessionId) continue;
+    if (agent.enabled === false) continue; // taken off this mission
     COMMANDS.start({ agentId: agent.id }).catch(() => {});
   }
 }
@@ -298,6 +749,14 @@ const COMMANDS = {
     // the run has started, so the record has to be told.
     store.renameRun(mission);
     state.goals = deriveGoals(state.goals, state.agents, mission);
+    // The orchestrator's goal is the mission, always. A goal saved on an
+    // earlier run - or the old role template - must never outrank the sentence
+    // you just typed, which is exactly what happened while this was derived
+    // like everyone else's.
+    const boss = Object.values(state.agents).find((a) => a.role === ROLES.ORCHESTRATOR);
+    if (boss) {
+      state.goals = setGoal(state.goals, boss.id, mission, null, 'active', 'manual');
+    }
     for (const [agentId, goal] of Object.entries(state.goals)) store.saveGoal(agentId, goal);
     // Say it out loud on the floor, so a submit is never silent.
     ingest(
@@ -307,24 +766,50 @@ const COMMANDS = {
         from: 'you',
       }),
     );
-    // The orchestrator sets the crew's goals before the crew starts. The
-    // role templates above are only a floor, so nothing is ever goal-less if
-    // this planning turn fails or times out.
-    const orchestrator = Object.values(state.agents).find((a) => a.role === 'orchestrator');
-    if (!orchestrator) return { mission, goals: state.goals };
+    // A new mission is a new crew. Setting a goal on Thor lands here too, so
+    // every route into "here is the work" assembles - there is one assemble
+    // path, not a copy of it inlined per caller.
+    // The role templates above are only a floor, so nothing is ever goal-less
+    // if the assemble turn fails or times out.
+    await COMMANDS.assemble().catch(() => {});
+    return { mission, goals: state.goals, planning: true };
+  },
 
+  // ASSEMBLE. Thor decides who this mission actually needs, brings them on,
+  // stands the rest down, and gives each of the chosen a goal. Same turn that
+  // setMission runs, on demand - so you can re-assemble after the mission
+  // changes shape, or after you have flipped agents by hand and want Thor to
+  // judge it again.
+  async assemble() {
+    if (!state.mission) throw new Error('set the mission first - there is nobody to assemble for');
+    const orchestrator = Object.values(state.agents).find((a) => a.role === 'orchestrator');
+    if (!orchestrator) throw new Error('no orchestrator on the floor');
+    if (orchestrator.enabled === false) {
+      throw new Error(`${orchestrator.label ?? 'the orchestrator'} is off this mission`);
+    }
+    ensureRun();
+    ingest(createEvent(orchestrator.id, EVENT_KINDS.STATUS, {
+      text: 'assembling: deciding who this mission needs, and standing the rest down',
+      from: 'you',
+    }));
+    // Assembling is its OWN turn. Steering the brief into a session already
+    // deep in mission work is why he never once answered it: he was pushing a
+    // branch and the planning instruction arrived as an aside. Ending that turn
+    // first makes the brief the whole of what he is being asked.
+    if (orchestrator.sessionId) {
+      await COMMANDS.interrupt({ agentId: orchestrator.id });
+    }
     state.awaitingGoals = true;
     await COMMANDS.start({
       agentId: orchestrator.id,
-      task: planningTask(mission, crewRoster()),
-    }).catch(() => {});
-
-    // If no goals come back, the crew still starts - late is better than never.
+      task: planningTask(state.mission, crewRoster()),
+      planning: true,
+    });
+    // If nothing comes back, the crew still starts - late beats never.
     setTimeout(() => {
-      if (state.awaitingGoals) startCrew('the orchestrator did not set goals in time');
+      if (state.awaitingGoals) startCrew('the orchestrator did not set goals in time', false);
     }, PLANNING_TIMEOUT_MS);
-
-    return { mission, goals: state.goals, planning: true };
+    return { planning: true };
   },
 
   // A run is a conversation with the fleet. Starting a new one closes the old
@@ -414,6 +899,7 @@ const COMMANDS = {
 
   // Run an old one again: its mission and the goals as they were, in a fresh
   // run record so the original stays intact and comparable.
+  // RUN AGAIN: same mission and goals, from nothing. Its board starts empty too.
   async resumeRun({ runId }) {
     const previous = store.getRun(Number(runId));
     if (!previous) throw new Error(`no run ${runId}`);
@@ -449,6 +935,12 @@ const COMMANDS = {
     state.goals = {};
     state.claims = {};
     state.events = [];
+    // A new mission starts with an empty board. The last mission's work is kept
+    // in the record but must not be handed to this crew as though it were
+    // theirs - which is how a LICENSE plan turned up under a CI mission.
+    state.board = createBoard();
+    state.cards = [];
+    state.verdicts = {};
     state.mission = mission ?? '';
     const id = store.startRun(state.mission, options.repo);
     state.goals = deriveGoals(state.goals, state.agents, state.mission);
@@ -462,7 +954,7 @@ const COMMANDS = {
     return { runId: id, mission: state.mission };
   },
 
-  async start({ agentId, task, mentions = null, attachments = [] }) {
+  async start({ agentId, task, mentions = null, attachments = [], planning = false }) {
     if (state.agents[agentId]?.enabled === false) return { skipped: 'disabled' };
     ensureRun();
     const agent = state.agents[agentId];
@@ -473,9 +965,15 @@ const COMMANDS = {
       agent,
       goal,
       task: task ?? state.mission,
-      contractText: options.contractText,
       skills: options.skills,
       claims: state.claims[agentId] ?? [],
+      // The agent's own closed steps, so the next one is planned against what
+      // actually happened rather than the task as it first read it.
+      steps: agent.flows ?? [],
+      board: state.board,
+      // A planning turn answers with the goals block only - no report block,
+      // because two fence instructions means the agent obeys one of them.
+      planning,
       mentions,
       attachments: [...(state.attachments ?? []), ...attachments],
       crew: crewRoster(),
@@ -517,6 +1015,41 @@ const COMMANDS = {
     }
     if (target === 'mission') return COMMANDS.setMission({ mission: text, attachments });
 
+    // POLICY. One sentence that binds the whole fleet, forever. It is written
+    // into the standing instruction, which withHook() already appends to every
+    // dispatch AND every steer - so no model decides whether it applies, and
+    // an agent started an hour from now is bound by it too.
+    if (target === 'policy') {
+      const rule = String(text ?? '').trim();
+      if (!rule) throw new Error('a policy needs something to say');
+      const standing = middlewareText('hook');
+      const next = standing?.trim() ? `${standing.trim()}\n- ${rule}` : `- ${rule}`;
+      await COMMANDS.setMiddleware({ name: 'hook', text: next });
+      ingest(createEvent('minimac', EVENT_KINDS.STATUS, {
+        text: `policy, binding on everyone from now on: ${rule}`,
+        from: 'you',
+      }));
+      return { policy: next };
+    }
+
+    // THOR. Said once; he decides who needs it and in what words.
+    if (target === 'thor') {
+      const boss = Object.values(state.agents).find((a) => a.role === ROLES.ORCHESTRATOR);
+      if (!boss) throw new Error('no orchestrator on the floor');
+      const brief = [
+        '# Pass this on',
+        '',
+        'Mac said this once, to you, for the whole crew:',
+        '',
+        text,
+        '',
+        'Decide who actually needs to hear it and what it means for each of them. '
+        + 'Say nothing to anyone it does not concern. Answer with the goals block, '
+        + 'setting only the goals you are changing.',
+      ].join('\n');
+      return COMMANDS.say({ target: boss.id, text: brief, attachments });
+    }
+
     const agentId = routeOf(parsed, target);
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
@@ -525,6 +1058,14 @@ const COMMANDS = {
     return agent.sessionId
       ? COMMANDS.steer({ agentId, text: body })
       : COMMANDS.start({ agentId, task: text, mentions: parsed, attachments });
+  },
+
+  // Make the orchestrator say something to a hero. The floor walks him over.
+  // Used by ASSEMBLE, by his rulings, and by nothing else in normal operation.
+  async orders({ agentId, text }) {
+    if (!state.agents[agentId]) throw new Error(`unknown agent: ${agentId}`);
+    orders(agentId, text);
+    return { to: agentId };
   },
 
   // The working folder is a live setting, not a launch-only flag.
@@ -567,19 +1108,51 @@ const COMMANDS = {
 
   async steer({ agentId, text }) {
     const agent = state.agents[agentId];
-    if (!agent?.sessionId) throw new Error(`${agentId} is not running`);
-    await eachSession(agent, (id) =>
-      getDriver(agent.engine).steer(id, withHook(text, options.hookText, middleware)));
+    if (!agent) throw new Error(`no agent ${agentId}`);
+    // A reply does NOT close the question. You asked to be able to go back and
+    // forth, and a card that vanishes on your first sentence ends the
+    // conversation for you. It closes when you say it is settled.
+    if (!agent.sessionId) {
+      // The answer is already recorded above, so say what happened rather than
+      // pretending nothing did: the card is closed, the agent never heard it.
+      throw new Error(
+        `${agent.label ?? agentId} has no live session${
+          agent.blockedReason ? ` - ${agent.blockedReason}` : ''
+        }. Your answer is on the record; press START for them to hear it.`,
+      );
+    }
+    const sent = await eachSession(agent, (id) =>
+      getDriver(agent.engine).steer(
+        id,
+        withHook(
+          text, options.hookText, middleware, agent, agent.flows ?? [], state.board,
+        ),
+      ));
+    // Only what the engine took is written to the floor.
+    if (!sent.delivered) {
+      throw new Error(
+        `${agent.label ?? agentId} did not take that: ${sent.failures[0] ?? 'the engine is gone'}`,
+      );
+    }
     ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, { text, from: 'you' }));
-    return {};
+    return { delivered: sent.delivered };
   },
 
+  // KILL. Stops this agent's turn now: the Claude child is killed, a Codex turn
+  // is interrupted, and the seat is cleared so START gives you a fresh one. The
+  // agent stays on the floor - this ends the work, not the worker.
   async interrupt({ agentId }) {
     const agent = state.agents[agentId];
-    if (agent) await eachSession(agent, (id) => getDriver(agent.engine).interrupt(id));
+    if (!agent) throw new Error(`no agent ${agentId}`);
+    answerPrayer(agentId, 'stopped by Mac');
+    const had = agent.sessionIds?.length || (agent.sessionId ? 1 : 0);
+    if (had) await eachSession(agent, (id) => getDriver(agent.engine).interrupt(id));
     state.agents = patchAgent(state.agents, agentId, {
       status: 'stopped', sessionId: null, sessionIds: [],
     });
+    // Their conditions died with the turn. Leaving cards up for an agent who
+    // has stopped is asking you to decide about something that is already over.
+    refreshCards();
     return {};
   },
 
@@ -615,6 +1188,7 @@ const COMMANDS = {
   },
 
   async setEnabled({ agentId, enabled }) {
+    // Benching clears their cards too - see interrupt.
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
     if (!enabled && agent.sessionId) await COMMANDS.interrupt({ agentId });
@@ -660,6 +1234,13 @@ function snapshot() {
     mission: state.mission,
     repo: options.repo,
     runId: store.runId,
+    // Every card carries whatever Thor said about it. Nothing is hidden.
+    cards: state.cards.map((card) => ({
+      ...card,
+      verdict: state.verdicts[cardKey(card)] ?? null,
+    })),
+    board: itemsOf(state.board),
+    velocity: boardProgress(state.board),
     schema: buildOutputSchema(),
   };
 }
@@ -798,8 +1379,8 @@ function parseArgs(argv) {
     port: Number(flags.get('port') ?? 4600),
     repo: resolve(String(flags.get('repo') ?? process.cwd())),
     codexUrl: String(flags.get('codex-url') ?? 'ws://127.0.0.1:4573'),
+    // --contract still names the file the standing instruction is seeded from.
     contractPath: flags.get('contract') ? String(flags.get('contract')) : null,
-    contractText: '',
     hookPath: flags.get('hook') ? String(flags.get('hook')) : null,
     hookText: '',
     skills: String(flags.get('skills') ?? '').split(',').filter(Boolean),
@@ -817,9 +1398,32 @@ if (options.hookPath) {
   options.hookText = await readFile(options.hookPath, 'utf8').catch(() => '');
 }
 
-if (options.contractPath) {
-  options.contractText = await readFile(options.contractPath, 'utf8').catch(() => '');
+// The engineering contract is a property of the REPO, not of how the server was
+// launched. Requiring --contract meant it was silently absent every time it was
+// forgotten - which was every time.
+const CONTRACT_FILES = [
+  '.codex/ENGINEERING_CONTRACT.md',
+  '.claude/ENGINEERING_CONTRACT.md',
+  'ENGINEERING_CONTRACT.md',
+];
+
+async function findContract(repo, explicit) {
+  if (explicit) {
+    return { text: await readFile(explicit, 'utf8').catch(() => ''), from: explicit };
+  }
+  for (const name of CONTRACT_FILES) {
+    const path = join(repo, name);
+    const text = await readFile(path, 'utf8').catch(() => null);
+    if (text?.trim()) return { text, from: path };
+  }
+  return { text: '', from: null };
 }
+
+const contract = await findContract(options.repo, options.contractPath);
+// The repo's engineering contract IS the standing instruction. There is one
+// channel, and this is what it starts with; POLICY appends to the same text.
+options.contractFrom = contract.from;
+options.hookText = [options.hookText, contract.text].filter((part) => part?.trim()).join('\n\n');
 
 // A run is created when work actually begins, not when the server boots -
 // otherwise every restart leaves an empty "unnamed run" in the history.
@@ -830,15 +1434,46 @@ function ensureRun() {
   return id;
 }
 
+// A restart is NOT the end of a run: closing it here is what made every
+// restart lose the mission and leave the whole crew goal-less, because there
+// was no open run left to rejoin. Only STOP ends a run.
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    store.finishRun();
-    process.exit(0);
-  });
+  process.on(signal, () => process.exit(0));
 }
 
-server.listen(options.port, () => {
+// Codex agents need a daemon listening before they can start. Bringing it up
+// here means a blocked crew is never waiting on a command in another terminal.
+// Nothing is adopted: a daemon that is already running stays running when we
+// exit, and one we started dies with us.
+async function ensureEngines() {
+  const wanted = Object.values(state.agents).some((agent) => agent.engine === ENGINES.CODEX);
+  if (!wanted) return;
+  const result = await ensureCodexServer({
+    url: options.codexUrl,
+    onLog: (line) => process.stdout.write(`codex: ${line}\n`),
+  });
+  process.stdout.write(`codex app-server: ${result.reason}\n`);
+  if (result.ok && result.started) {
+    process.on('exit', () => result.stop?.());
+  }
+  if (!result.ok) {
+    // Said on the floor as well as the terminal: a crew that cannot start is a
+    // decision, not a log line.
+    ingest(createEvent('minimac', EVENT_KINDS.STATUS, {
+      text: `codex is not available - ${result.reason}`,
+      from: 'you',
+    }));
+  }
+}
+
+server.listen(options.port, async () => {
   process.stdout.write(
     `minimac on http://127.0.0.1:${options.port}  repo=${options.repo}\n`,
   );
+  process.stdout.write(
+    options.contractFrom
+      ? `engineering contract: ${options.contractFrom}\n`
+      : 'engineering contract: NONE FOUND - agents are working without one\n',
+  );
+  await ensureEngines();
 });
