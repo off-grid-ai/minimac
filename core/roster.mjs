@@ -14,13 +14,34 @@ export const ROLES = Object.freeze({
 });
 
 export const DEFAULT_ROSTER = Object.freeze([
-  { id: 'minimac', name: 'MINIMAC', role: ROLES.ORCHESTRATOR, engine: ENGINES.CODEX },
-  { id: 'coder', name: 'CODER', role: ROLES.CODER, engine: ENGINES.CODEX },
-  { id: 'tester', name: 'TESTER', role: ROLES.TESTER, engine: ENGINES.CLAUDE },
-  { id: 'auditor', name: 'AUDITOR', role: ROLES.AUDITOR, engine: ENGINES.CLAUDE },
-  { id: 'reviewer', name: 'REVIEWER', role: ROLES.REVIEWER, engine: ENGINES.CLAUDE },
-  { id: 'ux', name: 'UX', role: ROLES.UX, engine: ENGINES.CODEX },
-  { id: 'pm', name: 'PRODUCT', role: ROLES.PRODUCT, engine: ENGINES.CLAUDE },
+  {
+    id: 'minimac', name: 'Thor', role: ROLES.ORCHESTRATOR, engine: ENGINES.CODEX,
+    color: '#2b2f36', move: 'lightning',
+  },
+  {
+    id: 'coder', name: 'Ironman', role: ROLES.CODER, engine: ENGINES.CODEX,
+    color: '#c8541f', move: 'repulsor',
+  },
+  {
+    id: 'tester', name: 'Hulk', role: ROLES.TESTER, engine: ENGINES.CLAUDE,
+    color: '#4f8a4a', move: 'smash',
+  },
+  {
+    id: 'auditor', name: 'Strange', role: ROLES.AUDITOR, engine: ENGINES.CLAUDE,
+    color: '#1f8f8a', move: 'portal',
+  },
+  {
+    id: 'reviewer', name: 'Capt. Marvel', role: ROLES.REVIEWER, engine: ENGINES.CLAUDE,
+    color: '#3a63c4', move: 'binary',
+  },
+  {
+    id: 'ux', name: 'Vision', role: ROLES.UX, engine: ENGINES.CODEX,
+    color: '#d99a3f', move: 'beam',
+  },
+  {
+    id: 'pm', name: 'Wanda', role: ROLES.PRODUCT, engine: ENGINES.CLAUDE,
+    color: '#a33a4a', move: 'hex',
+  },
 ]);
 
 // One place decides how an agent is written, so the floor, the panels and the

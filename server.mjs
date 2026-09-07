@@ -1407,7 +1407,7 @@ function parseArgs(argv) {
     mission: String(flags.get('mission') ?? ''),
     engine: flags.get('engine') ? String(flags.get('engine')) : null,
     rosterPath: flags.get('roster') ? String(flags.get('roster')) : null,
-    team: String(flags.get('team') ?? 'the crew'),
+    team: String(flags.get('team') ?? 'the Avengers'),
     rosterOverrides: {},
   };
 }
