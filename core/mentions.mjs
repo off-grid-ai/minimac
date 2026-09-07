@@ -2,27 +2,57 @@
 //
 //   @src/replay/timeline.ts   a file the agent should own and work in
 //   /hygiene                  a skill the agent must apply
-//   @coder                    an agent to address, or to hand work to
+//   @coder or @ironman        an agent to address, or to hand work to
 //
 // Pure: it classifies against a roster it is given and never touches disk.
 
 const TOKEN = /(^|\s)([@/])([\w./~-]*[\w/-])/g;
 
-export function parseMentions(text, { agentIds = [] } = {}) {
+export function parseMentions(text, { agents = [] } = {}) {
   const files = [];
   const skills = [];
-  const agents = [];
+  const mentionedAgents = [];
+  const aliases = agentMentionAliases(agents);
 
   for (const [, , sigil, name] of text.matchAll(TOKEN)) {
     if (sigil === '/') {
       push(skills, name);
       continue;
     }
-    if (agentIds.includes(name)) push(agents, name);
+    const agentId = aliases.get(name.toLowerCase());
+    if (agentId) push(mentionedAgents, agentId);
     else push(files, name);
   }
 
-  return { text, files, skills, agents };
+  return { text, files, skills, agents: mentionedAgents };
+}
+
+// One alias codec for autocomplete and routing. Stable ids always win. A
+// display name adds a readable kebab-case alias without becoming a second
+// identity. Parenthetical titles stay presentation only.
+export function agentMentionAliases(agents = []) {
+  const aliases = new Map();
+  for (const agent of agents) {
+    if (agent?.id) aliases.set(String(agent.id).toLowerCase(), agent.id);
+  }
+  for (const agent of agents) {
+    const alias = mentionAlias(agent?.name);
+    if (alias && !aliases.has(alias)) aliases.set(alias, agent.id);
+  }
+  return aliases;
+}
+
+export function agentMentionNames(agents = []) {
+  return [...agentMentionAliases(agents).keys()];
+}
+
+function mentionAlias(name) {
+  return String(name ?? '')
+    .split('(')[0]
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 // What the composer offers while you type. Returns null when the caret is not

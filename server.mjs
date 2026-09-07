@@ -1465,7 +1465,9 @@ const COMMANDS = {
   // The composer's single verb. One line of text, whatever it names, ends up
   // in exactly one place: the mission, or one agent.
   async say({ target, text, attachments = [], from = 'you' }) {
-    const parsed = parseMentions(text, { agentIds: Object.keys(state.agents) });
+    const parsed = parseMentions(text, { agents: Object.values(state.agents) });
+    const namesAgent = parsed.agents.length > 0;
+    const routedTarget = routeOf(parsed, target);
     // A pasted path is an attachment, so dragging a file in and pasting its
     // path behave the same way.
     for (const path of await repoIndex.existingPaths(text)) {
@@ -1473,16 +1475,18 @@ const COMMANDS = {
         attachments = [...attachments, { path, name: path.split('/').pop(), type: 'file' }];
       }
     }
-    if (parsed.files.length > 0 && target !== 'mission') {
-      await COMMANDS.claim({ agentId: routeOf(parsed, target), patterns: parsed.files });
+    if (parsed.files.length > 0 && state.agents[routedTarget]) {
+      await COMMANDS.claim({ agentId: routedTarget, patterns: parsed.files });
     }
-    if (target === 'mission') return COMMANDS.setMission({ mission: text, attachments });
+    if (target === 'mission' && !namesAgent) {
+      return COMMANDS.setMission({ mission: text, attachments });
+    }
 
     // POLICY. One sentence that binds the whole fleet, forever. It is written
     // into the standing instruction, which the prompt pipeline adds to every
     // dispatch AND every steer - so no model decides whether it applies, and
     // an agent started an hour from now is bound by it too.
-    if (target === 'policy') {
+    if (target === 'policy' && !namesAgent) {
       const rule = String(text ?? '').trim();
       if (!rule) throw new Error('a policy needs something to say');
       const standing = middlewareText('hook');
@@ -1496,7 +1500,7 @@ const COMMANDS = {
     }
 
     // THOR. Said once; he decides who needs it and in what words.
-    if (target === 'thor') {
+    if (target === 'thor' && !namesAgent) {
       const boss = Object.values(state.agents).find((a) => a.role === ROLES.ORCHESTRATOR);
       if (!boss) throw new Error('no orchestrator on the floor');
       const brief = [
@@ -1513,7 +1517,7 @@ const COMMANDS = {
       return COMMANDS.say({ target: boss.id, text: brief, attachments });
     }
 
-    const agentId = routeOf(parsed, target);
+    const agentId = routedTarget;
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
     const body = attachments.length > 0 ? `${text}\n\n${attachmentLines(attachments)}` : text;
@@ -2204,7 +2208,6 @@ async function executeAgentTool(principal, name, args) {
     if (!result?.applied) throw new Error(result?.error ?? 'assemble was not applied');
     return { assembled: true, ...result };
   }
-
   const target = state.agents[args.agentId];
   if ([AGENT_TOOL.START, AGENT_TOOL.BENCH, AGENT_TOOL.GOAL].includes(name)) {
     if (!target || target.role === ROLES.ORCHESTRATOR) {

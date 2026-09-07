@@ -4,7 +4,7 @@
 // It owns no state beyond what is being typed. Where a message goes and what
 // it means are decided by core/mentions.mjs and the server.
 
-import { parseMentions } from '../core/mentions.mjs';
+import { agentMentionNames, parseMentions } from '../core/mentions.mjs';
 import { createMarkdownEditor } from './markdown-editor.mjs';
 
 export const MISSION_TARGET = 'mission';
@@ -42,13 +42,13 @@ export function createComposer({
   let historyTarget = null;
   const localHistory = new Map();
 
-  function agentIds() {
-    return getAgents().map((agent) => agent.id);
+  function agentNames() {
+    return agentMentionNames(getAgents());
   }
 
   async function fetchSuggestions(mention) {
     const mine = ++token;
-    const list = await lookup(mention, agentIds());
+    const list = await lookup(mention, agentNames());
     if (mine !== token) return; // a later keystroke already won
     suggestions = list;
     highlighted = 0;
@@ -410,17 +410,17 @@ export function createComposer({
       editor.focus();
     },
     parse(text) {
-      return parseMentions(text, { agentIds: agentIds() });
+      return parseMentions(text, { agents: getAgents() });
     },
   };
 }
 
-async function lookup(mention, agentIds) {
+async function lookup(mention, agentNames) {
   if (mention.sigil === '/') {
     const { skills } = await getJson('/skills');
     return filter(skills, mention.query);
   }
-  const named = filter(agentIds, mention.query);
+  const named = filter(agentNames, mention.query);
   const { files } = await getJson(`/files?q=${encodeURIComponent(mention.query)}`);
   return [...named, ...files].slice(0, 20);
 }
