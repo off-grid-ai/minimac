@@ -394,6 +394,12 @@ async function reconcileAdoptedSessions() {
         enabled: live ? true : agent.enabled,
       });
       store.saveWorkerSession(workerForSession(state.agents[agent.id], row.session_id));
+      if (live && row.checkpoint_id) {
+        const item = findItem(state.board, row.checkpoint_id);
+        if (item?.lease?.workerId === workerId && item.lease.state === 'running') {
+          workerLeases.restore(item.lease);
+        }
+      }
     } catch {
       state.agents = patchAgent(state.agents, agent.id, patchWorker(agent, workerId, {
         sessionId: null,
