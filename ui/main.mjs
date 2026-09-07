@@ -1244,6 +1244,26 @@ function wireChrome() {
 
   dom.stopAll?.addEventListener('click', () => handlers.stopRun());
 
+  const paintZoom = () => {
+    const zoom = scene?.zoomState?.();
+    if (!zoom) {
+      if (dom.sceneZoom) dom.sceneZoom.hidden = true;
+      return;
+    }
+    dom.sceneZoomLevel.textContent = `${Math.round(zoom.value * 100)}%`;
+    dom.sceneZoomOut.disabled = !zoom.canZoomOut;
+    dom.sceneZoomIn.disabled = !zoom.canZoomIn;
+  };
+  dom.sceneZoomOut?.addEventListener('click', () => {
+    scene?.zoomBy?.(-1);
+    paintZoom();
+  });
+  dom.sceneZoomIn?.addEventListener('click', () => {
+    scene?.zoomBy?.(1);
+    paintZoom();
+  });
+  paintZoom();
+
   for (const name of Object.keys(WINDOW_IDS)) {
     dom[WINDOW_IDS[name][1]]?.addEventListener('click', () => toggleWindow(name));
   }
@@ -2132,6 +2152,7 @@ function note(text) {
 function pickDom() {
   const ids = [
     'floor', 'topbar', 'repoPath', 'queueCount', 'startAll', 'planAll', 'crewBar',
+    'sceneZoom', 'sceneZoomOut', 'sceneZoomLevel', 'sceneZoomIn',
     'composer', 'composerTarget', 'composerInput', 'composerSend', 'mentionMenu',
     'attachments', 'fileInput', 'btnAttach',
     'winDecisions', 'winDecisionsClose', 'queue', 'prayerHead', 'prayerChat',

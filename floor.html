@@ -1347,6 +1347,48 @@
     box-shadow: 0 0 12px -3px var(--accent-glow), inset 0 0 10px -6px var(--accent-glow);
   }
 
+  /* Camera scale is a room instrument. Keep it near the lower-right edge of
+     the visible scene, above the composer as that composer grows. */
+  #sceneZoom {
+    position: fixed;
+    right: calc(var(--panel-w, 0px) + var(--gap));
+    bottom: calc(var(--composer-h) + var(--gap) * 2);
+    z-index: 49;
+    display: inline-flex;
+    align-items: stretch;
+    background: var(--glass);
+    backdrop-filter: blur(8px) saturate(1.1);
+    border: 1px solid var(--line);
+  }
+
+  #sceneZoom button {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: 18px/1 var(--mono);
+    cursor: pointer;
+    transition: color 140ms ease-out, background-color 140ms ease-out, transform 120ms ease-out;
+  }
+
+  #sceneZoom button + output,
+  #sceneZoom output + button { border-left: 1px solid var(--line); }
+  #sceneZoom button:hover { color: var(--accent); background: var(--accent-soft); }
+  #sceneZoom button:active { transform: translateY(1px); }
+  #sceneZoom button:disabled { color: var(--faint); cursor: default; opacity: 0.5; }
+  #sceneZoom button:disabled:hover { background: transparent; }
+  #sceneZoom output {
+    min-width: 52px;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    font-variant-numeric: tabular-nums;
+  }
+
   #queueCount {
     font-variant-numeric: tabular-nums;
     min-width: 15px;
@@ -1548,6 +1590,12 @@
   <div id="crewBar" class="crewbar" role="group" aria-label="the Avengers, and what each is doing"></div>
   <canvas id="floor"></canvas>
   <div id="bubbles"></div>
+
+  <div id="sceneZoom" role="group" aria-label="Scene zoom">
+    <button id="sceneZoomOut" type="button" aria-label="Zoom scene out" title="Zoom scene out">-</button>
+    <output id="sceneZoomLevel" aria-live="polite">125%</output>
+    <button id="sceneZoomIn" type="button" aria-label="Zoom scene in" title="Zoom scene in">+</button>
+  </div>
 
   <div id="topbar">
     <span class="brand"><img class="brand-logo" src="/assets/brand/minimac-logo-transparent.svg" alt="MINIMAC"></span>

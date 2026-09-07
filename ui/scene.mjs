@@ -27,6 +27,18 @@ const HOME = new THREE.Vector3(0.15, 0.5, 0.15);
 // Close to front-on, so every face reads. Enough offset to keep it isometric.
 const CAMERA_DIR = new THREE.Vector3(3.2, 6.4, 9.6).normalize();
 const POOL = 8;
+const ZOOM_KEY = 'minimac.scene.zoom';
+const ZOOM_LEVELS = Object.freeze([0.8, 1, 1.25, 1.5, 1.75]);
+const DEFAULT_ZOOM = 1.25;
+
+function savedZoom() {
+  try {
+    const value = Number(localStorage.getItem(ZOOM_KEY));
+    return ZOOM_LEVELS.includes(value) ? value : DEFAULT_ZOOM;
+  } catch {
+    return DEFAULT_ZOOM;
+  }
+}
 
 // Desk anchors, in floor coordinates. main.mjs hands these straight back as
 // pulse and ping endpoints, so both sides read the same plan.
@@ -60,6 +72,7 @@ export function createScene({ canvas, palette, onSelect, onHover }) {
   let roomHeight = VIEW_HEIGHT;
   let nowHeight = VIEW_HEIGHT;
   let wantHeight = VIEW_HEIGHT;
+  let zoom = savedZoom();
   camera.position.copy(CAMERA_DIR).multiplyScalar(18).add(here);
   camera.lookAt(here);
 
@@ -122,11 +135,11 @@ export function createScene({ canvas, palette, onSelect, onHover }) {
     if (agent) {
       const seat = seatOf(agent);
       wanted.set(seat.x, FOCUS_EYE, seat.z + SEAT.z + FOCUS_LEAD);
-      wantHeight = Math.max(FOCUS_HEIGHT, FOCUS_WIDTH / aspect);
+      wantHeight = Math.max(FOCUS_HEIGHT, FOCUS_WIDTH / aspect) / zoom;
       return;
     }
     wanted.copy(HOME);
-    wantHeight = roomHeight;
+    wantHeight = roomHeight / zoom;
   }
 
   // The console and the desk panel stand in front of the bottom of the canvas,
@@ -276,6 +289,28 @@ export function createScene({ canvas, palette, onSelect, onHover }) {
     // The scene owns the camera, so nobody outside has to know how it moves.
     focusOn(agentId) {
       focusId = agentId ?? null;
+    },
+    // One zoom scale owns both the whole-room and focused-desk framing. The
+    // controls only ask for the next level; they do not hold camera state.
+    zoomBy(direction) {
+      const current = ZOOM_LEVELS.indexOf(zoom);
+      const next = clamp(current + Math.sign(direction), 0, ZOOM_LEVELS.length - 1);
+      zoom = ZOOM_LEVELS[next];
+      try {
+        localStorage.setItem(ZOOM_KEY, String(zoom));
+      } catch {
+        // Private storage can be unavailable. Zoom still works for this page.
+      }
+      aimCamera();
+      return this.zoomState();
+    },
+    zoomState() {
+      const current = ZOOM_LEVELS.indexOf(zoom);
+      return {
+        value: zoom,
+        canZoomOut: current > 0,
+        canZoomIn: current < ZOOM_LEVELS.length - 1,
+      };
     },
     // Where to hang fixed HTML for an agent: the point just above their head,
     // projected into viewport pixels. The canvas begins below the two header
