@@ -29,6 +29,7 @@ import { createSidePanel } from './sidepanel.mjs';
 import { createGoalStrip } from './goalstrip.mjs';
 import { createSound } from './sound.mjs';
 import { renderMarkdown, markdownReady } from './markdown.mjs';
+import { captureScrollAnchor, restoreScrollAnchor } from './scroll-anchor.mjs';
 import { CUES, cueFor, keyOf, neglect, trackWaiting } from '../core/attention.mjs';
 import {
   describeEvent,
@@ -92,6 +93,7 @@ const sound = createSound();
 // Feed rows are rebuilt whenever a live event arrives. Keep disclosure state
 // outside those short-lived DOM nodes so the reader's choices survive updates.
 const expandedFeedRows = new Set();
+let renderedFeedView = null;
 
 // ------------------------------------------------------------------ server
 
@@ -1373,14 +1375,17 @@ function renderFeed() {
     return !(next && next.who === line.who && next.text.startsWith(line.text));
   });
 
-  const atBottom = feedBody.scrollHeight - feedBody.scrollTop - feedBody.clientHeight < 40;
+  const feedView = JSON.stringify([state.feedPreset, state.feedFilter]);
+  const position = feedView === renderedFeedView
+    ? captureScrollAnchor(feedBody)
+    : { mode: 'tail' };
   const rows = deduped.slice(-400).map(feedRow);
   const header = [presetBar(), checkpointCard(), ...(state.feedFilter ? [filterChip()] : [])]
     .filter(Boolean);
   feedControls?.replaceChildren(...header);
   feedBody.replaceChildren(...rows);
-  // Only follow the tail if the reader was already at it.
-  if (atBottom) feedBody.scrollTop = feedBody.scrollHeight;
+  restoreScrollAnchor(feedBody, position);
+  renderedFeedView = feedView;
 }
 
 function feedEventKey(agentId, event) {
@@ -1515,6 +1520,7 @@ function filterChip() {
 function feedRow(entry) {
   const row = document.createElement('div');
   row.className = `feed-row ${entry.tone}`;
+  row.dataset.scrollKey = entry.key;
   row.style.cssText = 'padding:5px 0;border-bottom:1px solid var(--line,#262626)';
 
   const head = document.createElement('div');
