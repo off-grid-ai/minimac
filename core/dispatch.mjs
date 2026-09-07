@@ -165,7 +165,11 @@ export function reportInstruction(role = null) {
   return [
     '# How you must report',
     '',
-    'END EVERY REPLY with a fenced block exactly like this, and nothing after it:',
+    'Call the MINIMAC report_progress tool before your final answer. It records the same '
+      + 'flows, claims, and gates for every engine.',
+    '',
+    'Only if report_progress is unavailable, END YOUR REPLY with this fallback block and '
+      + 'nothing after it:',
     '',
     '```' + REPORT_FENCE,
     '{',
@@ -218,6 +222,10 @@ export function reportInstruction(role = null) {
       + 'what nobody could work out by watching you: you need a decision, you are blocked '
       + 'on something you cannot get, or your work collides with another agent\'s. Leave it '
       + 'out entirely when you are simply working.',
+    '- Use the MINIMAC escalate_to_thor tool for a handoff. It reaches Thor and stays '
+      + 'visible to Mac. Never ask Mac to relay routine work.',
+    '- Your engine gives you shell and file tools separately. MINIMAC gives you fleet tools. '
+      + 'Use only tools the session actually shows you.',
     '- Add "escalate" only when you need attention. Add "standDown" only when you are done.',
     ...(plans ? [
       '- approach is the plan you acted on after sharpening it twice: "plan" is the '
@@ -481,8 +489,9 @@ function crewSection(agent, crew, team) {
     ...others,
     '',
     'How this team works:',
-    '- You never message another agent directly and you never wait on one silently.',
-    '- Address the human when you need something, and name the agent you need it from.',
+    '- You do not message another agent directly and you never wait on one silently.',
+    '- Use escalate_to_thor for a needed handoff. MINIMAC sends it to Thor and shows it to Mac.',
+    '- Never ask Mac to carry a routine message between Avengers.',
     '- Work only inside the files you own. If you need a file someone else owns, say so and stop.',
     '- Trust their reported results the way you would want yours trusted: by the receipt.',
   ].join('\n');
@@ -527,10 +536,10 @@ export function planningTask(mission, crew) {
     '',
     'Look at the actual repository first if that changes your answer.',
     '',
-    'Then end your reply with exactly this block:',
+    'Use the MINIMAC assemble_avengers tool to apply the decision. Its crew object must '
+      + 'name every agent below. The tool starts selected Avengers and benches the rest.',
     '',
-    'This turn has ONE job and ONE output. Do not write a report block, do not '
-    + 'start any work, and do not end with anything after this:',
+    'Only if assemble_avengers is unavailable, use this fallback block:',
     '',
     '```' + GOALS_FENCE,
     example,

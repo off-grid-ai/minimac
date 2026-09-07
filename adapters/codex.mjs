@@ -57,7 +57,11 @@ function isAccept(decision) {
   return decision === 'accept' || decision === 'acceptForSession';
 }
 
-export function createCodexDriver({ url = 'ws://127.0.0.1:4573', clientName = 'minimac' } = {}) {
+export function createCodexDriver({
+  url = 'ws://127.0.0.1:4573',
+  clientName = 'minimac',
+  mcpServer = null,
+} = {}) {
   let socket = null;
   let connecting = null;
   let nextId = 1;
@@ -436,6 +440,7 @@ export function createCodexDriver({ url = 'ws://127.0.0.1:4573', clientName = 'm
         // instead of parking on an approval it will wait forever for.
         approvalPolicy: 'never',
         sandbox: 'danger-full-access',
+        config: mcpConfig(agent),
       });
       const threadId = thread?.thread?.id;
       if (!threadId) throw new Error('thread/start returned no thread id');
@@ -453,7 +458,11 @@ export function createCodexDriver({ url = 'ws://127.0.0.1:4573', clientName = 'm
     // keeps everything it already worked out; only the new instruction is added.
     async resume(agent, cwd, sessionId, prompt) {
       await connect();
-      const thread = await request('thread/resume', { threadId: sessionId, cwd });
+      const thread = await request('thread/resume', {
+        threadId: sessionId,
+        cwd,
+        config: mcpConfig(agent),
+      });
       const threadId = thread?.thread?.id ?? sessionId;
       agentByThread.set(threadId, agent.id);
 
@@ -520,6 +529,11 @@ export function createCodexDriver({ url = 'ws://127.0.0.1:4573', clientName = 'm
       handlers.add(handler);
     },
   };
+
+  function mcpConfig(agent) {
+    const server = mcpServer?.(agent);
+    return server ? { mcp_servers: { minimac: server } } : null;
+  }
 }
 
 // ------------------------------------------------------------------ helpers

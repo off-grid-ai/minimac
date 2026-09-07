@@ -2,6 +2,7 @@
 // in adapters/. This file moves messages between them.
 
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +15,14 @@ import {
   EVENT_KINDS,
   eventsFor,
 } from './core/events.mjs';
-import { createRoster, assignEngine, DEFAULT_ROSTER, ENGINES, ROLES } from './core/roster.mjs';
+import {
+  createRoster,
+  assignEngine,
+  DEFAULT_ROSTER,
+  ENGINES,
+  ROLES,
+  isActive,
+} from './core/roster.mjs';
 import { setGoal, getGoal, clearGoal, deriveGoals } from './core/goals.mjs';
 import { claimFiles, releaseClaim } from './core/claims.mjs';
 import {
@@ -64,6 +72,7 @@ import {
   VERDICT_FENCE,
 } from './core/governance.mjs';
 import { splitFenced, isMachineNoise } from './core/readable.mjs';
+import { AGENT_TOOL, roleCanUseTool } from './core/agent-tools.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const MIME = {
@@ -172,6 +181,26 @@ if (adopted) {
 const worktrees = createWorktrees({ repo: options.repo, root: join(ROOT, 'worktrees') });
 const repoIndex = createRepoIndex();
 const uploads = createUploads({ dir: join(ROOT, 'data', 'attachments') });
+const agentTokens = new Map();
+const agentsByToken = new Map();
+
+function mcpServerFor(agent) {
+  let token = agentTokens.get(agent.id);
+  if (!token) {
+    token = randomUUID();
+    agentTokens.set(agent.id, token);
+    agentsByToken.set(token, agent.id);
+  }
+  return {
+    command: process.execPath,
+    args: [join(ROOT, 'adapters', 'fleet-mcp.mjs')],
+    env: {
+      MINIMAC_SERVER_URL: `http://127.0.0.1:${options.port}`,
+      MINIMAC_AGENT_TOKEN: token,
+      MINIMAC_AGENT_ROLE: agent.role,
+    },
+  };
+}
 // How this fleet is told to work. Survives runs and restarts.
 const middleware = store.middleware();
 // Who is reachable from your phone. core/remote decides; the drivers carry it
@@ -183,8 +212,8 @@ function remoteFor(agent) {
 }
 
 const getDriver = createDriverRegistry({
-  [ENGINES.CODEX]: createCodexDriver({ url: options.codexUrl }),
-  [ENGINES.CLAUDE]: createClaudeDriver({ remoteName: remoteFor }),
+  [ENGINES.CODEX]: createCodexDriver({ url: options.codexUrl, mcpServer: mcpServerFor }),
+  [ENGINES.CLAUDE]: createClaudeDriver({ remoteName: remoteFor, mcpServer: mcpServerFor }),
   [ENGINES.SIM]: createSimDriver(),
 });
 
@@ -203,31 +232,46 @@ const REPORT_BLOCK = new RegExp('```' + REPORT_FENCE + '\\s*([\\s\\S]*?)```');
 const GOALS_BLOCK = new RegExp('```' + GOALS_FENCE + '\\s*([\\s\\S]*?)```');
 
 // The orchestrator's answer to "what should each of them be doing".
-function harvestGoals(event) {
+async function harvestGoals(event) {
   const match = GOALS_BLOCK.exec(String(event.payload?.text ?? ''));
-  if (!match) return;
+  if (!match) return { applied: false, error: 'no assemble payload' };
 
   let parsed;
   try {
     parsed = JSON.parse(match[1]);
   } catch {
-    return;
+    return { applied: false, error: 'assemble payload is not valid JSON' };
   }
 
   // Who the mission needs. An agent taken off sits it out entirely: startCrew
   // skips anything disabled, so this is the orchestrator sizing its own crew.
   // No crew call is a failed assemble, not a partial one. Silently leaving
   // everyone on is how a two-hero mission ends up with seven idle seats.
-  const named = Object.keys(parsed.crew ?? {}).length;
-  if (state.awaitingGoals && named === 0) {
+  const crewSpec = parsed.crew ?? null;
+  const named = Object.keys(crewSpec ?? {}).length;
+  const expected = Object.values(state.agents)
+    .filter((agent) => agent.role !== ROLES.ORCHESTRATOR)
+    .map((agent) => agent.id);
+  const missing = crewSpec
+    ? expected.filter((agentId) => !Object.hasOwn(crewSpec, agentId))
+    : expected;
+  const unknown = crewSpec
+    ? Object.keys(crewSpec).filter((agentId) => !expected.includes(agentId))
+    : [];
+  if ((state.awaitingGoals || crewSpec) && (missing.length > 0 || unknown.length > 0)) {
+    const problem = [
+      missing.length > 0 && `missing ${missing.join(', ')}`,
+      unknown.length > 0 && `unknown ${unknown.join(', ')}`,
+    ].filter(Boolean).join('; ');
     ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
-      text: 'assemble incomplete: no crew named, so nobody was stood down',
+      text: `assemble incomplete: ${problem}; the roster was not changed`,
       from: 'you',
     }));
+    return { applied: false, error: problem };
   }
 
   const crew = [];
-  for (const [agentId, wanted] of Object.entries(parsed.crew ?? {})) {
+  for (const [agentId, wanted] of Object.entries(crewSpec ?? {})) {
     const agent = state.agents[agentId];
     if (!agent || agent.role === ROLES.ORCHESTRATOR) continue;
     // A number is how many of that hero the work needs; a boolean is one or none.
@@ -254,21 +298,7 @@ function harvestGoals(event) {
   // The work itself. Anything Thor names here becomes a real item every agent
   // can see, with an owner and a gate chain nobody can walk out of order.
   for (const spec of parsed.items ?? []) {
-    if (!spec?.title) continue;
-    const owner = state.agents[spec.owner] ? spec.owner : null;
-    const result = addItem(state.board, { ...spec, owner });
-    if (result.error) continue;
-    state.board = result.board;
-    store.saveItem(result.item);
-    if (result.duplicate) continue; // already on the board
-    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
-      text: `${result.item.id}: ${result.item.title}`
-        + (owner ? ` \u2192 ${state.agents[owner].label ?? owner}` : ' (nobody yet)'),
-      from: 'you',
-    }));
-    // Handing work to somebody is the commonest thing he does, so it is the
-    // commonest walk across the floor.
-    if (owner) orders(owner, `${result.item.id}: ${result.item.title}`);
+    addBoardWork(spec, event.agentId);
   }
 
   let applied = 0;
@@ -279,7 +309,29 @@ function harvestGoals(event) {
     orders(agentId, objective.trim());
     applied += 1;
   }
-  if (applied > 0) startCrew(`${event.agentId} set goals for ${applied} agents`);
+  if (named > 0) {
+    await startCrew(`${event.agentId} assembled ${named} Avengers`, true, true);
+  } else if (applied > 0) {
+    await startCrew(`${event.agentId} set goals for ${applied} agents`);
+  }
+  return { applied: true, avengers: named, goals: applied };
+}
+
+function addBoardWork(spec, by) {
+  if (!spec?.title) return { error: 'an item needs a title' };
+  const owner = state.agents[spec.owner] ? spec.owner : null;
+  const result = addItem(state.board, { ...spec, owner });
+  if (result.error) return result;
+  state.board = result.board;
+  store.saveItem(result.item);
+  if (result.duplicate) return result;
+  ingest(createEvent(by, EVENT_KINDS.STATUS, {
+    text: `${result.item.id}: ${result.item.title}`
+      + (owner ? ` \u2192 ${state.agents[owner].label ?? owner}` : ' (nobody yet)'),
+    from: 'you',
+  }));
+  if (owner) orders(owner, `${result.item.id}: ${result.item.title}`);
+  return result;
 }
 
 function harvestReport(event) {
@@ -295,7 +347,9 @@ function harvestReport(event) {
 
   // A hero asking for the room. It lands in the same queue as anything the
   // monitor derived, and is governed the same way - two ways in, one way out.
-  const plea = report.escalate;
+  const plea = typeof report.escalate === 'string'
+    ? { why: report.escalate, needs: 'unblock' }
+    : report.escalate;
   if (plea?.why && String(plea.why).trim()) {
     ingest(createEvent(event.agentId, EVENT_KINDS.PRAYER, {
       why: String(plea.why).trim(),
@@ -313,9 +367,11 @@ function harvestReport(event) {
       text: `stood down: ${why}`,
       from: 'you',
     }));
-    // Its own choice, so it ends its own turn - it is not benched, and START
-    // brings it straight back.
-    COMMANDS.interrupt({ agentId: event.agentId }).catch(() => {});
+    // Stopped and benched are one state. The same transition is used by Thor
+    // and by the floor toggle, so a self-stop cannot leave its switch on.
+    COMMANDS.setActive({ agentId: event.agentId, active: false })
+      .then(() => publish({ type: 'state', state: snapshot() }))
+      .catch(() => {});
   }
 
   // Gate moves. This is the only way the board changes from a worker, and
@@ -348,7 +404,9 @@ function harvestReport(event) {
     ingest(createEvent(event.agentId, EVENT_KINDS.PLAN, { steps: report.flows }));
   }
   for (const claim of report.claims ?? []) {
-    ingest(createEvent(event.agentId, EVENT_KINDS.CLAIM, claim));
+    const text = String(claim?.text ?? claim?.claim ?? '').trim();
+    if (!text) continue;
+    ingest(createEvent(event.agentId, EVENT_KINDS.CLAIM, { ...claim, text }));
   }
 }
 
@@ -394,7 +452,7 @@ function ingest(incoming) {
     state.events = appendEvent(state.events, incoming);
     state.agents = applyToAgent(state.agents, incoming);
     store.record(incoming);
-    publish({ type: 'event', event: incoming, agent: state.agents[incoming.agentId] });
+    publish({ type: 'event', event: incoming, agent: publicAgent(state.agents[incoming.agentId]) });
     harvestBlocks(incoming);
     scheduleCards();
     return;
@@ -410,7 +468,7 @@ function ingest(incoming) {
   state.events = appendEvent(state.events, event);
   state.agents = applyToAgent(state.agents, event);
   store.record(event);
-  publish({ type: 'event', event, agent: state.agents[event.agentId] });
+  publish({ type: 'event', event, agent: publicAgent(state.agents[event.agentId]) });
   if (raw !== null) harvestBlocks({ ...event, payload: { ...event.payload, text: raw } });
   scheduleCards();
 }
@@ -469,7 +527,7 @@ function harvestBlocks(event) {
   // Every parser reads the same normalised text, whichever envelope carried it.
   const carrying = { ...event, payload: { ...event.payload, text } };
   harvestReport(carrying);
-  harvestGoals(carrying);
+  void harvestGoals(carrying).catch(() => {});
   harvestVerdicts(carrying);
 }
 
@@ -593,7 +651,9 @@ async function applyVerdict(verdict) {
   } else if (verdict.action === VERDICT.GOAL) {
     await COMMANDS.setGoal({ agentId: verdict.agentId, objective: verdict.text });
   } else if (verdict.action === VERDICT.BENCH) {
-    await COMMANDS.setEnabled({ agentId: verdict.agentId, enabled: false });
+    await COMMANDS.setActive({ agentId: verdict.agentId, active: false });
+  } else if (verdict.action === VERDICT.START) {
+    await COMMANDS.setActive({ agentId: verdict.agentId, active: true });
   }
   ingest(createEvent('minimac', EVENT_KINDS.STATUS, {
     text: `${verdict.action} on ${who}: ${verdict.note || verdict.text}`,
@@ -609,6 +669,11 @@ function applyToAgent(agents, event) {
 
   if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
     next.status = event.payload.state;
+    if (event.payload.state === 'stopped') {
+      next.sessionId = null;
+      next.sessionIds = [];
+      next.enabled = false;
+    }
   }
   if (event.kind === EVENT_KINDS.PLAN) {
     next.flows = mergeFlows(agent.flows, event.payload.steps ?? []);
@@ -689,6 +754,7 @@ function crewRoster() {
     // Whether they are currently ON this mission. Without it the orchestrator
     // is judging who is needed without knowing who is already stood down.
     enabled: agent.enabled !== false,
+    active: isActive(agent),
     claims: state.claims[agent.id] ?? [],
   }));
 }
@@ -730,8 +796,8 @@ function middlewareText(name) {
 const PLANNING_TIMEOUT_MS = 180_000;
 
 // Start everyone except the orchestrator, which is already running.
-function startCrew(note, assembled = true) {
-  if (!state.awaitingGoals) return;
+async function startCrew(note, assembled = true, reconcile = false) {
+  if (!state.awaitingGoals && !reconcile) return;
   state.awaitingGoals = false;
   ingest(
     createEvent('minimac', EVENT_KINDS.STATUS, {
@@ -749,11 +815,17 @@ function startCrew(note, assembled = true) {
     }));
     return;
   }
+  const changes = [];
   for (const agent of Object.values(state.agents)) {
-    if (agent.role === 'orchestrator' || agent.sessionId) continue;
-    if (agent.enabled === false) continue; // taken off this mission
-    COMMANDS.start({ agentId: agent.id }).catch(() => {});
+    if (agent.role === ROLES.ORCHESTRATOR) continue;
+    if (agent.enabled === false) {
+      if (agent.sessionId) changes.push(COMMANDS.setActive({ agentId: agent.id, active: false }));
+      continue;
+    }
+    if (!agent.sessionId) changes.push(COMMANDS.setActive({ agentId: agent.id, active: true }));
   }
+  await Promise.allSettled(changes);
+  publish({ type: 'state', state: snapshot() });
 }
 
 // Agents read files from disk, so an attachment travels as a path plus enough
@@ -831,7 +903,7 @@ const COMMANDS = {
     // branch and the planning instruction arrived as an aside. Ending that turn
     // first makes the brief the whole of what he is being asked.
     if (orchestrator.sessionId) {
-      await COMMANDS.interrupt({ agentId: orchestrator.id });
+      await interruptAgent(orchestrator.id);
     }
     state.awaitingGoals = true;
     await COMMANDS.start({
@@ -1000,8 +1072,13 @@ const COMMANDS = {
     attachments = [],
     planning = false,
     exclusiveOutput = planning,
+    activate = false,
   }) {
-    if (state.agents[agentId]?.enabled === false) return { skipped: 'disabled' };
+    const initial = state.agents[agentId];
+    if (initial?.enabled === false && !activate) return { skipped: 'disabled' };
+    if (initial?.enabled === false) {
+      state.agents = patchAgent(state.agents, agentId, { enabled: true });
+    }
     ensureRun();
     const agent = state.agents[agentId];
     const goal = getGoal(state.goals, agentId);
@@ -1017,6 +1094,9 @@ const COMMANDS = {
     try {
       sessionId = await startWorkers(agent, cwd, context);
     } catch (error) {
+      if (initial?.enabled === false) {
+        state.agents = patchAgent(state.agents, agentId, { enabled: false });
+      }
       ingest(
         createBlockedEvent(agentId, {
           category: BLOCKED_REASONS.ERROR,
@@ -1094,7 +1174,7 @@ const COMMANDS = {
       });
     }
     ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, { text, from: 'you', attachments }));
-    return COMMANDS.start({ agentId, task: text, mentions: parsed, attachments });
+    return COMMANDS.start({ agentId, task: text, mentions: parsed, attachments, activate: true });
   },
 
   // Make the orchestrator say something to a hero. The floor walks him over.
@@ -1191,24 +1271,6 @@ const COMMANDS = {
     return { delivered: sent.delivered };
   },
 
-  // KILL. Stops this agent's turn now: the Claude child is killed, a Codex turn
-  // is interrupted, and the seat is cleared so START gives you a fresh one. The
-  // agent stays on the floor - this ends the work, not the worker.
-  async interrupt({ agentId }) {
-    const agent = state.agents[agentId];
-    if (!agent) throw new Error(`no agent ${agentId}`);
-    answerPrayer(agentId, 'stopped by Mac');
-    const had = agent.sessionIds?.length || (agent.sessionId ? 1 : 0);
-    if (had) await eachSession(agent, (id) => getDriver(agent.engine).interrupt(id));
-    state.agents = patchAgent(state.agents, agentId, {
-      status: 'stopped', sessionId: null, sessionIds: [],
-    });
-    // Their conditions died with the turn. Leaving cards up for an agent who
-    // has stopped is asking you to decide about something that is already over.
-    refreshCards();
-    return {};
-  },
-
   async setGoal({ agentId, objective, tokenBudget, status }) {
     // Giving the orchestrator a goal IS giving the fleet a mission - it would
     // be strange to write "get the repos pushed" on Thor and have the rest of
@@ -1248,13 +1310,38 @@ const COMMANDS = {
     return { agentId, instances: count };
   },
 
-  async setEnabled({ agentId, enabled }) {
-    // Benching clears their cards too - see interrupt.
+  async assignWork({ id, title, scope, owner, needs, blockedBy, estimateMs, by = 'minimac' }) {
+    if (!state.agents[owner] || state.agents[owner].role === ROLES.ORCHESTRATOR) {
+      throw new Error(`unknown Avenger: ${owner}`);
+    }
+    if (id) {
+      const result = assignItem(state.board, id, owner);
+      if (result.error) throw new Error(result.error);
+      state.board = result.board;
+      store.saveItem(result.item);
+      orders(owner, `${result.item.id}: ${result.item.title}`);
+      return { item: result.item };
+    }
+    const result = addBoardWork({ title, scope, owner, needs, blockedBy, estimateMs }, by);
+    if (result.error) throw new Error(result.error);
+    return { item: result.item, duplicate: result.duplicate === true };
+  },
+
+  // One command owns the mission switch. Off benches and stops the agent. On
+  // brings it onto the mission and starts a real middleware-composed session.
+  async setActive({ agentId, active }) {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
-    if (!enabled && agent.sessionId) await COMMANDS.interrupt({ agentId });
-    state.agents = patchAgent(state.agents, agentId, { enabled: !!enabled });
-    return { agentId, enabled: !!enabled };
+    if (!active) {
+      if (agent.sessionId) await interruptAgent(agentId);
+      state.agents = patchAgent(state.agents, agentId, { enabled: false });
+      return { agentId, active: false };
+    }
+    if (agent.sessionId) {
+      state.agents = patchAgent(state.agents, agentId, { enabled: true });
+      return { agentId, active: true, sessionId: agent.sessionId };
+    }
+    return COMMANDS.start({ agentId, activate: true });
   },
 
   async assignEngine({ agentId, engine }) {
@@ -1277,6 +1364,21 @@ const COMMANDS = {
   },
 };
 
+// End a live engine session without deciding mission membership. This is an
+// internal lifecycle step used by the one public active/bench transition and
+// by Thor's isolated assemble turn. It is not a command clients can call.
+async function interruptAgent(agentId) {
+  const agent = state.agents[agentId];
+  if (!agent) throw new Error(`no agent ${agentId}`);
+  answerPrayer(agentId, 'stopped by Mac');
+  const had = agent.sessionIds?.length || (agent.sessionId ? 1 : 0);
+  if (had) await eachSession(agent, (id) => getDriver(agent.engine).interrupt(id));
+  state.agents = patchAgent(state.agents, agentId, {
+    status: 'stopped', sessionId: null, sessionIds: [],
+  });
+  refreshCards();
+}
+
 async function handleCommand(cmd) {
   const command = COMMANDS[cmd.type];
   if (!command) throw new Error(`unknown command: ${cmd.type}`);
@@ -1289,7 +1391,9 @@ async function handleCommand(cmd) {
 
 function snapshot() {
   return {
-    agents: state.agents,
+    agents: Object.fromEntries(
+      Object.entries(state.agents).map(([id, agent]) => [id, publicAgent(agent)]),
+    ),
     goals: state.goals,
     claims: state.claims,
     mission: state.mission,
@@ -1306,6 +1410,10 @@ function snapshot() {
   };
 }
 
+function publicAgent(agent) {
+  return agent ? { ...agent, active: isActive(agent) } : agent;
+}
+
 function publish(message) {
   const frame = `data: ${JSON.stringify(message)}\n\n`;
   for (const res of subscribers) res.write(frame);
@@ -1315,6 +1423,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (url.pathname === '/events') return subscribe(res);
+  if (url.pathname === '/agent-tool' && req.method === 'POST') return agentTool(req, res);
   if (url.pathname === '/cmd' && req.method === 'POST') return command(req, res);
   if (url.pathname === '/upload' && req.method === 'POST') return upload(req, res);
   if (url.pathname === '/history') {
@@ -1381,6 +1490,72 @@ async function command(req, res) {
   } catch (error) {
     json(res, 400, { ok: false, error: error.message });
   }
+}
+
+async function agentTool(req, res) {
+  const token = String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const callerId = agentsByToken.get(token);
+  if (!callerId) return json(res, 401, { ok: false, error: 'invalid agent tool token' });
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  try {
+    const call = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const result = await executeAgentTool(callerId, call.name, call.arguments ?? {});
+    publish({ type: 'state', state: snapshot() });
+    return json(res, 200, { ok: true, result });
+  } catch (error) {
+    return json(res, 400, { ok: false, error: error.message });
+  }
+}
+
+async function executeAgentTool(callerId, name, args) {
+  const caller = state.agents[callerId];
+  if (!caller || !roleCanUseTool(caller.role, name)) {
+    throw new Error(`${callerId} cannot use ${name}`);
+  }
+
+  if (name === AGENT_TOOL.REPORT) {
+    harvestReport({
+      agentId: callerId,
+      payload: { text: `\`\`\`${REPORT_FENCE}\n${JSON.stringify(args)}\n\`\`\`` },
+    });
+    return { recorded: true };
+  }
+  if (name === AGENT_TOOL.ESCALATE) {
+    const details = [args.why, args.agent && `Avenger: ${args.agent}`, args.receipt && `Receipt: ${args.receipt}`]
+      .filter(Boolean)
+      .join('\n');
+    ingest(createEvent(callerId, EVENT_KINDS.PRAYER, { why: details, needs: args.needs }));
+    return { escalated: true, to: 'thor' };
+  }
+  if (name === AGENT_TOOL.ASSEMBLE) {
+    const result = await harvestGoals({
+      agentId: callerId,
+      payload: { text: `\`\`\`${GOALS_FENCE}\n${JSON.stringify(args)}\n\`\`\`` },
+    });
+    if (!result?.applied) throw new Error(result?.error ?? 'assemble was not applied');
+    return { assembled: true, ...result };
+  }
+
+  const target = state.agents[args.agentId];
+  if ([AGENT_TOOL.START, AGENT_TOOL.BENCH, AGENT_TOOL.GOAL].includes(name)) {
+    if (!target || target.role === ROLES.ORCHESTRATOR) {
+      throw new Error(`unknown Avenger: ${args.agentId}`);
+    }
+  }
+  if (name === AGENT_TOOL.START) {
+    return COMMANDS.setActive({ agentId: args.agentId, active: true });
+  }
+  if (name === AGENT_TOOL.BENCH) {
+    return COMMANDS.setActive({ agentId: args.agentId, active: false });
+  }
+  if (name === AGENT_TOOL.GOAL) {
+    return COMMANDS.setGoal({ agentId: args.agentId, objective: args.objective });
+  }
+  if (name === AGENT_TOOL.ASSIGN) {
+    return COMMANDS.assignWork({ ...args, by: callerId });
+  }
+  throw new Error(`unknown agent tool: ${name}`);
 }
 
 async function upload(req, res) {

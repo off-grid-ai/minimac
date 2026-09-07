@@ -57,7 +57,12 @@ const NEEDS_APPROVAL = /\b(requires? (approval|permission)|permission (denied|re
 // should appear under on your other devices, or null for a session that stays
 // on this machine. It is a function rather than a flag because the answer is
 // per-agent, and because a resumed session must come back under the same name.
-export function createClaudeDriver({ bin = 'claude', model = null, remoteName = null } = {}) {
+export function createClaudeDriver({
+  bin = 'claude',
+  model = null,
+  remoteName = null,
+  mcpServer = null,
+} = {}) {
   const sessions = new Map(); // sessionId -> { child, agentId, cwd, buffer, stderr, alive }
   const handlers = new Set();
   // tool_use_id -> the call it belongs to, so a result closes the same unit of
@@ -239,6 +244,10 @@ export function createClaudeDriver({ bin = 'claude', model = null, remoteName = 
     // name is what you choose it by there, so it carries the seat, not a uuid.
     const remote = remoteName?.(agent) ?? null;
     if (remote) args.push('--remote-control', remote);
+    const server = mcpServer?.(agent);
+    if (server) {
+      args.push('--mcp-config', JSON.stringify({ mcpServers: { minimac: server } }));
+    }
     return args;
   }
 
@@ -280,7 +289,12 @@ export function createClaudeDriver({ bin = 'claude', model = null, remoteName = 
           }),
         );
       }
-      emit(createEvent(agent.id, EVENT_KINDS.STATUS, { state: 'stopped', code }));
+      // A successful --print process exit ends one turn, not the resumable
+      // conversation. Only a failed or interrupted process is stopped.
+      emit(createEvent(agent.id, EVENT_KINDS.STATUS, {
+        state: code === 0 ? 'idle' : 'stopped',
+        code,
+      }));
     });
 
     return session;

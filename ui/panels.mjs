@@ -87,7 +87,11 @@ function agentRow(agent, handlers) {
   );
 
   row.append(
-    ident, crewSize(agent, handlers), engineToggle(agent, handlers), goalEditor(agent, handlers),
+    ident,
+    crewSize(agent, handlers),
+    engineToggle(agent, handlers),
+    goalEditor(agent, handlers),
+    createAgentChat(agent, handlers).el,
   );
   return row;
 }
@@ -163,13 +167,13 @@ function goalEditor(agent, handlers) {
 // list so it can be brought back, but it is never dispatched and never appears
 // on the floor.
 function enabledToggle(agent, handlers) {
-  const off = agent.enabled === false;
+  const off = agent.active !== true;
   const button = el('button', 'switch');
   button.type = 'button';
   button.role = 'switch';
   button.setAttribute('aria-checked', String(!off));
-  button.setAttribute('aria-label', `${nameOf(agent)} on this mission`);
-  button.title = off ? `Bring ${nameOf(agent)} onto this mission` : `Take ${nameOf(agent)} off this mission`;
+  button.setAttribute('aria-label', `${nameOf(agent)} working`);
+  button.title = off ? `Start ${nameOf(agent)}` : `Stop ${nameOf(agent)}`;
   button.style.cssText = [
     'flex:none', 'box-sizing:border-box', 'position:relative',
     'width:26px', 'height:14px', 'min-width:26px', 'padding:0', 'margin:0',
@@ -189,7 +193,7 @@ function enabledToggle(agent, handlers) {
 
   button.onclick = (event) => {
     event.stopPropagation();
-    handlers.setEnabled(agent.id, off);
+    handlers.setActive(agent.id, off);
   };
   return button;
 }
@@ -714,20 +718,42 @@ function actionRow(decision, handlers) {
 }
 
 function steerRow(decision, handlers) {
+  return createAgentChat(decision, handlers, {
+    placeholder: `tell ${nameOf(decision)} what to do instead`,
+  }).el;
+}
+
+// One message control everywhere an agent can be addressed. It always calls
+// the same handler, which sends through the server middleware whether the
+// agent is already running or must be started by this message.
+export function createAgentChat(agent, handlers, options = {}) {
   const form = el('div', 'steer');
   const input = el('input');
-  const who = nameOf(decision);
-  input.placeholder = `tell ${who} what to do instead`;
-  input.setAttribute('aria-label', `steer ${who}`);
+  let target = null;
+
+  const setAgent = (next) => {
+    target = next ?? null;
+    const who = target ? nameOf(target) : 'an Avenger';
+    const agentId = target?.id ?? target?.agentId ?? 'none';
+    input.dataset.field = `chat:${agentId}`;
+    input.placeholder = options.placeholder ?? `talk to ${who}`;
+    input.setAttribute('aria-label', `talk to ${who}`);
+    input.disabled = !target;
+  };
+
+  form.onclick = (event) => event.stopPropagation();
   input.onkeydown = (event) => {
     event.stopPropagation();
-    if (event.key === 'Enter' && input.value.trim()) {
-      handlers.steer(decision.agentId, input.value.trim(), input.getBoundingClientRect());
+    if (event.key === 'Enter' && target && input.value.trim()) {
+      const agentId = target.id ?? target.agentId;
+      handlers.steer(agentId, input.value.trim(), input.getBoundingClientRect());
       input.value = '';
+      handlers.openChat?.(agentId);
     }
   };
   form.append(input, el('span', 'hint', '↵'));
-  return form;
+  setAgent(agent);
+  return { el: form, input, setAgent };
 }
 
 // An idle queue still says what it is for, as a quiet hollow card rather

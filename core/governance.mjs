@@ -17,6 +17,10 @@
 // sole governor - which is the thing this exists to stop. Neither was worth a
 // switch, so there is no switch.
 
+import { cardKey } from './monitor.mjs';
+
+export { cardKey } from './monitor.mjs';
+
 // What Thor is allowed to do about a card. Deliberately small: everything here
 // is reversible from the floor, and none of it can touch your files.
 export const VERDICT = Object.freeze({
@@ -28,6 +32,8 @@ export const VERDICT = Object.freeze({
   GOAL: 'goal',
   // Take that agent off the mission entirely.
   BENCH: 'bench',
+  // Bring that agent onto the mission and start its session.
+  START: 'start',
   // This one is the human's call. Always reaches you, in every mode.
   ESCALATE: 'escalate',
 });
@@ -36,12 +42,6 @@ const VERDICT_ACTIONS = new Set(Object.values(VERDICT));
 
 export function isVerdictAction(value) {
   return VERDICT_ACTIONS.has(value);
-}
-
-// A stable identity for a card, so the same standing condition is not sent to
-// the orchestrator once a second for as long as it lasts.
-export function cardKey(card) {
-  return `${card.agentId}:${card.kind}`;
 }
 
 // ------------------------------------------------------------------ routing
@@ -81,6 +81,7 @@ export function governanceTask(cards, crew) {
   const roster = crew
     .filter((member) => member.role !== 'orchestrator')
     .map((member) => `- ${member.id}  (${member.label}, ${member.role})`
+      + ` [${member.active ? 'working' : 'stopped'}]`
       + (member.objective ? `\n    goal: ${member.objective}` : '\n    goal: none set'))
     .join('\n');
 
@@ -121,6 +122,7 @@ export function governanceTask(cards, crew) {
     `- "${VERDICT.STEER}" - say something to that agent mid-turn. Put it in "text".`,
     `- "${VERDICT.GOAL}" - give that agent a different objective. Put it in "text".`,
     `- "${VERDICT.BENCH}" - take that agent off the mission. Use this sparingly.`,
+    `- "${VERDICT.START}" - bring a stopped agent onto the mission and start its session.`,
     `- "${VERDICT.ESCALATE}" - the operator's call, not yours. Say why in the note.`,
     '',
     'Rules:',

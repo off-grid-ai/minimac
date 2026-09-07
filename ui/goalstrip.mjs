@@ -95,7 +95,7 @@ export function createGoalStrip({ handlers, console: consoleEl, renderFlows, ren
   });
 
   power.onclick = () => {
-    if (agentId) handlers.setEnabled(agentId, !enabled);
+    if (agentId) handlers.setActive(agentId, !enabled);
   };
 
   // The strip sits on the console, and the console moves as its input grows.
@@ -149,12 +149,12 @@ export function createGoalStrip({ handlers, console: consoleEl, renderFlows, ren
       who.textContent = agent.label ?? agent.name;
       who.dataset.status = agent.status;
 
-      enabled = agent.enabled !== false;
+      enabled = agent.active === true;
       power.setAttribute('aria-checked', String(enabled));
-      power.setAttribute('aria-label', `${agent.label ?? agent.name} on this mission`);
+      power.setAttribute('aria-label', `${agent.label ?? agent.name} working`);
       power.title = enabled
-        ? `Take ${agent.label ?? agent.name} off this mission`
-        : `Bring ${agent.label ?? agent.name} onto this mission`;
+        ? `Stop ${agent.label ?? agent.name}`
+        : `Start ${agent.label ?? agent.name}`;
 
       // Never rewritten under the keyboard: an event arriving must not swallow
       // what is being typed.

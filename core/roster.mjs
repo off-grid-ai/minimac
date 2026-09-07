@@ -78,6 +78,13 @@ export function createAgent(spec) {
   };
 }
 
+// The mission switch means "working now". Mission membership and engine
+// lifecycle stay separate inside the server; consumers get this one read-only
+// projection and never have to rebuild the rule themselves.
+export function isActive(agent) {
+  return agent?.enabled !== false && Boolean(agent?.sessionId);
+}
+
 export function createRoster(specs = DEFAULT_ROSTER, overrides = {}) {
   return Object.fromEntries(
     specs.map((spec) => {

@@ -687,6 +687,13 @@
   .steer input:focus { outline: none; border-color: var(--accent); }
   .steer .hint { flex: 0 0 auto; font-size: 10px; color: var(--faint); letter-spacing: 0.1em; text-transform: none; }
 
+  .feed-chat {
+    flex: 0 0 auto;
+    padding: calc(var(--step) * 2);
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+  }
+
   /* ------------------------------------------------------------------ runs */
 
   .run {
@@ -1036,7 +1043,7 @@
     padding-block: calc(var(--step) * 2);
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
-    grid-template-areas: "id copies engine" "goal goal goal";
+    grid-template-areas: "id copies engine" "goal goal goal" "chat chat chat";
     gap: calc(var(--step) * 1) calc(var(--step) * 2);
     align-items: center;
     padding: calc(var(--step) * 2) calc(var(--step) * 1.5);
@@ -1085,6 +1092,7 @@
   .status[data-status="benched"] .word { color: var(--muted); }
 
   .agent .goal { grid-area: goal; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .agent .steer { grid-area: chat; min-width: 0; }
   .agent .goal-label {
     font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint);
   }

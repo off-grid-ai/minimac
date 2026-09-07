@@ -104,7 +104,7 @@ const ACTION_WORDS = Object.freeze({
   continueRun: 'continue run', resumeRun: 'run again', stopRun: 'stop run',
   setRepo: 'change folder', claim: 'claim files', release: 'release files',
   setMiddleware: 'edit middleware', resetMiddleware: 'reset middleware',
-  assemble: 'assemble', settlePrayer: 'settle',
+  assemble: 'assemble', settlePrayer: 'settle', setActive: 'set active',
 });
 
 async function send(type, payload = {}) {
@@ -532,6 +532,7 @@ function rosterView(agents) {
     status: agent.status,
     selected: agent.selected,
     enabled: agent.enabled,
+    active: agent.active,
     instances: agent.instances,
     engine: agent.engine,
     goal: agent.goal,
@@ -1060,9 +1061,10 @@ function closeTopWindow() {
 
 const handlers = {
   select: focus,
+  openChat: openAgentFeed,
   setGoal: (agentId, objective) => send('setGoal', { agentId, objective }),
   assignEngine: (agentId, engine) => send('assignEngine', { agentId, engine }),
-  setEnabled: (agentId, enabled) => send('setEnabled', { agentId, enabled }),
+  setActive: (agentId, active) => send('setActive', { agentId, active }),
   close: () => focus(null),
 
   // Every steer is watched all the way to the desk: it leaves whatever you
@@ -1122,7 +1124,7 @@ const handlers = {
     }
     if (action === 'kill') {
       flyTo({ agentId: decision.agentId, text: 'stop', from, tone: 'fail' });
-      return send('interrupt', { agentId: decision.agentId });
+      return send('setActive', { agentId: decision.agentId, active: false });
     }
     if (action === 'split') {
       return send('say', {
@@ -1283,6 +1285,11 @@ function renderFeed() {
   // which is why its filters were nowhere to be found. Ask the body whether it
   // is actually on screen instead.
   if (!feedBody || !feedBody.isConnected || feedBody.offsetParent === null) return;
+
+  const talkTo = state.feedFilter
+    ? state.agents[state.feedFilter]
+    : state.agents[orchestratorId()];
+  feedChat?.setAgent(talkTo ?? null);
 
   const lines = [];
   for (const [agentId, events] of Object.entries(state.eventsByAgent)) {
@@ -1466,6 +1473,7 @@ function feedEntry(agent, event) {
 
 let headerEl = null;
 let feedBody = null;
+let feedChat = null;
 
 // The feed is a window like any other: same chrome, same dock switch, same
 // dragging and resizing. Building it here rather than in the markup only means
@@ -1482,7 +1490,12 @@ function mountFeed() {
   feedBody.className = 'win-body';
   feedBody.id = 'feed';
 
-  win.append(bar, feedBody);
+  const talk = document.createElement('footer');
+  talk.className = 'feed-chat';
+  feedChat = panels.createAgentChat(null, handlers);
+  talk.append(feedChat.el);
+
+  win.append(bar, feedBody, talk);
   document.body.append(win);
 
   dom.winFeed = win;
