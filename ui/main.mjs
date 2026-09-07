@@ -1543,7 +1543,36 @@ function feedRow(entry) {
     body.innerHTML = renderMarkdown(entry.text);
   }
   row.append(body);
+  if (entry.attachments?.length) row.append(feedAttachments(entry.attachments));
   return row;
+}
+
+function feedAttachments(files) {
+  const gallery = document.createElement('div');
+  gallery.className = 'feed-attachments';
+  gallery.setAttribute('aria-label', 'message attachments');
+
+  for (const file of files) {
+    const href = `/attachment?path=${encodeURIComponent(file.path)}`;
+    const link = document.createElement('a');
+    link.className = 'feed-attachment';
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    link.title = `open ${file.name}`;
+
+    if (String(file.type ?? '').startsWith('image/')) {
+      const image = document.createElement('img');
+      image.src = href;
+      image.alt = file.name;
+      image.loading = 'lazy';
+      link.append(image);
+    } else {
+      link.textContent = file.name;
+    }
+    gallery.append(link);
+  }
+  return gallery;
 }
 
 
@@ -1555,7 +1584,8 @@ function feedEntry(agent, event) {
 
   if (event.kind === EVENT_KINDS.MESSAGE) {
     const text = String(payload.text ?? '');
-    if (payload.partial !== true && plainText(text).length < 12) return null;
+    const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+    if (payload.partial !== true && plainText(text).length < 12 && attachments.length === 0) return null;
     return {
       at,
       who,
@@ -1565,6 +1595,7 @@ function feedEntry(agent, event) {
       streamId: payload.sessionId ? `${event.agentId}:${payload.sessionId}` : null,
       partial: payload.partial === true,
       final: payload.final === true,
+      attachments,
       tone: '',
     };
   }
@@ -2345,6 +2376,17 @@ function mountMarkdownStyles() {
     .md table { width: 100%; border-collapse: collapse; margin: 6px 0; }
     .md th, .md td { border: 1px solid var(--line, #262626); padding: 4px 7px; text-align: left; }
     .md th { color: var(--accent, #34d399); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+    .feed-attachments {
+      display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px;
+    }
+    .feed-attachment {
+      display: block; max-width: min(100%, 420px); color: var(--accent, #34d399);
+      border: 1px solid var(--line, #262626); background: var(--sunk, #151515);
+      overflow: hidden;
+    }
+    .feed-attachment img {
+      display: block; width: auto; max-width: 100%; max-height: 260px; object-fit: contain;
+    }
   `;
   document.head.append(style);
 }
