@@ -18,7 +18,15 @@ export const SPEAK_TARGETS = Object.freeze([
   { id: ROUTE_TARGET, label: 'THOR', blurb: 'say it once, he decides who needs it' },
 ]);
 
-export function createComposer({ dom, send, getAgents, getTarget, setTarget, onSend }) {
+export function createComposer({
+  dom,
+  send,
+  getAgents,
+  getTarget,
+  setTarget,
+  onSend,
+  dropTarget = globalThis,
+}) {
   if (!dom.input) return { setTarget() {}, focus() {} };
 
   let suggestions = [];
@@ -258,19 +266,19 @@ export function createComposer({ dom, send, getAgents, getTarget, setTarget, onS
     event.stopPropagation();
   };
   for (const type of ['dragenter', 'dragover']) {
-    addEventListener(type, (event) => {
+    dropTarget.addEventListener(type, (event) => {
       stop(event);
       document.body.classList.add('dropping');
     });
   }
   for (const type of ['dragleave', 'drop']) {
-    addEventListener(type, (event) => {
+    dropTarget.addEventListener(type, (event) => {
       stop(event);
       if (type === 'dragleave' && event.relatedTarget) return;
       document.body.classList.remove('dropping');
     });
   }
-  addEventListener('drop', (event) => {
+  dropTarget.addEventListener('drop', (event) => {
     const files = [...(event.dataTransfer?.files ?? [])];
     if (files.length > 0) attach(files);
   });
@@ -298,6 +306,7 @@ export function createComposer({ dom, send, getAgents, getTarget, setTarget, onS
         dom.targetChip.title = preset?.blurb ?? '';
       }
       if (!dom.input) return;
+      const targetAgent = agents.find((candidate) => candidate.id === target);
       const toMission = target === MISSION_TARGET;
       dom.input.placeholder = toMission
         ? 'set the mission · @file /skill @agent'
@@ -305,7 +314,7 @@ export function createComposer({ dom, send, getAgents, getTarget, setTarget, onS
           ? 'a rule every agent obeys, on every message, from now on'
           : target === ROUTE_TARGET
             ? 'say it once - Thor decides who needs to hear it'
-            : `steer ${target} · @file /skill @agent`;
+            : `talk to ${targetAgent?.label ?? target} · @file /skill @agent`;
 
       const typing = document.activeElement === dom.input;
       if (typing) return;

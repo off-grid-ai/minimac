@@ -275,7 +275,7 @@ function isOpen(agentId, path, depth) {
   return depth < zoom.depth;
 }
 
-// The board, as one shared tree. Seven private self-reports could never answer
+// Checkpoints, as one shared tree. Seven private self-reports could never answer
 // "which repo is the hold-up"; one list with owners and gate chains can.
 export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
   const items = board ?? [];
@@ -288,7 +288,7 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
 
   const head = el('div', 'flow-left');
   head.append(
-    el('span', 'flow-left-label', 'board'),
+    el('span', 'flow-left-label', 'checkpoints'),
     el('span', 'flow-left-value',
       `${velocity?.done ?? 0} of ${velocity?.items ?? items.length} items done`),
     el('span', 'flow-left-pct',
@@ -296,6 +296,21 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
         ? '' : `${velocity.percent}% of gates passed`),
   );
   frag.append(head);
+
+  const enabled = agents.filter((agent) =>
+    agent.role !== 'orchestrator' && agent.enabled !== false);
+  const slots = enabled.reduce((sum, agent) => sum + Math.max(1, agent.instances ?? 1), 0);
+  const inUse = enabled.reduce((sum, agent) =>
+    sum + (agent.sessionIds?.length || (agent.sessionId ? 1 : 0)), 0);
+  const ready = items.filter((item) =>
+    ['open', 'assigned'].includes(stateOf({ items }, item))).length;
+  const capacity = el('div', 'flow-left');
+  capacity.append(
+    el('span', 'flow-left-label', 'capacity'),
+    el('span', 'flow-left-value', `${inUse} of ${slots} worker slots in use`),
+    el('span', 'flow-left-pct', `${Math.max(0, slots - inUse)} free · ${ready} ready`),
+  );
+  frag.append(capacity);
 
   // Grouped by where the work is, so a multi-repo mission reads per repo.
   const byScope = new Map();
@@ -354,10 +369,10 @@ function boardRow(item, all, nameOfId, handlers) {
 function emptyBoard() {
   const card = el('div', 'decision hollow');
   const block = teach(
-    'no work on the board yet',
-    'The board is the shared truth: one item per piece of work, with an owner, '
+    'no checkpoints yet',
+    'Checkpoints are the shared truth: one checkpoint per piece of work, with an owner, '
       + 'a gate chain walked in order, and the command behind each gate. Press '
-      + 'ASSEMBLE and Thor splits the mission into items and hands them out.',
+      + 'ASSEMBLE and Thor splits the mission into checkpoints and hands them out.',
   );
   card.append(block);
   return card;
@@ -611,16 +626,22 @@ function observationCard(decision, handlers) {
     answer.onclick = () => handlers.act('answer', decision);
     const row = el('div', 'actions answers');
     row.append(answer);
-    const ignore = el('button', 'act', 'KILL');
+    const ignore = el('button', 'act', 'DISMISS');
     ignore.type = 'button';
     ignore.onclick = (event) =>
-      handlers.act('kill', decision, event.currentTarget.getBoundingClientRect());
+      handlers.act('dismiss', decision, event.currentTarget.getBoundingClientRect());
     row.append(ignore);
     card.append(row);
     return card;
   }
 
-  card.append(actionRow(decision, handlers));
+  const actions = actionRow(decision, handlers);
+  const dismiss = el('button', 'act', 'DISMISS');
+  dismiss.type = 'button';
+  dismiss.onclick = (event) =>
+    handlers.act('dismiss', decision, event.currentTarget.getBoundingClientRect());
+  actions.append(dismiss);
+  card.append(actions);
   if (decision.actions.includes('steer')) card.append(steerRow(decision, handlers));
   return card;
 }
@@ -707,7 +728,7 @@ function humanise(text) {
 function actionRow(decision, handlers) {
   const actions = el('div', 'actions');
   for (const action of decision.actions ?? []) {
-    const button = el('button', 'act', action.toUpperCase());
+    const button = el('button', 'act', action === 'kill' ? 'STOP' : action.toUpperCase());
     button.type = 'button';
     button.dataset.action = action;
     // The rect is where the action was pressed: main.mjs flies a token from
@@ -815,7 +836,7 @@ export function renderRuns(root, runs, currentId, handlers) {
     rows.push(
       teach(
         'no earlier missions',
-        'Every mission is kept whole - the fleet, the board and every event - so a ' +
+        'Every mission is kept whole - the fleet, the checkpoints and every event - so a ' +
           'morning that went wrong can be opened again and read back.',
       ),
     );

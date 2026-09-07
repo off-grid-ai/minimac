@@ -26,7 +26,7 @@ import {
 import { createScene, deskSpot } from './scene.mjs';
 import { seatOf } from './layout.mjs';
 import * as panels from './panels.mjs';
-import { renderQueue, renderRoster, renderFlows, renderEvidence } from './panels.mjs';
+import { renderQueue, renderRoster, renderFlows } from './panels.mjs';
 import { createComposer, MISSION_TARGET, SPEAK_TARGETS } from './composer.mjs';
 import { createSidePanel } from './sidepanel.mjs';
 import { createGoalStrip } from './goalstrip.mjs';
@@ -589,6 +589,11 @@ function renderPanels() {
       renderFlows(dom.flows, { ...focused, flows });
     });
   }
+  if (dom.checkpoints && windows?.isOpen('checkpoints')) {
+    renderChanged('checkpoints', dom.checkpoints, [state.board, state.velocity], () => {
+      panels.renderBoard(dom.checkpoints, state.board, state.velocity, agents, { focus });
+    });
+  }
   // The focused flow stays available here and at the desk. The panel is the
   // stable reading surface; the desk keeps the same truth beside its controls.
   if (dom.focusName) dom.focusName.textContent = focused?.name ?? '';
@@ -601,7 +606,10 @@ function renderPanels() {
     renderChanged('decisions', dom.queue, [queue, state.prayerWith, prayer], () => {
       keepingField(dom.queue, () => {
         if (state.prayerWith && prayerThread(state.prayerWith)) renderPrayer(dom.queue);
-        else renderQueue(dom.queue, queue, handlers);
+        else {
+          clearPrayerChrome();
+          renderQueue(dom.queue, queue, handlers);
+        }
       });
     }, { deferWhileEditing: false });
   }
@@ -610,7 +618,7 @@ function renderPanels() {
   windows?.setCount?.('prayer', orderedAgents().filter((a) => prayerThread(a.id)).length);
   composer?.setTarget(state.target, agents, state.mission ?? '');
   renderBubbles(queue);
-  renderStrip(agents);
+  renderStrip(agents, queue);
   renderHeader(agents);
   if (windows?.isOpen('feed')) renderFeed();
   if (dom.crewBar) {
@@ -701,14 +709,14 @@ function renderCrewBar(agents) {
   dom.crewBar.replaceChildren(...cells);
 }
 
-function renderStrip(agents) {
+function renderStrip(agents, queue = []) {
   if (!strip) return;
   const agent = agents.find((candidate) => candidate.id === state.focus);
   if (!agent) return strip.close();
   strip.render({
     ...agent,
     flows: measuredFlows(agent),
-    claims: claimsFor(agent.id),
+    decisions: queue.filter((decision) => decision.agentId === agent.id),
   });
 }
 
@@ -1013,6 +1021,7 @@ function frame() {
 const WINDOW_IDS = {
   feed: ['winFeed', 'btnFeed'],
   flows: ['winFlows', 'btnFlows'],
+  checkpoints: ['winCheckpoints', 'btnCheckpoints'],
   crew: ['winCrew', 'btnCrew'],
   decisions: ['winDecisions', 'btnDecisions'],
   runs: ['winRuns', 'btnRuns'],
@@ -1128,6 +1137,9 @@ const handlers = {
       flyTo({ agentId: decision.agentId, text: 'stop', from, tone: 'fail' });
       return send('setActive', { agentId: decision.agentId, active: false });
     }
+    if (action === 'dismiss') {
+      return send('dismissDecision', { key: decision.key });
+    }
     if (action === 'split') {
       return send('say', {
         target: decision.agentId,
@@ -1236,6 +1248,7 @@ function wireChrome() {
     dom[WINDOW_IDS[name][1]]?.addEventListener('click', () => toggleWindow(name));
   }
   dom.winFlowsClose?.addEventListener('click', () => toggleWindow('flows'));
+  dom.winCheckpointsClose?.addEventListener('click', () => toggleWindow('checkpoints'));
   dom.winCrewClose?.addEventListener('click', () => toggleWindow('crew'));
   dom.winDecisionsClose?.addEventListener('click', () => toggleWindow('decisions'));
   dom.winRunsClose?.addEventListener('click', () => toggleWindow('runs'));
@@ -1282,7 +1295,7 @@ function clearFeedFilter() {
 }
 
 function renderFeed() {
-  // The side panel adopts the feed BODY and leaves the old window element
+  // The side panel adopts the feed window and leaves the old window element
   // hidden, so testing that window meant the feed never drew while docked -
   // which is why its filters were nowhere to be found. Ask the body whether it
   // is actually on screen instead.
@@ -1291,7 +1304,7 @@ function renderFeed() {
   const talkTo = state.feedFilter
     ? state.agents[state.feedFilter]
     : state.agents[orchestratorId()];
-  feedChat?.setAgent(talkTo ?? null);
+  feedChat?.setTarget(talkTo?.id ?? null, orderedAgents(), state.mission ?? '');
 
   const lines = [];
   for (const [agentId, events] of Object.entries(state.eventsByAgent)) {
@@ -1316,25 +1329,19 @@ function renderFeed() {
 
   const atBottom = feedBody.scrollHeight - feedBody.scrollTop - feedBody.clientHeight < 40;
   const rows = deduped.slice(-400).map(feedRow);
-  // The board is pinned above the stream. One surface answers both questions a
-  // person actually has: where does the work stand, and what just happened.
-  const header = [presetBar(), boardBlock(), ...(state.feedFilter ? [filterChip()] : [])]
+  const header = [presetBar(), checkpointCard(), ...(state.feedFilter ? [filterChip()] : [])]
     .filter(Boolean);
-  feedBody.replaceChildren(...header, ...rows);
+  feedControls?.replaceChildren(...header);
+  feedBody.replaceChildren(...rows);
   // Only follow the tail if the reader was already at it.
   if (atBottom) feedBody.scrollTop = feedBody.scrollHeight;
 }
 
-// A visible reminder that you are reading one agent, with the way back on it.
-// Where the work stands, pinned above the stream it belongs to.
-let boardOpen = true;
-
-function boardBlock() {
+// A compact status card stays in Feed. The full checkpoint list has its own
+// scrollable panel, so this card opens it and never expands in place.
+function checkpointCard() {
   const items = state.board ?? [];
   if (items.length === 0) return null;
-  // It is the point of the BOARD tag, and useful background on ALL. It would
-  // only be noise on the others.
-  if (!['all', 'board'].includes(state.feedPreset)) return null;
   const wrap = document.createElement('div');
   wrap.style.cssText = 'border:1px solid var(--line,#262626);margin:0 0 8px;'
     + 'background:var(--sunk,#151515)';
@@ -1342,21 +1349,14 @@ function boardBlock() {
   const head = document.createElement('button');
   head.type = 'button';
   const v = state.velocity ?? {};
-  head.textContent = `${boardOpen ? '\u25be' : '\u25b8'} BOARD  `
+  head.textContent = `CHECKPOINTS  `
     + `${v.done ?? 0} of ${v.items ?? items.length} done`
     + (v.percent === null || v.percent === undefined ? '' : `  ·  ${v.percent}% of gates passed`);
   head.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;'
     + 'border:0;color:var(--accent,#34d399);font:inherit;font-size:9px;letter-spacing:.12em;'
     + 'padding:6px 8px;cursor:pointer';
-  head.onclick = () => { boardOpen = !boardOpen; renderFeed(); };
+  head.onclick = () => openWindow('checkpoints');
   wrap.append(head);
-
-  if (boardOpen) {
-    const body = document.createElement('div');
-    body.style.cssText = 'padding:0 8px 8px';
-    panels.renderBoard(body, items, state.velocity, orderedAgents(), { focus });
-    wrap.append(body);
-  }
   return wrap;
 }
 
@@ -1364,7 +1364,7 @@ function boardBlock() {
 function presetBar() {
   const bar = document.createElement('div');
   bar.style.cssText = [
-    'position:sticky', 'top:0', 'z-index:2', 'display:flex', 'gap:4px',
+    'display:flex', 'gap:4px',
     'padding:2px 0 6px', 'background:var(--surface,#121212)',
   ].join(';');
   for (const preset of FEED_PRESETS) {
@@ -1389,7 +1389,7 @@ function presetBar() {
 function filterChip() {
   const chip = document.createElement('div');
   chip.style.cssText = [
-    'position:sticky', 'top:0', 'z-index:1', 'display:flex', 'align-items:center',
+    'display:flex', 'align-items:center',
     'gap:8px', 'padding:4px 0 6px', 'background:var(--surface,#121212)',
     'border-bottom:1px solid var(--line,#262626)', 'font-size:10px',
     'letter-spacing:.12em', 'color:var(--accent,#34d399)',
@@ -1475,7 +1475,10 @@ function feedEntry(agent, event) {
 
 let headerEl = null;
 let feedBody = null;
+let feedControls = null;
 let feedChat = null;
+let prayerComposer = null;
+let checkpointsBody = null;
 
 // The feed is a window like any other: same chrome, same dock switch, same
 // dragging and resizing. Building it here rather than in the markup only means
@@ -1492,17 +1495,114 @@ function mountFeed() {
   feedBody.className = 'win-body';
   feedBody.id = 'feed';
 
+  feedControls = document.createElement('div');
+  feedControls.className = 'feed-controls';
+
   const talk = document.createElement('footer');
   talk.className = 'feed-chat';
-  feedChat = panels.createAgentChat(null, handlers);
-  talk.append(feedChat.el);
+  feedChat = mountPanelComposer(talk, {
+    getTarget: () => state.feedFilter ?? orchestratorId(),
+  });
 
-  win.append(bar, feedBody, talk);
+  win.append(bar, feedControls, feedBody, talk);
   document.body.append(win);
 
   dom.winFeed = win;
   dom.feed = feedBody;
   mountFeedButton();
+}
+
+function mountCheckpoints() {
+  const win = document.createElement('section');
+  win.id = 'winCheckpoints';
+  win.className = 'win';
+  const bar = document.createElement('div');
+  bar.className = 'win-bar';
+  checkpointsBody = document.createElement('div');
+  checkpointsBody.className = 'win-body';
+  checkpointsBody.id = 'checkpoints';
+  win.append(bar, checkpointsBody);
+  document.body.append(win);
+  dom.winCheckpoints = win;
+  dom.checkpoints = checkpointsBody;
+
+  const sibling = dom.btnCrew ?? dom.btnDecisions;
+  if (sibling?.parentElement) {
+    const button = sibling.cloneNode(false);
+    button.id = 'btnCheckpoints';
+    button.textContent = 'CHECKPOINTS';
+    sibling.parentElement.insertBefore(button, sibling);
+    dom.btnCheckpoints = button;
+  }
+}
+
+function mountPrayerComposer() {
+  if (!dom.prayerChat || prayerComposer) return;
+  const settled = document.createElement('button');
+  settled.className = 'dock-btn mini';
+  settled.type = 'button';
+  settled.textContent = 'SETTLED';
+  settled.onclick = () => {
+    if (state.prayerWith) send('settlePrayer', { agentId: state.prayerWith });
+  };
+  prayerComposer = mountPanelComposer(dom.prayerChat, {
+    getTarget: () => state.prayerWith,
+    extraActions: [settled],
+  });
+}
+
+// The main console and both side-panel chats use createComposer. This shell
+// only adapts that component to a fixed panel footer; it adds no send path.
+function mountPanelComposer(host, { getTarget, extraActions = [] }) {
+  const attachments = document.createElement('div');
+  attachments.className = 'panel-attachments';
+  attachments.hidden = true;
+
+  const row = document.createElement('div');
+  row.className = 'panel-compose-row';
+  const input = document.createElement('textarea');
+  input.rows = 1;
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  const sendButton = document.createElement('button');
+  sendButton.className = 'btn primary';
+  sendButton.type = 'button';
+  sendButton.textContent = 'SEND';
+  row.append(input, sendButton);
+
+  const actions = document.createElement('div');
+  actions.className = 'panel-compose-actions';
+  const attach = document.createElement('button');
+  attach.className = 'dock-btn mini';
+  attach.type = 'button';
+  attach.textContent = '+FILE';
+  const file = document.createElement('input');
+  file.type = 'file';
+  file.multiple = true;
+  file.hidden = true;
+  attach.onclick = () => file.click();
+
+  actions.append(attach, ...extraActions, file);
+
+  // Keep the complete composer in one fixed row. A separate action row can be
+  // pushed below the panel edge when the conversation is tall.
+  row.replaceChildren(actions, input, sendButton);
+
+  const menu = document.createElement('div');
+  menu.className = 'panel-mention-menu';
+  menu.hidden = true;
+  menu.setAttribute('role', 'listbox');
+  host.append(attachments, row, menu);
+
+  return createComposer({
+    dom: { input, send: sendButton, menu, attachments, file },
+    send,
+    getAgents: () => orderedAgents(),
+    getTarget,
+    setTarget: () => {},
+    onSend: flyMessage,
+    dropTarget: host,
+  });
 }
 
 // The prayer thread. One hero asked you something only they could know to
@@ -1522,8 +1622,17 @@ function prayerThread(agentId) {
   if (start === -1) return null;
   const question = events[start].payload;
   // Everything either of you has said since they asked.
-  const said = events.slice(start + 1).filter((event) =>
+  const spoken = events.slice(start + 1).filter((event) =>
     event.kind === EVENT_KINDS.MESSAGE || event.kind === EVENT_KINDS.PRAYER);
+  // Engines can emit a partial message and then the same message completed.
+  // Keep the completed form once; do not show a person two copies.
+  const said = spoken.filter((event, index) => {
+    const next = spoken[index + 1];
+    if (!next || next.payload?.from !== event.payload?.from) return true;
+    const text = plainText(event.payload?.text ?? event.payload?.answer ?? '');
+    const nextText = plainText(next.payload?.text ?? next.payload?.answer ?? '');
+    return !nextText.startsWith(text);
+  });
   return { question, said, askedAt: events[start].ts };
 }
 
@@ -1543,6 +1652,7 @@ function renderPrayer(into) {
       .filter((row) => row.thread);
 
     if (waiting.length === 0) {
+      clearPrayerChrome();
       const idle = document.createElement('div');
       idle.style.cssText = 'padding:10px 0;color:var(--muted,#8a8a8a)';
       idle.textContent = agentId
@@ -1551,6 +1661,8 @@ function renderPrayer(into) {
       prayerBody.replaceChildren(idle);
       return;
     }
+
+    clearPrayerChrome();
 
     const head = document.createElement('div');
     head.style.cssText = 'font-size:9px;letter-spacing:.12em;color:var(--faint,#5a5a5a);padding-bottom:8px';
@@ -1576,16 +1688,8 @@ function renderPrayer(into) {
     return;
   }
 
+  renderPrayerHead(agent);
   const rows = [];
-  const who = document.createElement('button');
-  who.type = 'button';
-  who.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;border:0;'
-    + 'font:inherit;font-size:10px;letter-spacing:.12em;color:var(--accent,#34d399);'
-    + 'padding:0 0 6px;cursor:pointer';
-  who.textContent = `\u2190 ${(agent.label ?? agent.name).toUpperCase()} ASKED YOU`;
-  who.title = 'back to everyone waiting';
-  who.onclick = () => { state.prayerWith = null; schedulePanels(); };
-  rows.push(who);
 
   const asked = document.createElement('div');
   asked.style.cssText = 'padding:8px 10px;border-left:2px solid var(--accent,#34d399);'
@@ -1605,29 +1709,46 @@ function renderPrayer(into) {
     rows.push(line);
   }
 
-  const reply = document.createElement('input');
-  reply.dataset.field = `reply:${agentId}`;
-  reply.placeholder = `answer ${agent.label ?? agent.name}`;
-  reply.style.cssText = 'width:100%;margin-top:10px;background:var(--bg,#0d0d0d);'
-    + 'border:1px solid var(--line,#262626);color:inherit;font:inherit;padding:6px 8px';
-  reply.onkeydown = (event) => {
-    event.stopPropagation();
-    if (event.key !== 'Enter' || !reply.value.trim()) return;
-    send('say', { target: agentId, text: reply.value.trim() });
-    reply.value = '';
-  };
-  rows.push(reply);
-
-  const settled = document.createElement('button');
-  settled.type = 'button';
-  settled.textContent = 'SETTLED';
-  settled.title = 'close this question - it stays open until you say so';
-  settled.style.cssText = 'margin-top:8px;background:transparent;border:1px solid var(--line,#262626);'
-    + 'color:var(--muted,#8a8a8a);font:inherit;font-size:9px;letter-spacing:.12em;padding:3px 9px;cursor:pointer';
-  settled.onclick = () => send('settlePrayer', { agentId });
-  rows.push(settled);
-
   prayerBody.replaceChildren(...rows);
+  renderPrayerChat(agent);
+}
+
+function renderPrayerHead(agent) {
+  if (!dom.prayerHead) return;
+  if (dom.prayerHead.dataset.agentId === agent.id && !dom.prayerHead.hidden) return;
+  const who = document.createElement('button');
+  who.type = 'button';
+  who.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;border:0;'
+    + 'font:inherit;font-size:10px;letter-spacing:.12em;color:var(--accent,#34d399);'
+    + 'padding:0 0 6px;cursor:pointer';
+  who.textContent = `\u2190 ${(agent.label ?? agent.name).toUpperCase()} ASKED YOU`;
+  who.title = 'back to everyone waiting';
+  who.onclick = () => { state.prayerWith = null; schedulePanels(); };
+  dom.prayerHead.dataset.agentId = agent.id;
+  dom.prayerHead.replaceChildren(who);
+  dom.prayerHead.hidden = false;
+}
+
+// The thread scrolls. Its reply control does not. Keep the same footer while
+// new events arrive, so a redraw cannot move the caret or discard typed text.
+function renderPrayerChat(agent) {
+  if (!dom.prayerChat) return;
+  mountPrayerComposer();
+  dom.prayerChat.dataset.agentId = agent.id;
+  dom.prayerChat.hidden = false;
+  prayerComposer?.setTarget(agent.id, orderedAgents(), state.mission ?? '');
+}
+
+function clearPrayerChrome() {
+  if (dom.prayerHead) {
+    dom.prayerHead.hidden = true;
+    delete dom.prayerHead.dataset.agentId;
+    dom.prayerHead.replaceChildren();
+  }
+  if (dom.prayerChat) {
+    dom.prayerChat.hidden = true;
+    delete dom.prayerChat.dataset.agentId;
+  }
 }
 
 // A switch on the console, cloned from its neighbours so it cannot drift out
@@ -1937,6 +2058,8 @@ function boot() {
   mountMarkdownStyles();
   mountHeader();
   mountFeed();
+  mountCheckpoints();
+  mountPrayerComposer();
   mountMiddleware();
 
   // The console's extra row when a desk is focused.
@@ -1946,12 +2069,12 @@ function boot() {
     // The desk draws a flow and a claim with the same functions the panels
     // use. One way to draw each, wherever it appears.
     renderFlows,
-    renderEvidence,
+    renderDecisions: (root, items) => renderQueue(root, items, handlers),
   });
 
   windows = createSidePanel({
     entries: windowEntries(),
-    labels: { feed: 'FEED', crew: 'AVENGERS', decisions: 'DECISIONS',
+    labels: { feed: 'FEED', checkpoints: 'CHECKPOINTS', crew: 'AVENGERS', decisions: 'DECISIONS',
               runs: 'MISSIONS', middleware: 'MIDDLEWARE' },
     onChange: () => renderPanels(),
   });
@@ -2011,7 +2134,8 @@ function pickDom() {
     'floor', 'topbar', 'repoPath', 'queueCount', 'startAll', 'planAll', 'crewBar',
     'composer', 'composerTarget', 'composerInput', 'composerSend', 'mentionMenu',
     'attachments', 'fileInput', 'btnAttach',
-    'winDecisions', 'winDecisionsClose', 'queue', 'bubbles', 'btnDecisions',
+    'winDecisions', 'winDecisionsClose', 'queue', 'prayerHead', 'prayerChat',
+    'bubbles', 'btnDecisions',
     'winCrew', 'winCrewClose', 'roster', 'roCrew', 'btnCrew',
     'winFlows', 'winFlowsClose', 'flows', 'btnFlows', 'focusName',
     'winRuns', 'winRunsClose', 'runs', 'roRuns', 'btnRuns', 'stopAll', 'btnSound',

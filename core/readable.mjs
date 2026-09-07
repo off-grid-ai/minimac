@@ -159,11 +159,10 @@ export const FEED_PRESETS = Object.freeze([
   { id: 'crosstalk', label: 'crosstalk', blurb: 'only the heroes talking to each other' },
   { id: 'signal', label: 'signal', blurb: 'crosstalk, plus anything that changes what happens next' },
   { id: 'evidence', label: 'evidence', blurb: 'only what was claimed, and the command behind it' },
-  { id: 'board', label: 'board', blurb: 'only the work: items handed out and gates moved' },
 ]);
 
 export function isPreset(id) {
-  return FEED_PRESETS.some((preset) => preset.id === id);
+  return id === 'board' || FEED_PRESETS.some((preset) => preset.id === id);
 }
 
 // A hero addressing another hero, either way round.
@@ -192,7 +191,7 @@ export function passesPreset(event, preset = 'all') {
   }
 
   // Only the work moving.
-  if (preset === 'board') {
+  if (preset === 'board' || preset === 'checkpoints') {
     return event?.kind === 'status' && BOARD_LINE.test(String(event.payload?.text ?? ''));
   }
 

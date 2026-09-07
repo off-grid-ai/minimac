@@ -11,14 +11,13 @@
 // clipped by the top bar and never covers the floor.
 //
 // Standing at a desk shows that agent's whole standing: the goal they are
-// working to, the flow contract they accepted, and the claims they have made
-// with the command behind each one. Those used to be global tabs you had to go
-// and find; a tab you have to go find is a failure of the room.
+// working to, the flow contract they accepted, and anything that needs a
+// decision now. Evidence stays in the feed, where its history belongs.
 //
 // It holds no truth. Everything it shows arrives in render(); editing the goal
 // goes straight back out through the handlers it was built with.
 
-export function createGoalStrip({ handlers, console: consoleEl, renderFlows, renderEvidence }) {
+export function createGoalStrip({ handlers, console: consoleEl, renderFlows, renderDecisions }) {
   style();
 
   const root = document.createElement('div');
@@ -60,8 +59,8 @@ export function createGoalStrip({ handlers, console: consoleEl, renderFlows, ren
   desk.className = 'goalstrip-desk';
 
   const flowPane = section('flow', 'steps, and time against their own estimate');
-  const evidencePane = section('evidence', 'what they have proved');
-  desk.append(flowPane.root, evidencePane.root);
+  const decisionPane = section('decisions', 'what needs you');
+  desk.append(flowPane.root, decisionPane.root);
 
   root.append(head, desk);
   (consoleEl?.parentElement ?? document.body).insertBefore(root, consoleEl ?? null);
@@ -69,6 +68,26 @@ export function createGoalStrip({ handlers, console: consoleEl, renderFlows, ren
   let agentId = null;
   let saved = '';
   let enabled = true;
+  let decisionSignature = '';
+  let pendingDecisions = null;
+
+  const paintDecisions = (decisions) => {
+    const signature = JSON.stringify(decisions);
+    if (signature === decisionSignature) return;
+    if (decisionPane.body.contains(document.activeElement)) {
+      pendingDecisions = decisions;
+      return;
+    }
+    pendingDecisions = null;
+    decisionSignature = signature;
+    decisionPane.setCount(decisions.length);
+    renderDecisions?.(decisionPane.body, decisions);
+  };
+
+  decisionPane.body.addEventListener('focusout', () => {
+    if (!pendingDecisions) return;
+    queueMicrotask(() => paintDecisions(pendingDecisions ?? []));
+  });
 
   const commit = () => {
     const next = goal.value.trim();
@@ -163,16 +182,13 @@ export function createGoalStrip({ handlers, console: consoleEl, renderFlows, ren
         saved = objective;
         goal.value = objective;
       }
-      // The desk itself: their contract and their receipts, rendered by the
-      // same functions the panels use, so there is one way to draw a flow and
-      // one way to draw a claim.
+      // The desk itself: their contract and their open decisions, rendered by
+      // the same functions as the full panels. Each fact has one visual owner.
       const flows = agent.flows ?? [];
       flowPane.setCount(flows.length);
       renderFlows?.(flowPane.body, { ...agent, flows });
 
-      const claims = agent.claims ?? [];
-      evidencePane.setCount(claims.length);
-      renderEvidence?.(evidencePane.body, claims);
+      paintDecisions(agent.decisions ?? []);
 
       follow(); // places the strip and measures the field at its real width
     },

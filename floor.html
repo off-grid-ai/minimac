@@ -589,7 +589,14 @@
     padding: 0 5px;
   }
 
-  .decision .detail { color: var(--text); font-size: 12px; margin: 0 0 calc(var(--step) * 2.5); word-break: break-word; }
+  .decision .detail {
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 0 0 calc(var(--step) * 2.5);
+    overflow-wrap: anywhere;
+    white-space: pre-line;
+  }
 
   /* An approval is a request, not an observation: the engine is parked until
      it is answered, so the card carries the accent - the one colour reserved
@@ -692,6 +699,83 @@
     border-top: 1px solid var(--line);
     background: var(--surface);
   }
+
+  .feed-controls,
+  .prayer-head {
+    flex: 0 0 auto;
+    padding: calc(var(--step) * 2) calc(var(--step) * 2.5) 0 calc(var(--step) * 3.5);
+    background: var(--surface);
+  }
+
+  .feed-controls { border-bottom: 1px solid var(--line); }
+
+  .prayer-chat {
+    position: relative;
+    display: grid;
+    gap: calc(var(--step) * 1.5);
+  }
+
+  .prayer-chat[hidden] { display: none; }
+
+  .panel-compose-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "input input" "actions send";
+    gap: calc(var(--step) * 1.5);
+    align-items: end;
+  }
+
+  .panel-compose-row textarea {
+    grid-area: input;
+    display: block;
+    width: 100%;
+    max-height: 35vh;
+    resize: none;
+    overflow-y: hidden;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font: 13px/1.4 var(--mono);
+    padding: 6px 10px;
+  }
+
+  .panel-compose-row textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 12px -4px var(--accent-glow);
+  }
+
+  .panel-compose-actions {
+    grid-area: actions;
+    display: flex;
+    align-items: end;
+    gap: calc(var(--step) * 1.5);
+  }
+
+  .panel-compose-row > .btn { grid-area: send; }
+
+  .panel-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--step) * 1.5);
+    max-height: 76px;
+    overflow: auto;
+  }
+
+  .panel-mention-menu {
+    position: absolute;
+    left: calc(var(--step) * 2);
+    right: calc(var(--step) * 2);
+    bottom: calc(100% + var(--step));
+    max-height: 260px;
+    overflow: auto;
+    z-index: 3;
+    background: var(--glass-solid);
+    border: 1px solid var(--line);
+  }
+
+  .panel-mention-menu .mention-row { padding: 5px 8px; cursor: pointer; }
+  .panel-mention-menu .mention-row[aria-selected="true"] { background: var(--accent-soft); }
 
   /* ------------------------------------------------------------------ runs */
 
@@ -1518,7 +1602,9 @@
         <span class="readout" id="roDecisions">0 WAITING</span>
         <button class="icon-btn" id="winDecisionsClose" type="button" aria-label="Close decisions">✕</button>
       </header>
+      <div class="prayer-head" id="prayerHead" hidden></div>
       <div class="win-body"><div id="queue" aria-live="polite"></div></div>
+      <footer class="feed-chat prayer-chat" id="prayerChat" hidden></footer>
     </section>
 
     <section class="win" id="winRuns" hidden aria-label="Runs">

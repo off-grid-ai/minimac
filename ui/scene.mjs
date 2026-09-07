@@ -250,21 +250,19 @@ export function createScene({ canvas, palette, onSelect, onHover }) {
     }
   }
 
-  // Ignoring the room costs something you can see: the lights go down and the
-  // colour drains out of it. It comes straight back the moment you answer.
+  // Attention changes the room tone, but it must not hide live work. The
+  // decision cards carry the alert; a running desk stays readable.
   let mood = -1;
   function applyMood(level) {
     if (Math.abs(level - mood) < 0.01) return;
     mood = level;
-    // Far enough down that you cannot miss it, never so far that the room
-    // stops being readable - a dark floor still has to be worked in.
-    const dim = 1 - level * 0.5;
+    const dim = 1 - level * 0.08;
     lights.hemi.intensity = lights.base.hemi * dim;
     lights.key.intensity = lights.base.key * dim;
     lights.fill.intensity = lights.base.fill * dim;
-    for (const lamp of lamps) lamp.intensity = 1.4 * (1 - level * 0.8);
-    renderer.toneMappingExposure = 1.32 * (1 - level * 0.35);
-    scene.fog.near = 14 - level * 7;
+    for (const lamp of lamps) lamp.intensity = 1.4;
+    renderer.toneMappingExposure = 1.32 * (1 - level * 0.04);
+    scene.fog.near = 14 - level;
   }
 
   // -------------------------------------------------------------- contract
