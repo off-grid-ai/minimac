@@ -764,11 +764,9 @@ function runAgainButton(run, handlers) {
   return button;
 }
 
-export function renderRuns(root, runs, handlers) {
-  // Runs arrive newest first, so the current run is the newest one that has
-  // not ended. An older run with no end time crashed; saying "current" about
-  // four of them at once would be a lie.
-  const currentId = runs.find((run) => !run.ended_at)?.id ?? null;
+export function renderRuns(root, runs, currentId, handlers) {
+  // The server owns which run is current. An unfinished database row may be a
+  // crashed old process; guessing from ended_at made STOP target another run.
   const rows = [newRunRow(handlers)];
   if (!runs.length) {
     rows.push(
@@ -779,7 +777,11 @@ export function renderRuns(root, runs, handlers) {
       ),
     );
   } else {
-    rows.push(...runs.map((run) => runRow(run, run.id === currentId, handlers)));
+    rows.push(...runs.map((run) => runRow(
+      run,
+      run.id === currentId && !run.ended_at,
+      handlers,
+    )));
   }
   root.replaceChildren(...rows);
 }

@@ -439,6 +439,8 @@ function pendingApproval(events) {
 let panelsQueued = false;
 let lastBubbleAt = 0;
 let seeded = false;
+const rendered = new Map();
+const deferred = new WeakSet();
 
 // Everything is already in SQLite, so a reload rejoins the run in progress
 // instead of starting from an empty feed.
@@ -466,10 +468,71 @@ function schedulePanels() {
   }, PANEL_THROTTLE_MS);
 }
 
-function isTypingIn(root) {
+// Rebuilding a panel with replaceChildren destroys whatever field you were
+// typing in. Skipping the rebuild instead was worse: focus stays in the reply
+// box after you send, so the panel froze and every later answer went to the
+// agent without ever appearing on screen. So the field is carried ACROSS the
+// rebuild - what you had typed, where the caret was, and the focus itself -
+// and the panel always redraws. A field opts in with `data-field`, whose value
+// is what makes it the same field on the other side of the render.
+function keepingField(root, render) {
   const active = document.activeElement;
-  return !!active && root.contains(active)
+  const typing = !!active && root.contains(active)
     && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement);
+  const field = typing ? active.dataset.field : null;
+  const value = typing ? active.value : '';
+  const start = typing ? active.selectionStart : null;
+  const end = typing ? active.selectionEnd : null;
+
+  render();
+
+  if (!field) return;
+  const next = root.querySelector(`[data-field="${CSS.escape(field)}"]`);
+  if (!(next instanceof HTMLInputElement || next instanceof HTMLTextAreaElement)) return;
+  next.value = value;
+  next.focus();
+  if (start !== null && end !== null) next.setSelectionRange(start, end);
+}
+
+// Live events arrive much faster than the controls change. Replacing a whole
+// panel for each event makes clicks miss and moves the caret while somebody is
+// typing. Each panel therefore redraws only when its own visible data changes.
+// A real change that arrives during an edit waits until focus leaves the field.
+function renderChanged(name, root, value, render, { deferWhileEditing = true } = {}) {
+  const signature = JSON.stringify(value);
+  if (rendered.get(name) === signature) return;
+
+  const active = document.activeElement;
+  const editing = !!active && root.contains(active)
+    && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement);
+  if (deferWhileEditing && editing) {
+    if (!deferred.has(root)) {
+      deferred.add(root);
+      root.addEventListener('focusout', () => {
+        deferred.delete(root);
+        schedulePanels();
+      }, { once: true });
+    }
+    return;
+  }
+
+  render();
+  rendered.set(name, signature);
+}
+
+function rosterView(agents) {
+  return agents.map((agent) => ({
+    id: agent.id,
+    label: agent.label,
+    name: agent.name,
+    role: agent.role,
+    status: agent.status,
+    selected: agent.selected,
+    enabled: agent.enabled,
+    instances: agent.instances,
+    engine: agent.engine,
+    goal: agent.goal,
+  }));
 }
 
 // The walkover, tick by tick. Two signature moves bracket it: the carrier's
@@ -507,22 +570,36 @@ function renderPanels() {
   // FLOW and EVIDENCE follow whoever is focused: they are one agent's contract
   // and one agent's claims, and the room is what says which agent that is.
   const focused = agents.find((agent) => agent.selected) ?? agents[0];
-  if (dom.roster) renderRoster(dom.roster, agents, handlers);
+  if (dom.roster && windows?.isOpen('crew')) {
+    renderChanged('crew', dom.roster, rosterView(agents), () => {
+      renderRoster(dom.roster, agents, handlers);
+    });
+  }
   if (dom.roCrew) {
     const running = agents.filter((agent) => agent.status === 'running').length;
     dom.roCrew.textContent = `${running}/${agents.length} RUNNING`;
   }
-  // FLOW and EVIDENCE are no longer global windows: the board owns work state
-  // and the feed owns evidence. What remains is per-agent, and that lives at
-  // the desk - see renderStrip.
+  if (dom.flows && focused && windows?.isOpen('flows')) {
+    const flows = measuredFlows(focused);
+    renderChanged('flows', dom.flows, [focused.id, flows], () => {
+      renderFlows(dom.flows, { ...focused, flows });
+    });
+  }
+  // The focused flow stays available here and at the desk. The panel is the
+  // stable reading surface; the desk keeps the same truth beside its controls.
   if (dom.focusName) dom.focusName.textContent = focused?.name ?? '';
-  // Never rebuild a panel while the user is typing in it: replaceChildren
-  // destroys the field mid-keystroke. The redraw waits for the blur.
   // One queue. A hero's question is a decision like any other, so answering it
   // happens here rather than behind a second tab that counted the same things.
-  if (dom.queue && !isTypingIn(dom.queue)) {
-    if (state.prayerWith && prayerThread(state.prayerWith)) renderPrayer(dom.queue);
-    else renderQueue(dom.queue, queue, handlers);
+  if (dom.queue && windows?.isOpen('decisions')) {
+    const prayer = state.prayerWith
+      ? state.eventsByAgent[state.prayerWith] ?? []
+      : null;
+    renderChanged('decisions', dom.queue, [queue, state.prayerWith, prayer], () => {
+      keepingField(dom.queue, () => {
+        if (state.prayerWith && prayerThread(state.prayerWith)) renderPrayer(dom.queue);
+        else renderQueue(dom.queue, queue, handlers);
+      });
+    }, { deferWhileEditing: false });
   }
   if (dom.queueCount) dom.queueCount.textContent = String(queue.length);
   windows?.setCount?.('decisions', queue.length);
@@ -531,10 +608,25 @@ function renderPanels() {
   renderBubbles(queue);
   renderStrip(agents);
   renderHeader(agents);
-  renderFeed();
-  renderCrewBar(agents);
+  if (windows?.isOpen('feed')) renderFeed();
+  if (dom.crewBar) {
+    const crewBar = agents.map((agent) => [
+      agent.id,
+      agent.name,
+      agent.label,
+      agent.status,
+      agent.offDuty,
+      agent.id === state.focus,
+      doingNow(agent),
+    ]);
+    renderChanged('crew-bar', dom.crewBar, crewBar, () => renderCrewBar(agents));
+  }
   renderPrayer();
-  if (dom.runs) panels.renderRuns?.(dom.runs, state.runs, handlers);
+  if (dom.runs && windows?.isOpen('runs')) {
+    renderChanged('runs', dom.runs, [state.runs, state.runId], () => {
+      panels.renderRuns?.(dom.runs, state.runs, state.runId, handlers);
+    });
+  }
   if (dom.roRuns) dom.roRuns.textContent = `${state.runs.length} RUNS`;
 }
 
@@ -914,6 +1006,7 @@ function frame() {
 // agent's desk.
 const WINDOW_IDS = {
   feed: ['winFeed', 'btnFeed'],
+  flows: ['winFlows', 'btnFlows'],
   crew: ['winCrew', 'btnCrew'],
   decisions: ['winDecisions', 'btnDecisions'],
   runs: ['winRuns', 'btnRuns'],
@@ -1117,6 +1210,7 @@ function wireChrome() {
   for (const name of Object.keys(WINDOW_IDS)) {
     dom[WINDOW_IDS[name][1]]?.addEventListener('click', () => toggleWindow(name));
   }
+  dom.winFlowsClose?.addEventListener('click', () => toggleWindow('flows'));
   dom.winCrewClose?.addEventListener('click', () => toggleWindow('crew'));
   dom.winDecisionsClose?.addEventListener('click', () => toggleWindow('decisions'));
   dom.winRunsClose?.addEventListener('click', () => toggleWindow('runs'));
@@ -1476,6 +1570,7 @@ function renderPrayer(into) {
   }
 
   const reply = document.createElement('input');
+  reply.dataset.field = `reply:${agentId}`;
   reply.placeholder = `answer ${agent.label ?? agent.name}`;
   reply.style.cssText = 'width:100%;margin-top:10px;background:var(--bg,#0d0d0d);'
     + 'border:1px solid var(--line,#262626);color:inherit;font:inherit;padding:6px 8px';
@@ -1878,7 +1973,7 @@ function pickDom() {
     'attachments', 'fileInput', 'btnAttach',
     'winDecisions', 'winDecisionsClose', 'queue', 'bubbles', 'btnDecisions',
     'winCrew', 'winCrewClose', 'roster', 'roCrew', 'btnCrew',
-    'focusName',
+    'winFlows', 'winFlowsClose', 'flows', 'btnFlows', 'focusName',
     'winRuns', 'winRunsClose', 'runs', 'roRuns', 'btnRuns', 'stopAll', 'btnSound',
   ];
   return Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));

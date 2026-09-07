@@ -1445,6 +1445,17 @@
   <!-- Instruments. ui/windows.mjs places, drags and resizes these. -->
   <div id="windows">
 
+    <section class="win" id="winFlows" hidden aria-label="Flow contract">
+      <i class="hud-frame" aria-hidden="true"></i>
+      <header class="win-bar" id="winFlowsBar">
+        <span class="win-title">flow</span>
+        <span class="win-sub" id="focusName">—</span>
+        <span class="spacer"></span>
+        <button class="icon-btn" id="winFlowsClose" type="button" aria-label="Close flow contract">✕</button>
+      </header>
+      <div class="win-body" id="flows"></div>
+    </section>
+
 
     <!-- The whole crew at once. Flow and evidence belong to ONE agent and now
          live at that agent's desk; who is on the mission is a fleet-wide
@@ -1494,6 +1505,7 @@
     <button class="btn primary" id="composerSend" type="button">SEND</button>
 
     <div class="dock">
+      <button class="dock-btn" id="btnFlows" type="button" aria-pressed="false" aria-controls="winFlows">flow</button>
       <button class="dock-btn" id="btnCrew" type="button" aria-pressed="false" aria-controls="winCrew">crew</button>
       <button class="dock-btn" id="btnDecisions" type="button" aria-pressed="false" aria-controls="winDecisions">
         decisions <span id="queueCount" aria-label="decisions waiting on you">0</span>

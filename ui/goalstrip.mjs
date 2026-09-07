@@ -225,9 +225,9 @@ function style() {
       flex-direction: column;
       /* It grows upward from the console and must stop at the crew bar. Without
          a ceiling a tall desk ran off both ends of the screen. */
-      max-height: calc(100vh - var(--topbar-h) - var(--crew-h) - 120px);
+      max-height: min(48vh, 520px);
       min-height: 0;
-      overflow: hidden;
+      overflow: auto;
       gap: calc(var(--step) * 1.5);
       padding: calc(var(--step) * 2) calc(var(--step) * 2.5);
       background: var(--glass);
