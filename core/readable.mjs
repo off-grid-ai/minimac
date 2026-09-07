@@ -181,8 +181,8 @@ export function isPreset(id) {
 // Things that change what happens next: an order, a ruling, a permission
 // request, a block, a finished turn, or a claim with a command behind it.
 const SIGNAL_KINDS = new Set([
-  'ping', 'blocked', 'approval', 'result', 'prayer', 'claim', 'plan',
-  'order', 'escalation', 'lease', 'flow',
+  'ping', 'blocked', 'approval', 'result', 'prayer', 'claim',
+  'order', 'escalation', 'lease',
 ]);
 
 export function passesPreset(event, preset = 'all') {

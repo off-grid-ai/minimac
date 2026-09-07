@@ -54,7 +54,9 @@ export function createLeaseEvent(agentId, payload, ts = Date.now()) {
 export function isCrosstalkEvent(event) {
   if (event?.kind === EVENT_KINDS.ESCALATION) return true;
   if (event?.kind === EVENT_KINDS.MESSAGE) {
-    return Boolean(event.payload?.from && event.payload?.toAgentId);
+    // Operator messages are addressed to one selected Avenger. Structured
+    // escalations cover the other direction. Neither needs inferred prose.
+    return event.payload?.from === 'you' || Boolean(event.payload?.toAgentId);
   }
   return event?.kind === EVENT_KINDS.ORDER
     && [ORDER_ACTION.STEER, ORDER_ACTION.GOAL].includes(event.payload?.action);

@@ -16,7 +16,6 @@ export const EVENT_KINDS = Object.freeze({
   ORDER: 'order',       // Thor assigning or steering one Avenger
   ESCALATION: 'escalation', // one structured worker request to Thor
   LEASE: 'lease',       // warning, extension or expiry for one work unit
-  FLOW: 'flow',         // the mission-owned user flow contract changed
 });
 
 export const CLAIM_GRADES = Object.freeze({

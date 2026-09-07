@@ -1617,9 +1617,6 @@ function feedEntry(agent, event) {
       tone: payload.state === 'expired' ? 'alert' : 'tool',
     };
   }
-  if (event.kind === EVENT_KINDS.FLOW) {
-    return { at, who: '', text: `FLOW ${payload.action}\n${payload.outcome ?? payload.id ?? ''}`, tone: '' };
-  }
   if (event.kind === EVENT_KINDS.TOOL) {
     const target = String(payload.target ?? '');
     const short = payload.action === 'run' ? summariseCommand(target) : target.replace(/\s+/g, ' ').trim();
@@ -1639,11 +1636,6 @@ function feedEntry(agent, event) {
   if (event.kind === EVENT_KINDS.CLAIM) {
     const receipt = payload.receipt ? `  <- ${payload.receipt}` : '  <- no receipt';
     return { at, who, text: `${payload.text}${receipt}`, tone: payload.receipt ? '' : 'alert' };
-  }
-  if (event.kind === EVENT_KINDS.PLAN && payload.updated?.length) {
-    const changed = (payload.steps ?? []).filter((step) => payload.updated.includes(step.id));
-    const text = changed.map((step) => `${step.step} - ${step.status}`).join('\n');
-    return text ? { at, who, text: `FLOW\n${text}`, tone: '' } : null;
   }
   if (event.kind === EVENT_KINDS.BLOCKED) {
     const reason = String(payload.reason ?? '');
