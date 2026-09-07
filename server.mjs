@@ -39,7 +39,14 @@ import { createWorktrees } from './adapters/git.mjs';
 import { createRepoIndex } from './adapters/fs.mjs';
 import { createUploads } from './adapters/uploads.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
-import { deriveCards, diffCards, indexByAgent, cardKey, prayerOf } from './core/monitor.mjs';
+import {
+  deriveCards,
+  diffCards,
+  indexByAgent,
+  cardKey,
+  prayerOf,
+  stampCards,
+} from './core/monitor.mjs';
 import {
   createBoard,
   addItem,
@@ -153,7 +160,12 @@ if (adopted) {
       status: 'idle', sessionId: null, sessionIds: [], blockedReason: null,
     });
   }
-  state.cards = deriveCards(Object.values(state.agents), indexByAgent(state.events), Date.now());
+  const adoptedAt = Date.now();
+  state.cards = stampCards(
+    state.cards,
+    deriveCards(Object.values(state.agents), indexByAgent(state.events), adoptedAt),
+    adoptedAt,
+  );
   // The board belongs to the run, so rejoining a run rejoins its work.
   state.board = { items: store.itemsFor(adopted.id) };
 }
@@ -479,11 +491,12 @@ function scheduleCards() {
 
 function refreshCards() {
   const before = state.cards;
-  const next = deriveCards(
+  const now = Date.now();
+  const next = stampCards(before, deriveCards(
     Object.values(state.agents),
     indexByAgent(state.events),
-    Date.now(),
-  );
+    now,
+  ), now);
   const { raised, cleared } = diffCards(before, next);
   state.cards = next;
 

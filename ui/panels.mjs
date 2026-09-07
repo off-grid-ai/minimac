@@ -588,7 +588,11 @@ function observationCard(decision, handlers) {
   const kind = decision.kind === 'approval' ? 'blocked' : decision.kind;
   const card = el('div', `decision ${kind}`);
   const header = el('div', 'head');
-  header.append(el('span', 'who', nameOf(decision)), el('span', 'kind', kind));
+  header.append(
+    el('span', 'who', nameOf(decision)),
+    cardTime(decision),
+    el('span', 'kind', kind),
+  );
   card.append(header, el('div', 'detail', decision.detail));
 
   // A prayer is a QUESTION, not an observation. It does not get the same
@@ -626,6 +630,7 @@ function approvalCard(decision, handlers) {
   const header = el('div', 'head');
   header.append(
     el('span', 'who', nameOf(decision)),
+    cardTime(decision),
     el('span', 'frozen', 'frozen'),
     el('span', 'kind', approval.approvalKind ?? 'approval'),
   );
@@ -659,6 +664,19 @@ function approvalCard(decision, handlers) {
   // Prose is still a valid answer, so the steer line stays.
   card.append(steerRow(decision, handlers));
   return card;
+}
+
+function cardTime(decision) {
+  const stamp = el('time', 'card-time');
+  const date = new Date(decision.raisedAt);
+  if (!Number.isFinite(date.getTime())) return stamp;
+  stamp.dateTime = date.toISOString();
+  stamp.textContent = date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  return stamp;
 }
 
 // A choice is either a bare string or a { value, label } pair. The engine's

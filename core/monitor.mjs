@@ -21,7 +21,17 @@ import { PLANS_THRICE } from './dispatch.mjs';
 // is ONE card for as long as it lasts - otherwise a loop that persists for two
 // minutes would wake the orchestrator several hundred times.
 export function cardKey(card) {
-  return `${card.agentId}:${card.kind}`;
+  return `${card.agentId}:${card.kind}:${card.approval?.id ?? ''}`;
+}
+
+// A card owns the time its condition first became visible. Keep that time on
+// the server-owned card so browser reloads and every consumer read one value.
+export function stampCards(previous = [], next = [], now) {
+  const raisedAt = new Map(previous.map((card) => [cardKey(card), card.raisedAt]));
+  return next.map((card) => ({
+    ...card,
+    raisedAt: raisedAt.get(cardKey(card)) ?? now,
+  }));
 }
 
 // The newest approval that has not been answered. An engine parked on one is

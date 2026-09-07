@@ -6,6 +6,7 @@
 // ask this module, so a chime and a dimming light always mean the same thing.
 
 import { EVENT_KINDS } from './events.mjs';
+import { cardKey } from './monitor.mjs';
 
 // One cue per event CLASS, never per event. Four is the whole vocabulary: any
 // more and the floor becomes noise you learn to ignore.
@@ -42,12 +43,10 @@ export const NEGLECT = Object.freeze({
   fullMs: 300_000,   // five minutes unanswered is the floor at its dimmest
 });
 
-// A decision has no timestamp of its own - it is derived from history, so it
-// exists the moment the derivation first says so. Remembering when that was is
-// still a rule, so it is a pure reducer over a plain record rather than a
-// clock hidden in the view.
+// Keep the old exported name for consumers of the attention module, but use
+// the monitor's card identity. A card cannot have two identity rules.
 export function keyOf(decision) {
-  return `${decision.agentId}:${decision.kind}:${decision.approval?.id ?? ''}`;
+  return cardKey(decision);
 }
 
 // previous record + what is waiting now -> the record, with anything answered
@@ -56,7 +55,7 @@ export function trackWaiting(previous = {}, decisions = [], now = Date.now()) {
   const next = {};
   for (const decision of decisions) {
     const key = keyOf(decision);
-    next[key] = previous[key] ?? now;
+    next[key] = decision.raisedAt ?? previous[key] ?? now;
   }
   return next;
 }
