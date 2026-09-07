@@ -14,18 +14,27 @@ export function createCiMonitor({
   schedule,
   cancel,
 }) {
-  const signatures = new Map(Object.entries(loadBaseline() ?? {}));
+  let signatures = new Map();
+  let activeScope = null;
   const health = new Map();
   let timer = null;
   let busy = false;
 
-  const persist = () => saveBaseline(Object.fromEntries(signatures));
+  const selectScope = (current) => {
+    const scope = String(current.scope ?? 'none');
+    if (scope === activeScope) return;
+    activeScope = scope;
+    signatures = new Map(Object.entries(loadBaseline(current) ?? {}));
+    health.clear();
+  };
+  const persist = (current) => saveBaseline(current, Object.fromEntries(signatures));
 
   async function poll() {
     if (busy) return;
     busy = true;
     try {
       const current = snapshot();
+      selectScope(current);
       for (const number of pullRequestNumbers(current)) {
         try {
           const failures = await checks.failuresFor(number);
@@ -37,7 +46,7 @@ export function createCiMonitor({
           const signature = failureSignature(failures);
           const previous = signatures.get(String(number));
           signatures.set(String(number), signature);
-          persist();
+          persist(current);
           if (!signature || signature === previous) continue;
           const work = ciFailureWork({
             number, failures, items: current.items, owner, estimateMs,

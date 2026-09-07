@@ -1931,13 +1931,15 @@ const COMMANDS = {
   },
 };
 
-const ciBaselineKey = `ci-baseline:${options.repo}`;
 const ciOwner = Object.values(state.agents).find((agent) => agent.role === ROLES.CODER)?.id ?? null;
 const ciWatcher = createCiMonitor({
   checks: createGithubChecksPort({ repo: options.repo }),
-  snapshot: () => ({ mission: state.mission, items: itemsOf(state.board) }),
-  loadBaseline: () => store.setting(ciBaselineKey, {}),
-  saveBaseline: (baseline) => store.saveSetting(ciBaselineKey, baseline),
+  snapshot: () => ({
+    scope: store.runId ?? 'none', mission: state.mission, items: itemsOf(state.board),
+  }),
+  loadBaseline: ({ scope }) => store.setting(`ci-baseline:${options.repo}:${scope}`, {}),
+  saveBaseline: ({ scope }, baseline) =>
+    store.saveSetting(`ci-baseline:${options.repo}:${scope}`, baseline),
   createCheckpoint: (spec) => addBoardWork(spec, 'minimac'),
   notify: (number, work) => tellThor(
     'minimac',
