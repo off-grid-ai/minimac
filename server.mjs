@@ -2057,7 +2057,14 @@ async function executeAgentTool(callerId, name, args) {
     }
   }
   if (name === AGENT_TOOL.START) {
-    return COMMANDS.setActive({ agentId: args.agentId, active: true });
+    const result = await COMMANDS.setActive({ agentId: args.agentId, active: true });
+    const started = state.agents[args.agentId];
+    const checkpoint = findItem(state.board, started?.workItemIds?.[0]);
+    orders(
+      args.agentId,
+      checkpoint ? `Start ${checkpoint.title}` : 'Start your next ready checkpoint',
+    );
+    return result;
   }
   if (name === AGENT_TOOL.BENCH) {
     return COMMANDS.setActive({ agentId: args.agentId, active: false });
