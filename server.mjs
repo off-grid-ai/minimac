@@ -920,7 +920,7 @@ const COMMANDS = {
         from: 'you',
       }),
     );
-    return { resumed, restarted };
+    return { runId: store.runId, resumed, restarted };
   },
 
   // Run an old one again: its mission and the goals as they were, in a fresh
@@ -1072,11 +1072,16 @@ const COMMANDS = {
     const agentId = routeOf(parsed, target);
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
-    ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, { text, from: 'you', attachments }));
     const body = attachments.length > 0 ? `${text}\n\n${attachmentLines(attachments)}` : text;
-    return agent.sessionId
-      ? COMMANDS.steer({ agentId, text: body })
-      : COMMANDS.start({ agentId, task: text, mentions: parsed, attachments });
+    if (agent.sessionId) {
+      return COMMANDS.steer({
+        agentId,
+        text: body,
+        event: { text, attachments },
+      });
+    }
+    ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, { text, from: 'you', attachments }));
+    return COMMANDS.start({ agentId, task: text, mentions: parsed, attachments });
   },
 
   // Make the orchestrator say something to a hero. The floor walks him over.
@@ -1139,7 +1144,7 @@ const COMMANDS = {
     return { settled: true };
   },
 
-  async steer({ agentId, text }) {
+  async steer({ agentId, text, event = null }) {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`no agent ${agentId}`);
     // A reply does NOT close the question. You asked to be able to go back and
@@ -1165,7 +1170,11 @@ const COMMANDS = {
         `${agent.label ?? agentId} did not take that: ${sent.failures[0] ?? 'the engine is gone'}`,
       );
     }
-    ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, { text, from: 'you' }));
+    ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, {
+      text: event?.text ?? text,
+      attachments: event?.attachments ?? [],
+      from: 'you',
+    }));
     return { delivered: sent.delivered };
   },
 
