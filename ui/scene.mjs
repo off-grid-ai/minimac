@@ -8,17 +8,21 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/+esm';
 import { ROOM, PROPS, seatOf, HEAD_HEIGHT, clamp } from './layout.mjs';
 import { loadModels, instance } from './models.mjs';
-import { createWorkstation } from './workstation.mjs';
+import { createWorkstation, SEAT } from './workstation.mjs';
 import { createMoves } from './moves.mjs';
 
 const VIEW_HEIGHT = 6.2;  // world units visible top to bottom at a wide aspect
-const VIEW_WIDTH = 11.0;  // world units the desk row needs end to end
+const VIEW_WIDTH = 12.2;  // world units the desk row needs end to end (six desks)
 // Pushed in on one desk: enough of the neighbours stay in frame that you never
 // lose your bearings, and the desk itself is legible.
 const FOCUS_HEIGHT = 3.5;
 const FOCUS_WIDTH = 5.6;
-// The desk sits low in frame when focused, so the thread has room above it.
-const FOCUS_LEAD = 1.35;
+// Walking up to a desk puts THAT AGENT in the middle of the frame. The camera
+// aims at the person, not the desk spot: they sit SEAT.z behind it, so aiming
+// at the spot - let alone in front of it - threw them into the top corner.
+// The small forward lead keeps their monitor and the desk in shot below them.
+const FOCUS_LEAD = 0.3;
+const FOCUS_EYE = 0.78; // aim at chest height, so the head is not clipped high
 const HOME = new THREE.Vector3(0.15, 0.5, 0.15);
 // Close to front-on, so every face reads. Enough offset to keep it isometric.
 const CAMERA_DIR = new THREE.Vector3(3.2, 6.4, 9.6).normalize();
@@ -31,7 +35,7 @@ export function deskSpot(agent) {
   return { x: seat.x, y: seat.z };
 }
 
-export function createScene({ canvas, palette, onSelect }) {
+export function createScene({ canvas, palette, onSelect, onHover }) {
   const colours = readPalette(palette);
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -117,7 +121,7 @@ export function createScene({ canvas, palette, onSelect }) {
     const agent = focusId ? byId.get(focusId) : null;
     if (agent) {
       const seat = seatOf(agent);
-      wanted.set(seat.x, 0.5, seat.z + FOCUS_LEAD);
+      wanted.set(seat.x, FOCUS_EYE, seat.z + SEAT.z + FOCUS_LEAD);
       wantHeight = Math.max(FOCUS_HEIGHT, FOCUS_WIDTH / aspect);
       return;
     }
@@ -125,15 +129,45 @@ export function createScene({ canvas, palette, onSelect }) {
     wantHeight = roomHeight;
   }
 
+  // The console and the desk panel stand in front of the bottom of the canvas,
+  // so framing has to happen inside what is LEFT - otherwise focusing an agent
+  // puts their own desk view on top of them.
+  //
+  // The camera does NOT zoom out to compensate: that shrinks the whole room to
+  // solve a framing problem. It looks at a point BELOW the agent instead, by
+  // exactly half the obscured height, which lifts them into the middle of the
+  // visible strip at unchanged scale.
+  function obscuredPx() {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue('--desk-h');
+    const px = Number.parseFloat(raw);
+    return Number.isFinite(px) ? Math.max(0, px) : 0;
+  }
+
+  const screenUp = new THREE.Vector3();
+  const screenRight = new THREE.Vector3();
+  const WORLD_UP = new THREE.Vector3(0, 1, 0);
+  const aimed = new THREE.Vector3();
+
   function stepCamera(k) {
     nowHeight += (wantHeight - nowHeight) * k;
     here.lerp(wanted, k);
+
     camera.top = nowHeight / 2;
     camera.bottom = -nowHeight / 2;
     camera.left = (-nowHeight * aspect) / 2;
     camera.right = (nowHeight * aspect) / 2;
-    camera.position.copy(CAMERA_DIR).multiplyScalar(18).add(here);
-    camera.lookAt(here);
+
+    // Screen-up in world terms, for this fixed isometric direction.
+    screenRight.crossVectors(CAMERA_DIR, WORLD_UP).normalize();
+    screenUp.crossVectors(screenRight, CAMERA_DIR).normalize();
+
+    const height = canvas.clientHeight || 1;
+    const hidden = Math.min(obscuredPx(), height * 0.55);
+    const worldPerPx = nowHeight / height;
+    aimed.copy(here).addScaledVector(screenUp, -(hidden / 2) * worldPerPx);
+
+    camera.position.copy(CAMERA_DIR).multiplyScalar(18).add(aimed);
+    camera.lookAt(aimed);
     camera.updateProjectionMatrix();
   }
 
@@ -144,17 +178,33 @@ export function createScene({ canvas, palette, onSelect }) {
 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
-  canvas.addEventListener('pointerdown', (event) => {
+  function agentAt(event) {
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
     const targets = [...stations.values()].map((station) => station.parts.pick);
     const hit = raycaster.intersectObjects(targets, false)[0];
+    return hit ? hit.object.userData.agentId : null;
+  }
+
+  canvas.addEventListener('pointerdown', (event) => {
     // Clicking the floor is how you step back out of a desk, so a miss is an
     // answer too - never a click that does nothing.
-    onSelect(hit ? hit.object.userData.agentId : null);
+    onSelect(agentAt(event));
   });
+
+  // Pointing at somebody is asking about them. It moves the room's one bubble
+  // to that agent, even mid-walk - your attention outranks the choreography.
+  let hovered = null;
+  const setHover = (id) => {
+    if (id === hovered) return;
+    hovered = id;
+    canvas.style.cursor = id ? 'pointer' : '';
+    onHover?.(id);
+  };
+  canvas.addEventListener('pointermove', (event) => setHover(agentAt(event)));
+  canvas.addEventListener('pointerleave', () => setHover(null));
 
   // ------------------------------------------------------------------ loop
 
@@ -414,10 +464,22 @@ function createPlate(colours) {
   sprite.scale.set(PLATE.worldWidth, PLATE.worldWidth * aspect, 1);
   sprite.renderOrder = 10;
 
+  // Late reads on the plate, not only inside a desk. You should be able to see
+  // who is past their own promise from across the room, without clicking.
+  const lateWords = (burn) => {
+    if (!burn || burn.ratio <= 1) return null;
+    const m = (ms) => {
+      const mins = Math.round(ms / 60000);
+      return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}`;
+    };
+    return `${m(burn.actualMs)} of ${m(burn.estimateMs)}`;
+  };
+
   let signature = '';
   const set = (agent) => {
     const text = agent.label ?? agent.name;
-    const next = `${text}|${agent.selected}|${agent.loopCount}`;
+    const late = lateWords(agent.burn);
+    const next = `${text}|${agent.selected}|${agent.loopCount}|${late ?? ''}`;
     if (next === signature) return;
     signature = next;
     ctx.clearRect(0, 0, PLATE.width, PLATE.height);
@@ -426,10 +488,15 @@ function createPlate(colours) {
     ctx.fillStyle = agent.selected ? colours.accentHex : colours.mutedHex;
     ctx.font = fit(ctx, text, PLATE.nameSize);
     ctx.fillText(text, PLATE.width / 2, 56);
+    // A loop is the louder fault, so it keeps the line under the name.
     if (agent.loopCount > 0) {
       ctx.font = plateFont(PLATE.loopSize);
       ctx.fillStyle = colours.dangerHex;
       ctx.fillText(`LOOP x${agent.loopCount}`, PLATE.width / 2, 118);
+    } else if (late) {
+      ctx.font = plateFont(PLATE.loopSize);
+      ctx.fillStyle = colours.dangerHex;
+      ctx.fillText(late, PLATE.width / 2, 118);
     }
     texture.needsUpdate = true;
   };

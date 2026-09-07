@@ -2,7 +2,7 @@
 // three.js, no DOM. One source of truth for the floor plan, so the room, the
 // camera, the picking proxies and deskSpot() cannot drift apart.
 
-export const SLOTS = 5; // worker desks
+export const SLOTS = 6; // worker desks
 
 export const ROOM = Object.freeze({
   minX: -4.6,
@@ -12,7 +12,9 @@ export const ROOM = Object.freeze({
   wallHeight: 1.29, // one Kenney wall tile
 });
 
-const DESK_SPACING = 1.62;
+// Six desks, not five: at the old 1.62 the outer pair sat at x=4.05 and their
+// desks clipped the wall at 4.6.
+const DESK_SPACING = 1.42;
 const WORKER_Z = -1.7;
 const ARC = 0.3; // outer desks step forward, so the row reads as an arc
 const ORCHESTRATOR_Z = 2.0;

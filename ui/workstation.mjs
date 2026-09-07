@@ -11,7 +11,7 @@ import { identityOf, hashId } from './identity.mjs';
 const DESK_TOP = 0.38;
 // The person sits on the FAR side of the desk facing the camera, so posture
 // and attention are readable and the monitor's light falls on their face.
-const SEAT = { x: 0, y: 0.23, z: -0.66 };
+export const SEAT = { x: 0, y: 0.23, z: -0.66 };
 const PERSON_HEIGHT = 0.5; // every character, built-in or supplied, ends up this tall
 const PACE_REACH = 0.95;
 const PACE_LANE = 0.55; // out to the side and in front, never hidden behind
@@ -42,6 +42,24 @@ export function poseState(agent, t, reduced, waypoint = null) {
       marker: 'loop',
       screen: rate * 0.35,
       timeScale: 1.4,
+    };
+  }
+
+  if (agent.pose === POSE.ERRAND) {
+    // Same machinery as BLOCKED - out of the chair, walk to a waypoint, stand.
+    // The difference is who chose it: an errand is delivery, not distress.
+    return {
+      clip: 'idle',
+      seated: false,
+      travels: true,
+      x: waypoint?.x ?? 0,
+      y: 0,
+      z: waypoint?.z ?? 0,
+      yaw: 0,
+      lean: 0,
+      marker: null,
+      screen: 0,
+      timeScale: 1,
     };
   }
 
@@ -459,9 +477,15 @@ function tintPerson(parts) {
 }
 
 // Where this agent stands when it is waiting on you, in its own coordinates.
+// Every waypoint is expressed in THIS station's own coordinates, because the
+// body moves inside a group already parked at its desk.
 function waypointFor(agent) {
-  if (agent.isOrchestrator) return null; // it is already its own desk
   const seat = seatOf(agent);
+  // Carrying an order: walk to the desk named on the errand, wherever it is.
+  if (agent.errand?.at) {
+    return { x: agent.errand.at.x - seat.x, z: agent.errand.at.z - seat.z };
+  }
+  if (agent.isOrchestrator) return null; // it is already its own desk
   const spot = queueSpot(agent.index ?? 0);
   return { x: spot.x - seat.x, z: spot.z - seat.z };
 }
