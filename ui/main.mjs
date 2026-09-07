@@ -1915,7 +1915,7 @@ function boot() {
 
   windows = createSidePanel({
     entries: windowEntries(),
-    labels: { feed: 'FEED', crew: 'CREW', decisions: 'DECISIONS',
+    labels: { feed: 'FEED', crew: 'AVENGERS', decisions: 'DECISIONS',
               runs: 'MISSIONS', middleware: 'MIDDLEWARE' },
     onChange: () => renderPanels(),
   });
