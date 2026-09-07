@@ -2,6 +2,7 @@ import {
   createEscalationEvent,
   createLeaseEvent,
   createOrderEvent,
+  createPeerMessageEvent,
   ESCALATION_STATE,
 } from '../core/coordination.mjs';
 
@@ -27,7 +28,14 @@ export function createFleetCoordination({ getEvents, emit, deliver, orchestrator
       toAgentId: orchestratorId(),
     });
     emit(event);
-    await deliver(event.payload.toAgentId, escalationBrief(event.payload));
+    await deliver(event.payload.toAgentId, escalationBrief(event.payload), { wake: true });
+    return event.payload;
+  }
+
+  async function message(spec) {
+    const event = createPeerMessageEvent(spec);
+    await deliver(event.payload.toAgentId, event.payload.text, { wake: false });
+    emit(event);
     return event.payload;
   }
 
@@ -51,7 +59,7 @@ export function createFleetCoordination({ getEvents, emit, deliver, orchestrator
     return event.payload;
   }
 
-  return Object.freeze({ order, escalate, resolve, lease });
+  return Object.freeze({ order, escalate, message, resolve, lease });
 }
 
 function escalationBrief(item) {

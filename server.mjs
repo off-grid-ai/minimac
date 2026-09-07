@@ -1614,7 +1614,7 @@ const COMMANDS = {
     return { dismissed: true };
   },
 
-  async steer({ agentId, text, event = null }) {
+  async steer({ agentId, text, event = null, record = true }) {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`no agent ${agentId}`);
     // A reply does NOT close the question. You asked to be able to go back and
@@ -1640,11 +1640,13 @@ const COMMANDS = {
         `${agent.label ?? agentId} did not take that: ${sent.failures[0] ?? 'the engine is gone'}`,
       );
     }
-    ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, {
-      text: event?.text ?? text,
-      attachments: event?.attachments ?? [],
-      from: event?.from ?? 'you',
-    }));
+    if (record) {
+      ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, {
+        text: event?.text ?? text,
+        attachments: event?.attachments ?? [],
+        from: event?.from ?? 'you',
+      }));
+    }
     return { delivered: sent.delivered };
   },
 
@@ -1913,10 +1915,11 @@ coordination = createFleetCoordination({
   emit: ingest,
   orchestratorId: () => Object.values(state.agents)
     .find((agent) => agent.role === ROLES.ORCHESTRATOR)?.id ?? null,
-  deliver: async (agentId, text) => {
+  deliver: async (agentId, text, { wake = false } = {}) => {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
-    if (agent.sessionId) return COMMANDS.steer({ agentId, text });
+    if (agent.sessionId) return COMMANDS.steer({ agentId, text, record: false });
+    if (!wake) throw new Error(`${agent.label ?? agentId} has no live session`);
     return COMMANDS.setActive({ agentId, active: true, task: text });
   },
 });
@@ -2270,6 +2273,21 @@ async function executeAgentTool(principal, name, args) {
       receipt: args.receipt ?? '',
     });
     return { escalated: true, to: escalation.toAgentId, id: escalation.id };
+  }
+  if (name === AGENT_TOOL.MESSAGE) {
+    const target = state.agents[args.agentId];
+    if (!target || args.agentId === callerId) {
+      throw new Error(`unknown peer Avenger: ${args.agentId}`);
+    }
+    const worker = ensureWorkers(caller).find((candidate) => candidate.id === workerId);
+    const message = await coordination.message({
+      fromAgentId: callerId,
+      fromWorkerId: workerId,
+      toAgentId: args.agentId,
+      checkpointId: args.checkpointId ?? worker?.checkpointId ?? null,
+      text: args.text,
+    });
+    return { delivered: true, to: message.toAgentId };
   }
   if (name === AGENT_TOOL.ASSEMBLE) {
     const result = await harvestGoals({

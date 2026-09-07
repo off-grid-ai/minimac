@@ -47,6 +47,18 @@ export function createEscalationEvent({
   }, ts);
 }
 
+export function createPeerMessageEvent({
+  fromAgentId, fromWorkerId = null, toAgentId, checkpointId = null, text,
+}, ts = Date.now()) {
+  return createEvent(fromAgentId, EVENT_KINDS.MESSAGE, {
+    fromAgentId,
+    fromWorkerId,
+    toAgentId,
+    checkpointId,
+    text: String(text ?? '').trim(),
+  }, ts);
+}
+
 export function createLeaseEvent(agentId, payload, ts = Date.now()) {
   return createEvent(agentId, EVENT_KINDS.LEASE, payload, ts);
 }

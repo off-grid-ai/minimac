@@ -14,6 +14,7 @@ export const AGENT_TOOL = Object.freeze({
   CHECKPOINT: 'update_checkpoint',
   INSPECT: 'inspect_avengers',
   ESCALATE: 'escalate_to_thor',
+  MESSAGE: 'message_avenger',
   ASSEMBLE: 'assemble_avengers',
   START: 'start_avenger',
   BENCH: 'bench_avenger',
@@ -58,6 +59,15 @@ const TOOLS = Object.freeze({
       receipt: { type: 'string', description: 'The command or observed result that supports the request.' },
       checkpointId: { type: 'string', description: 'The checkpoint that needs the decision. The current worker checkpoint is used when omitted.' },
     }, ['why', 'needs']),
+  },
+  [AGENT_TOOL.MESSAGE]: {
+    name: AGENT_TOOL.MESSAGE,
+    description: 'Send a short work message to another live Avenger. The directed message appears as Crosstalk and the sender walks to the recipient.',
+    inputSchema: object({
+      agentId: { type: 'string', description: 'The Avenger who must receive the message.' },
+      text: { type: 'string', description: 'The work message. Use plain language and no more than four short lines.' },
+      checkpointId: { type: 'string', description: 'The related checkpoint. The current worker checkpoint is used when omitted.' },
+    }, ['agentId', 'text']),
   },
   [AGENT_TOOL.ASSEMBLE]: {
     name: AGENT_TOOL.ASSEMBLE,
@@ -150,6 +160,7 @@ const WORKER_TOOLS = Object.freeze([
   AGENT_TOOL.REPORT,
   AGENT_TOOL.CHECKPOINT,
   AGENT_TOOL.ESCALATE,
+  AGENT_TOOL.MESSAGE,
 ]);
 const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.REPORT,
@@ -164,6 +175,7 @@ const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.PAUSE,
   AGENT_TOOL.RESUME,
   AGENT_TOOL.EXTEND,
+  AGENT_TOOL.MESSAGE,
 ]);
 
 export function toolsForRole(role) {
