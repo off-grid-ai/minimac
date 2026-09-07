@@ -187,22 +187,15 @@ export function stepTimings(events, now = Date.now()) {
   const plans = events.filter((event) => event.kind === EVENT_KINDS.PLAN);
   if (plans.length === 0) return [];
 
-  const first = plans[0].payload?.steps ?? [];
-  const timings = first.map((step, index) => ({
-    id: step?.id ?? null,
-    index,
-    step: stepLabel(step),
-    estimateMs: Number.isFinite(step?.estimateMs) ? step.estimateMs : null,
-    startedAt: null,
-    completedAt: null,
-    status: step?.status ?? 'pending',
-  }));
-
+  const timings = [];
   for (const event of plans) {
     const steps = event.payload?.steps ?? [];
     for (const [index, step] of steps.entries()) {
-      const timing = matchTiming(timings, step, index);
-      if (!timing) continue;
+      let timing = matchTiming(timings, step, index);
+      if (!timing) {
+        timing = createStepTiming(step, index);
+        timings.push(timing);
+      }
       timing.status = step?.status ?? timing.status;
       if (timing.startedAt === null && isStartedStep(step)) timing.startedAt = event.ts;
       if (timing.completedAt === null && isDoneStep(step)) {
@@ -222,7 +215,12 @@ export function stepTimings(events, now = Date.now()) {
     timing.completedAt = event.ts;
   }
 
-  return timings.map((timing) => {
+  // A plan is a complete snapshot. Use its current membership and order, but
+  // attach the event-derived clock accumulated across every earlier snapshot.
+  // This keeps new steps visible without bringing removed steps back.
+  const latest = plans.at(-1).payload?.steps ?? [];
+  return latest.map((step, index) => {
+    const timing = matchTiming(timings, step, index) ?? createStepTiming(step, index);
     const startedAt = timing.startedAt;
     const endedAt = timing.completedAt ?? (startedAt === null ? null : now);
     const actualMs = startedAt === null ? null : Math.max(0, endedAt - startedAt);
@@ -237,6 +235,18 @@ export function stepTimings(events, now = Date.now()) {
   });
 }
 
+function createStepTiming(step, index) {
+  return {
+    id: step?.id ?? null,
+    index,
+    step: stepLabel(step),
+    estimateMs: Number.isFinite(step?.estimateMs) ? step.estimateMs : null,
+    startedAt: null,
+    completedAt: null,
+    status: step?.status ?? 'pending',
+  };
+}
+
 function stepLabel(step) {
   return step?.user_visible_result ?? step?.step ?? '';
 }
@@ -248,10 +258,9 @@ function matchByLabel(timings, step) {
 
 function matchTiming(timings, step, index) {
   if (step?.id) {
-    const byId = timings.find((timing) => timing.id === step.id);
-    if (byId) return byId;
+    return timings.find((timing) => timing.id === step.id) ?? null;
   }
-  return timings[index] ?? matchByLabel(timings, step);
+  return matchByLabel(timings, step) ?? timings[index] ?? null;
 }
 
 function isStartedStep(step) {
