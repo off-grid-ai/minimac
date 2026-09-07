@@ -1349,11 +1349,12 @@ function renderFeed() {
     }
   }
   lines.sort((a, b) => a.ts - b.ts);
+  const grouped = coalesceFeedLines(lines);
   // Codex streams a message in pieces and then repeats it whole. A line that
   // is merely the start of the next line from the same agent is that stream
   // catching up, not something new to read.
-  const deduped = lines.filter((line, index) => {
-    const next = lines[index + 1];
+  const deduped = grouped.filter((line, index) => {
+    const next = grouped[index + 1];
     return !(next && next.who === line.who && next.text.startsWith(line.text));
   });
 
@@ -1365,6 +1366,28 @@ function renderFeed() {
   feedBody.replaceChildren(...rows);
   // Only follow the tail if the reader was already at it.
   if (atBottom) feedBody.scrollTop = feedBody.scrollHeight;
+}
+
+// Codex sends prose as deltas and can finish with the full message. Join only
+// fragments from the same live session. Normal messages remain separate.
+function coalesceFeedLines(lines) {
+  const grouped = [];
+  for (const line of lines) {
+    const previous = grouped.at(-1);
+    const sameStream = line.message && previous?.message
+      && line.streamId && line.streamId === previous.streamId;
+    const streamed = previous?.partial || line.partial || line.final;
+    if (!sameStream || !streamed) {
+      grouped.push(line);
+      continue;
+    }
+    if (line.text.startsWith(previous.text)) previous.text = line.text;
+    else if (!previous.text.endsWith(line.text)) previous.text += line.text;
+    previous.ts = line.ts;
+    previous.partial = line.partial;
+    previous.final = line.final;
+  }
+  return grouped;
 }
 
 // A compact status card stays in Feed. The full checkpoint list has its own
@@ -1450,16 +1473,16 @@ function feedRow(entry) {
 
   const body = document.createElement('div');
   body.className = 'md';
-  if (entry.markdown) body.innerHTML = renderMarkdown(entry.text);
-  else body.textContent = entry.text;
+  body.innerHTML = renderMarkdown(entry.text);
   if (entry.tone === 'alert') body.style.color = 'var(--danger,#f87171)';
   // The full command is one click away rather than filling the feed.
   if (entry.full && entry.full.length > entry.text.length) {
     body.title = entry.full;
     body.style.cursor = 'zoom-in';
     body.onclick = () => {
-      body.textContent = body.dataset.open === '1' ? entry.text : entry.full;
-      body.dataset.open = body.dataset.open === '1' ? '0' : '1';
+      const open = body.dataset.open !== '1';
+      body.innerHTML = renderMarkdown(open ? entry.full : entry.text);
+      body.dataset.open = open ? '1' : '0';
     };
   }
   row.append(body);
@@ -1474,31 +1497,41 @@ function feedEntry(agent, event) {
   const payload = event.payload ?? {};
 
   if (event.kind === EVENT_KINDS.MESSAGE) {
-    const text = String(payload.text ?? '').trim();
-    if (plainText(text).length < 12) return null;
-    return { at, who, suffix: payload.from === 'you' ? ' (from you)' : '', text, markdown: true, tone: '' };
+    const text = String(payload.text ?? '');
+    if (payload.partial !== true && plainText(text).length < 12) return null;
+    return {
+      at,
+      who,
+      suffix: payload.from === 'you' ? ' (from you)' : '',
+      text,
+      message: true,
+      streamId: payload.sessionId ? `${event.agentId}:${payload.sessionId}` : null,
+      partial: payload.partial === true,
+      final: payload.final === true,
+      tone: '',
+    };
   }
   if (event.kind === EVENT_KINDS.TOOL && payload.phase !== 'completed') {
     const target = String(payload.target ?? '');
     const short = payload.action === 'run' ? summariseCommand(target) : target.replace(/\s+/g, ' ').trim();
     return {
-      at, who, text: `${payload.action} ${short}`, markdown: false, tone: 'tool', full: target,
+      at, who, text: `${payload.action} ${short}`, tone: 'tool', full: target,
     };
   }
   if (event.kind === EVENT_KINDS.CLAIM) {
     const receipt = payload.receipt ? `  <- ${payload.receipt}` : '  <- no receipt';
-    return { at, who, text: `${payload.text}${receipt}`, markdown: false, tone: payload.receipt ? '' : 'alert' };
+    return { at, who, text: `${payload.text}${receipt}`, tone: payload.receipt ? '' : 'alert' };
   }
   if (event.kind === EVENT_KINDS.BLOCKED) {
     const reason = String(payload.reason ?? '');
     const short = reason.length > 90 ? `${reason.slice(0, 8)}${summariseCommand(reason.slice(8))}` : reason;
-    return { at, who, text: `BLOCKED - ${short}`, markdown: false, tone: 'alert', full: reason };
+    return { at, who, text: `BLOCKED - ${short}`, tone: 'alert', full: reason };
   }
   if (event.kind === EVENT_KINDS.APPROVAL && !payload.resolved) {
-    return { at, who, text: `NEEDS YOU - ${payload.summary ?? ''}`, markdown: false, tone: 'alert' };
+    return { at, who, text: `NEEDS YOU - ${payload.summary ?? ''}`, tone: 'alert' };
   }
   if (event.kind === EVENT_KINDS.STATUS && payload.text) {
-    return { at, who: '', text: payload.text, markdown: false, tone: '' };
+    return { at, who: '', text: payload.text, tone: '' };
   }
   return null;
 }
@@ -2213,20 +2246,28 @@ function mountMarkdownStyles() {
     @media (prefers-reduced-motion: reduce) {
       [style*="bubble-new"] { animation: none !important; }
     }
-    .md { white-space: normal; }
-    .md p { margin: 2px 0; }
+    .md { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
+    .md p { margin: 3px 0; }
     .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
       margin: 6px 0 2px; font-size: 11px; letter-spacing: .06em;
       text-transform: uppercase; color: var(--accent, #34d399);
     }
-    .md ul, .md ol { margin: 2px 0; padding-left: 16px; }
-    .md li { margin: 1px 0; }
-    .md code { padding: 0 3px; border: 1px solid var(--line, #262626); }
+    .md ul, .md ol { margin: 4px 0; padding-left: 20px; }
+    .md li { margin: 2px 0; }
+    .md code { padding: 0 3px; border: 1px solid var(--line, #262626); overflow-wrap: normal; }
     .md pre {
-      margin: 4px 0; padding: 6px 8px; overflow-x: auto;
-      background: var(--bg, #0a0a0a); border: 1px solid var(--line, #262626);
+      position: relative; margin: 6px 0; padding: 22px 10px 9px; overflow-x: auto;
+      background: var(--sunk, #151515); border: 1px solid var(--line, #262626);
     }
-    .md pre code { white-space: pre; border: 0; padding: 0; }
+    .md pre[data-lang]::before {
+      content: attr(data-lang); position: absolute; top: 4px; left: 9px;
+      color: var(--muted, #8a8a8a); font-size: 8px; letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .md pre code { display: block; min-width: max-content; white-space: pre; border: 0; padding: 0; }
+    .md .tok-key { color: var(--accent, #34d399); }
+    .md .tok-string { color: var(--text, #e8e8e8); }
+    .md .tok-number, .md .tok-literal { color: var(--muted, #8a8a8a); }
     .md blockquote {
       margin: 4px 0; padding-left: 8px;
       border-left: 2px solid var(--line, #262626); color: var(--muted, #8a8a8a);
@@ -2234,8 +2275,9 @@ function mountMarkdownStyles() {
     .md hr { border: 0; border-top: 1px solid var(--line, #262626); margin: 6px 0; }
     .md a { color: var(--accent, #34d399); }
     .md strong { color: var(--text, #e8e8e8); }
-    .md table { border-collapse: collapse; margin: 4px 0; }
-    .md th, .md td { border: 1px solid var(--line, #262626); padding: 2px 6px; }
+    .md table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+    .md th, .md td { border: 1px solid var(--line, #262626); padding: 4px 7px; text-align: left; }
+    .md th { color: var(--accent, #34d399); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
   `;
   document.head.append(style);
 }

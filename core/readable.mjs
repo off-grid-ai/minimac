@@ -83,7 +83,7 @@ export function plainText(source) {
 // already inside a block, and returns the prose a person should see plus the
 // state to pass to the next fragment. Nothing machine-shaped reaches the eye,
 // and the caller keeps the raw text for parsing.
-export function splitFenced(text, fences = [], open = false) {
+export function splitFenced(text, fences = [], open = false, preserveWhitespace = false) {
   const source = String(text ?? '');
   const opener = new RegExp('```(?:' + fences.join('|') + ')\\s*', 'g');
   let prose = '';
@@ -93,7 +93,13 @@ export function splitFenced(text, fences = [], open = false) {
   while (index < source.length) {
     if (inside) {
       const close = source.indexOf('```', index);
-      if (close === -1) return { prose: prose.trim(), open: true, partial: false };
+      if (close === -1) {
+        return {
+          prose: preserveWhitespace ? prose : prose.trim(),
+          open: true,
+          partial: false,
+        };
+      }
       index = close + 3;
       inside = false;
       continue;
@@ -115,7 +121,9 @@ export function splitFenced(text, fences = [], open = false) {
   // one backtick at a time. Hold back any tail that could still become one.
   const held = openerTail(prose, fences);
   return {
-    prose: prose.slice(0, prose.length - held).trim(),
+    prose: preserveWhitespace
+      ? prose.slice(0, prose.length - held)
+      : prose.slice(0, prose.length - held).trim(),
     open: inside,
     partial: held > 0,
   };

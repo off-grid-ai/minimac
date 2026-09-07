@@ -178,7 +178,9 @@ if (adopted) {
   for (const agent of Object.values(state.agents)) {
     state.agents = patchAgent(state.agents, agent.id, {
       status: 'idle', sessionId: null, sessionIds: [], workItemIds: [],
-      resumeSessionId: adoptedSessions.find((row) => row.agent_id === agent.id)?.session_id ?? null,
+      resumeSessionId: adoptedSessions.find((row) =>
+        row.agent_id === agent.id && row.engine === agent.engine,
+      )?.session_id ?? null,
       blockedReason: null,
     });
   }
@@ -188,8 +190,23 @@ if (adopted) {
     deriveCards(Object.values(state.agents), indexByAgent(state.events), adoptedAt),
     adoptedAt,
   );
-  // The board belongs to the run, so rejoining a run rejoins its work.
-  state.board = { items: store.itemsFor(adopted.id) };
+  // The checkpoints belong to the run, so rejoining a run rejoins its work.
+  // Older `continue` runs opened a new record without copying the checkpoint
+  // rows. Their first status event still records the source run, which lets a
+  // restart repair that missing projection once and persist the correction.
+  let adoptedItems = store.itemsFor(adopted.id);
+  if (adoptedItems.length === 0) {
+    const continued = [...state.events].reverse().find((event) =>
+      event.kind === EVENT_KINDS.STATUS
+      && /^continued run \d+:/.test(String(event.payload?.text ?? '')),
+    );
+    const sourceRunId = Number(/^continued run (\d+):/.exec(String(continued?.payload?.text ?? ''))?.[1]);
+    if (Number.isInteger(sourceRunId)) {
+      adoptedItems = store.itemsFor(sourceRunId);
+      for (const item of adoptedItems) store.saveItem(item);
+    }
+  }
+  state.board = { items: adoptedItems };
 }
 const worktrees = createWorktrees({ repo: options.repo, root: join(ROOT, 'worktrees') });
 const repoIndex = createRepoIndex();
@@ -245,6 +262,16 @@ async function reconcileAdoptedSessions() {
   for (const row of adoptedSessions) {
     const agent = state.agents[row.agent_id];
     if (!agent) continue;
+    if (row.engine !== agent.engine) {
+      state.agents = patchAgent(state.agents, agent.id, {
+        sessionId: null,
+        sessionIds: [],
+        resumeSessionId: null,
+        enabled: false,
+        status: 'idle',
+      });
+      continue;
+    }
     const driver = getDriver(agent.engine);
     if (typeof driver.reconcile !== 'function') continue;
     try {
@@ -509,12 +536,12 @@ function partition(event) {
 
   const held = wire.get(event.agentId) ?? { buffer: '', shown: 0 };
   const buffer = held.buffer + String(event.payload?.text ?? '');
-  const { prose, open } = splitFenced(buffer, FENCES, false);
+  const { prose, open } = splitFenced(buffer, FENCES, false, true);
 
   // A block that has closed is complete and can be parsed. Nothing is parsed
   // while one is still open, which is why a split report used to be dropped.
   const raw = open ? null : buffer;
-  const delta = prose.slice(held.shown).trim();
+  const delta = prose.slice(held.shown);
 
   if (open) {
     wire.set(event.agentId, { buffer, shown: prose.length });
@@ -1118,13 +1145,15 @@ const COMMANDS = {
   async continueRun({ runId, note }) {
     const previous = store.getRun(Number(runId));
     if (!previous) throw new Error(`no run ${runId}`);
+    const savedItems = store.itemsFor(Number(runId));
+    const savedGoals = store.goalsFor(Number(runId));
 
     // Continue always continues. Where a session survives, the agent keeps its
     // memory; where it does not, that agent starts fresh on the same goal and
     // the feed says which ones lost their thread. A dead button is never the
     // right answer.
     const sessions = new Map(
-      store.sessionsFor(Number(runId)).map((row) => [row.agent_id, row.session_id]),
+      store.sessionsFor(Number(runId)).map((row) => [row.agent_id, row]),
     );
 
     // Continuing opens a NEW run record carrying the old mission, so the fleet
@@ -1135,9 +1164,16 @@ const COMMANDS = {
     store.startRun(state.mission, options.repo);
     for (const agent of Object.values(state.agents)) store.saveEngine(agent.id, agent.engine);
 
-    for (const row of store.goalsFor(Number(runId))) {
+    // The new run record continues the old work. Copy the checkpoints into the
+    // new run before any worker starts, so the UI and every agent receive the
+    // same queue instead of an empty one.
+    state.board = { items: savedItems };
+    for (const item of savedItems) store.saveItem(item);
+
+    for (const row of savedGoals) {
       if (row.objective) {
         state.goals = setGoal(state.goals, row.agent_id, row.objective, row.token_budget, 'active', 'manual');
+        store.saveGoal(row.agent_id, state.goals[row.agent_id]);
       }
     }
 
@@ -1151,11 +1187,12 @@ const COMMANDS = {
       const driver = getDriver(agent.engine);
       try {
         if (!previousSession) throw new Error('no session recorded');
+        if (previousSession.engine !== agent.engine) throw new Error('session belongs to another engine');
         if (typeof driver.resume !== 'function') throw new Error('engine cannot resume');
         const sessionId = await driver.resume(
           agent,
           options.repo,
-          previousSession,
+          previousSession.session_id,
           composeDispatch(promptContext(agent, prompt)),
         );
         state.agents = patchAgent(state.agents, agent.id, { sessionId, status: 'running' });

@@ -104,11 +104,12 @@ export function createClaudeDriver({
     }
 
     if (message.type === 'result') {
-      normalizeResult(agentId, at, message);
+      normalizeResult(agentId, at, message, sessionId);
       return;
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
+      settleReady(sessionId);
       at(EVENT_KINDS.STATUS, { state: 'running', model: message.model ?? null });
     }
   }
@@ -170,7 +171,12 @@ export function createClaudeDriver({
     }
   }
 
-  function normalizeResult(agentId, at, message) {
+  function normalizeResult(agentId, at, message, sessionId) {
+    const session = sessions.get(sessionId);
+    if (message.is_error === true && session?.resume && !session.readySettled) {
+      settleReady(sessionId, new Error(String(message.result ?? message.subtype ?? 'resume failed')));
+      return;
+    }
     for (const denial of message.permission_denials ?? []) {
       emit(
         createApprovalEvent(agentId, {
@@ -195,6 +201,7 @@ export function createClaudeDriver({
     });
 
     if (message.is_error === true) {
+      settleReady(sessionId, new Error(String(message.result ?? message.subtype ?? 'run failed')));
       emit(
         createBlockedEvent(agentId, {
           category: BLOCKED_REASONS.ERROR,
@@ -257,8 +264,20 @@ export function createClaudeDriver({
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    const session = { child, agentId: agent.id, cwd, agent, buffer: '', stderr: '', alive: true };
+    let resolveReady;
+    let rejectReady;
+    const ready = new Promise((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+    const session = {
+      child, agentId: agent.id, cwd, agent, resume, buffer: '', stderr: '', alive: true,
+      ready, resolveReady, rejectReady, readySettled: false,
+    };
     sessions.set(sessionId, session);
+    session.readyTimer = setTimeout(() => {
+      settleReady(sessionId, new Error(`${bin} did not confirm the session within 30 seconds`));
+    }, 30_000);
 
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => consume(sessionId, chunk));
@@ -272,6 +291,7 @@ export function createClaudeDriver({
 
     child.on('error', (error) => {
       session.alive = false;
+      settleReady(sessionId, error);
       emit(
         createBlockedEvent(agent.id, {
           category: BLOCKED_REASONS.ERROR,
@@ -282,6 +302,9 @@ export function createClaudeDriver({
 
     child.on('exit', (code) => {
       session.alive = false;
+      if (!session.readySettled) {
+        settleReady(sessionId, new Error(session.stderr.trim() || `${bin} exited with status ${code}`));
+      }
       if (code !== 0 && session.stderr.trim()) {
         emit(
           createBlockedEvent(agent.id, {
@@ -300,6 +323,15 @@ export function createClaudeDriver({
     });
 
     return session;
+  }
+
+  function settleReady(sessionId, error = null) {
+    const session = sessions.get(sessionId);
+    if (!session || session.readySettled) return;
+    session.readySettled = true;
+    clearTimeout(session.readyTimer);
+    if (error) session.rejectReady(error);
+    else session.resolveReady();
   }
 
   function write(sessionId, text) {
@@ -321,7 +353,7 @@ export function createClaudeDriver({
     if (write(sessionId, text)) return;
     const previous = sessions.get(sessionId);
     if (!previous) return;
-    launch(previous.agent, previous.cwd, sessionId, true);
+    launch(previous.agent, previous.cwd, sessionId, true).ready.catch(() => {});
     write(sessionId, text);
   }
 
@@ -334,16 +366,18 @@ export function createClaudeDriver({
 
     async start(agent, cwd, prompt) {
       const sessionId = randomUUID();
-      launch(agent, cwd, sessionId, false);
+      const session = launch(agent, cwd, sessionId, false);
       write(sessionId, prompt);
+      await session.ready;
       return sessionId;
     },
 
     // --resume rejoins the same conversation, so the agent still knows what it
     // found last time rather than rediscovering it.
     async resume(agent, cwd, sessionId, prompt) {
-      launch(agent, cwd, sessionId, true);
+      const session = launch(agent, cwd, sessionId, true);
       write(sessionId, prompt);
+      await session.ready;
       return sessionId;
     },
 
