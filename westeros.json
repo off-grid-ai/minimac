@@ -1,0 +1,45 @@
+{
+  "$team": "Westeros",
+  "minimac": {
+    "name": "Lord Tywin",
+    "mesh": "assets/characters/minimac.glb",
+    "color": "#2b2f36",
+    "move": "lightning"
+  },
+  "coder": {
+    "name": "Jamie Lannister (Kingslayer)",
+    "mesh": "assets/characters/coder.glb",
+    "color": "#c8541f",
+    "move": "repulsor"
+  },
+  "tester": {
+    "name": "Robb Stark (The young wolf)",
+    "mesh": "assets/characters/tester.glb",
+    "color": "#4f8a4a",
+    "move": "smash"
+  },
+  "auditor": {
+    "name": "Jon Snow (The white wolf)",
+    "mesh": "assets/characters/auditor.glb",
+    "color": "#1f8f8a",
+    "move": "portal"
+  },
+  "reviewer": {
+    "name": "Lord Stark (Eddard Stark)",
+    "mesh": "assets/characters/reviewer.glb",
+    "color": "#3a63c4",
+    "move": "binary"
+  },
+  "ux": {
+    "name": "Rhaegar Targaryen",
+    "mesh": "assets/characters/ux.glb",
+    "color": "#d99a3f",
+    "move": "beam"
+  },
+  "pm": {
+    "name": "Prince Oberyn (The Red Viper)",
+    "mesh": "assets/characters/pm.glb",
+    "color": "#a33a4a",
+    "move": "hex"
+  }
+}
