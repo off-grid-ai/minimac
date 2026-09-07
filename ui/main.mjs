@@ -56,6 +56,7 @@ const state = {
   claims: {},
   cards: null,
   board: [],
+  flows: [],
   velocity: null,
   // Orders being carried across the floor, one at a time.
   errands: createErrands(),
@@ -156,6 +157,7 @@ function applySnapshot(snapshot) {
   state.claims = snapshot.claims;
   state.cards = snapshot.cards ?? null;
   state.board = snapshot.board ?? state.board;
+  state.flows = snapshot.flows ?? state.flows;
   state.velocity = snapshot.velocity ?? state.velocity;
   state.repo = snapshot.repo ?? state.repo;
   state.mission = snapshot.mission ?? state.mission;
@@ -575,8 +577,8 @@ function renderPanels() {
   sound.setNeglect(owed.level);
   document.body.dataset.owed = queue.length ? 'yes' : '';
 
-  // FLOW and EVIDENCE follow whoever is focused: they are one agent's contract
-  // and one agent's claims, and the room is what says which agent that is.
+  // Evidence follows the focused agent. Flow belongs to the mission and is a
+  // read-only projection of its checkpoints, so focus cannot change progress.
   const focused = agents.find((agent) => agent.selected) ?? agents[0];
   if (dom.roster && windows?.isOpen('crew')) {
     renderChanged('crew', dom.roster, rosterView(agents), () => {
@@ -587,10 +589,10 @@ function renderPanels() {
     const running = agents.filter((agent) => agent.status === 'running').length;
     dom.roCrew.textContent = `${running}/${agents.length} RUNNING`;
   }
-  if (dom.flows && focused && windows?.isOpen('flows')) {
-    const flows = measuredFlows(focused);
-    renderChanged('flows', dom.flows, [focused.id, flows], () => {
-      renderFlows(dom.flows, { ...focused, flows });
+  if (dom.flows && windows?.isOpen('flows')) {
+    const missionFlow = { id: 'mission', name: 'mission', flows: state.flows };
+    renderChanged('flows', dom.flows, state.flows, () => {
+      renderFlows(dom.flows, missionFlow);
     });
   }
   if (dom.checkpoints && windows?.isOpen('checkpoints')) {
@@ -607,8 +609,7 @@ function renderPanels() {
       });
     });
   }
-  // The focused flow stays available here and at the desk. The panel is the
-  // stable reading surface; the desk keeps the same truth beside its controls.
+  // The focused name still identifies the chat target. It does not own Flow.
   if (dom.focusName) dom.focusName.textContent = focused?.name ?? '';
   // One queue. A hero's question is a decision like any other, so answering it
   // happens here rather than behind a second tab that counted the same things.

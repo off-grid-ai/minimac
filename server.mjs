@@ -65,6 +65,7 @@ import { createFleetCoordination } from './application/fleet-coordination.mjs';
 import { createWorkerLeaseService } from './application/worker-leases.mjs';
 import { ORDER_ACTION } from './core/coordination.mjs';
 import { LEASE_LIMIT_MS, finishLease } from './core/leases.mjs';
+import { projectMissionFlows } from './core/mission-flows.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
 import {
   deriveCards,
@@ -2070,6 +2071,9 @@ function snapshot() {
       verdict: state.verdicts[cardKey(card)] ?? null,
     })),
     board: itemsOf(state.board),
+    // One mission truth, two views. Flow is derived from checkpoints and is
+    // never stored or accepted as a second progress record.
+    flows: projectMissionFlows(state.board),
     velocity: boardProgress(state.board),
     schema: buildOutputSchema(),
   };
