@@ -174,6 +174,7 @@ export function createSimDriver() {
   function planEvent(arc, now) {
     return createEvent(arc.agentId, EVENT_KINDS.PLAN, {
       steps: arc.config.steps.map((step, index) => ({
+        id: `f${index + 1}`,
         step: step.step,
         user_visible_result: step.step,
         status: arc.statuses[index],
@@ -195,7 +196,7 @@ export function createSimDriver() {
   function open(arc, now) {
     arc.opened = true;
     arc.stepStartedAt = now;
-    arc.statuses[0] = 'wired';
+    arc.statuses[0] = 'running';
     arc.nextToolAt = now + arc.config.toolEveryMs;
     emit(createEvent(arc.agentId, EVENT_KINDS.STATUS, { state: 'running' }));
     emit(planEvent(arc, now));
@@ -285,7 +286,7 @@ export function createSimDriver() {
     const index = arc.stepIndex;
     const step = arc.config.steps[index];
     step.measuredMs = now - arc.stepStartedAt;
-    arc.statuses[index] = 'completed';
+    arc.statuses[index] = 'verified';
 
     emit(
       createEvent(arc.agentId, EVENT_KINDS.PING, {
@@ -306,7 +307,7 @@ export function createSimDriver() {
       return finish(arc, now);
     }
     arc.stepStartedAt = now;
-    arc.statuses[arc.stepIndex] = 'wired';
+    arc.statuses[arc.stepIndex] = 'running';
     emit(planEvent(arc, now));
   }
 
@@ -382,7 +383,8 @@ export function createSimDriver() {
     emit(
       createEvent(arc.agentId, EVENT_KINDS.RESULT, {
         report: {
-          flows: arc.config.steps.map((step) => ({
+          flows: arc.config.steps.map((step, index) => ({
+            id: `f${index + 1}`,
             step: step.step,
             status: 'verified',
             measuredMs: step.measuredMs ?? null,

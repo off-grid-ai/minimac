@@ -930,6 +930,8 @@
   .ladder .word { text-transform: uppercase; letter-spacing: 0.16em; font-size: 9px; color: var(--faint); }
   .ladder[data-status="wired"] .word { color: var(--muted); }
   .ladder[data-status="verified"] .word { color: var(--accent); }
+  .ladder[data-status="running"] .word { color: var(--text); }
+  .ladder[data-status="blocked"] .word { color: var(--danger); }
 
   /* The flow tree. Same row shape at group, repo and step, so a column of
      gates reads straight down a multi-repo mission. */

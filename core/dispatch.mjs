@@ -16,6 +16,8 @@ export const PLANS_THRICE = Object.freeze(
 
 export const STEP_STATUS = Object.freeze({
   PENDING: 'pending',
+  RUNNING: 'running',
+  BLOCKED: 'blocked',
   CODED: 'coded',
   WIRED: 'wired',
   VERIFIED: 'verified',
@@ -170,7 +172,7 @@ export function reportInstruction(role = null) {
     '  "flows": [',
     '    {"id": "f1", "step": "what you are doing",',
     '     "user_visible_result": "what a person can see", "scope": "repo/area",',
-    '     "status": "pending|coded|wired|verified", "estimateMs": 300000' + approach + '}',
+    '     "status": "pending|running|blocked|coded|wired|verified", "estimateMs": 300000' + approach + '}',
     '  ],',
     '  "claims": [],',
     '  "gates": [',
@@ -186,7 +188,8 @@ export function reportInstruction(role = null) {
     '- scope says WHERE the step happens, as a path: the repo, then the area inside it '
       + '("mobile", "mobile/release", "shared/sync"). It is how the floor rolls your work '
       + 'up per repo. Use the same scope string for every step in the same place.',
-    '- status is the delivery ladder. Use "pending" before work starts, "coded" when the '
+    '- status says where the step is now. Use "pending" before work starts, "running" '
+      + 'while you work, and "blocked" when you cannot continue. Use "coded" when the '
       + 'change exists, "wired" when it runs in the product, and "verified" only after '
       + 'someone observed the result on the real surface.',
     '- user_visible_result is what a PERSON sees. Never a file, command or count.',
@@ -194,7 +197,8 @@ export function reportInstruction(role = null) {
       + 'Give it BEFORE the step starts. An estimate written after the fact is not an estimate.',
     '- Every step carries an estimate. A step with no estimate cannot be late, which is '
       + 'why one is never optional.',
-    '- Every number you state anywhere goes in claims with the command that produced it.',
+    '- Every measured number you state goes in claims with the command that produced it. '
+      + 'A time estimate is a forecast, not a measured claim.',
     '- If you have no command behind a number, set receipt to "" and say so.',
     '- If your work no longer matches your goal, say so in a flow step rather than continuing.',
     `- gates are board moves. The fixed gates are: ${GATES.join(', ')}. Name the item id `
@@ -322,10 +326,7 @@ export function priorSteps(steps = []) {
   const lines = closed.map((step, index) => {
     const took = Number.isFinite(step.actualMs) ? `  (took ${Math.round(step.actualMs / 60000)}m)` : '';
     const saw = step.user_visible_result ? `\n    a person can now: ${step.user_visible_result}` : '';
-    const proof = Array.isArray(step.evidence) && step.evidence.length
-      ? `\n    proof: ${step.evidence.join('; ')}`
-      : '';
-    return `${step.id ?? index + 1}. ${step.step}  [${step.status}]${took}${saw}${proof}`;
+    return `${step.id ?? index + 1}. ${step.step}  [${step.status}]${took}${saw}`;
   });
   return [
     '# What you have already done',
@@ -493,12 +494,25 @@ function crewSection(agent, crew, team) {
 export const GOALS_FENCE = 'minimac-goals';
 
 export function planningTask(mission, crew) {
-  const roster = crew
-    .filter((member) => member.role !== 'orchestrator')
+  const members = crew.filter((member) => member.role !== 'orchestrator');
+  const roster = members
     .map((member) => `- ${member.id}  (${member.label}, ${member.role})`
       + `  [${member.enabled === false ? 'currently STOOD DOWN' : 'currently on'}]`
       + (member.instances > 1 ? `  — ${member.instances} workers share this seat` : ''))
     .join('\n');
+  const first = members[0]?.id ?? 'worker';
+  const example = JSON.stringify({
+    crew: Object.fromEntries(members.map((member, index) => [member.id, index === 0])),
+    goals: { [first]: 'one sentence that says what done looks like' },
+    items: [{
+      title: 'what a person gets when this is done',
+      scope: 'repo/area',
+      owner: first,
+      needs: ['coding', 'lint', 'test'],
+      blockedBy: [],
+      estimateMs: 600000,
+    }],
+  }, null, 2);
 
   return [
     '# First job: assemble the crew',
@@ -519,13 +533,7 @@ export function planningTask(mission, crew) {
     + 'start any work, and do not end with anything after this:',
     '',
     '```' + GOALS_FENCE,
-    '{ "crew": { "coder": true, "reviewer": 3, "ux": false },',
-    '  "goals": { "coder": "one sentence", "tester": "one sentence" },',
-    '  "items": [',
-    '    {"title": "what a person gets when this is done", "scope": "repo/area",',
-    '     "owner": "coder", "needs": ["coding","lint","test"], "blockedBy": [],',
-    '     "estimateMs": 600000}',
-    '  ] }',
+    example,
     '```',
     '',
     'Rules for the crew - this half is NOT optional:',
@@ -557,7 +565,7 @@ export function planningTask(mission, crew) {
       + 'test gate; inventing one makes an item nobody can ever finish.',
     '- "blockedBy" names the item ids that must finish first. Use it - it is how '
       + 'one hero waits on another without either of them guessing.',
-    '- Give each item an estimate in AGENT minutes.',
+    '- Give each item an estimate in milliseconds. For example, ten minutes is 600000.',
     '- The gates are walked in order and a pass needs the command that proved it. '
       + 'Nobody can report a push over untested code.',
     '',

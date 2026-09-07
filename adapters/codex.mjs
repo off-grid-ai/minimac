@@ -329,7 +329,8 @@ export function createCodexDriver({ url = 'ws://127.0.0.1:4573', clientName = 'm
 
       case 'turn/plan/updated':
         return at(EVENT_KINDS.PLAN, {
-          steps: (params.plan ?? []).map((entry) => ({
+          steps: (params.plan ?? []).map((entry, index) => ({
+            id: String(entry.id ?? `f${index + 1}`),
             step: entry.step,
             status: planStatus(entry.status),
           })),
@@ -533,8 +534,8 @@ function commandAction(commandActions) {
 }
 
 function planStatus(status) {
-  if (status === 'inProgress') return 'wired';
-  if (status === 'completed') return 'completed';
+  if (status === 'inProgress') return 'running';
+  if (status === 'completed') return 'coded';
   return 'pending';
 }
 

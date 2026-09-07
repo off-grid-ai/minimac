@@ -19,6 +19,7 @@ const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
 
 // The status ladder is ordered, so a step's position on it is a number.
 const LADDER = ['coded', 'wired', 'verified'];
+const FLOW_STATES = new Set(['pending', 'running', 'blocked', ...LADDER]);
 
 const LADDER_MEANING = [
   ['coded', 'the change exists in the tree'],
@@ -422,9 +423,7 @@ function scopeRows(agent, node, depth, redraw) {
 
 // One step: what a person will see, how far it has got, and its time.
 function flowRow(step) {
-  const status = step.status === 'pending' || LADDER.includes(step.status)
-    ? step.status
-    : 'pending';
+  const status = FLOW_STATES.has(step.status) ? step.status : 'pending';
   const row = el('div', `flow${status === 'verified' ? ' is-verified' : ''}`);
   const head = el('div', 'flow-head');
   head.append(el('div', 'flow-result', step.user_visible_result ?? step.step), ladder(status));
@@ -433,7 +432,7 @@ function flowRow(step) {
 }
 
 function ladder(status) {
-  const reached = status === 'pending' ? 0 : LADDER.indexOf(status) + 1;
+  const reached = LADDER.includes(status) ? LADDER.indexOf(status) + 1 : 0;
   const wrap = el('span', 'ladder');
   wrap.dataset.status = status;
   wrap.setAttribute('aria-label', `status: ${status}`);

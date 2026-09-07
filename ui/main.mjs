@@ -366,7 +366,9 @@ function measuredFlows(agent) {
   const measured = stepTimings(events);
   if (measured.length === 0) return agent.flows ?? [];
   return measured.map((timing, index) => {
-    const declared = agent.flows?.[index] ?? {};
+    const declared = timing.id
+      ? agent.flows?.find((step) => step?.id === timing.id) ?? {}
+      : agent.flows?.[index] ?? {};
     return {
       ...declared,
       step: declared.step ?? timing.step,

@@ -182,6 +182,7 @@ export function stepTimings(events, now = Date.now()) {
 
   const first = plans[0].payload?.steps ?? [];
   const timings = first.map((step, index) => ({
+    id: step?.id ?? null,
     index,
     step: stepLabel(step),
     estimateMs: Number.isFinite(step?.estimateMs) ? step.estimateMs : null,
@@ -193,7 +194,7 @@ export function stepTimings(events, now = Date.now()) {
   for (const event of plans) {
     const steps = event.payload?.steps ?? [];
     for (const [index, step] of steps.entries()) {
-      const timing = timings[index] ?? matchByLabel(timings, step);
+      const timing = matchTiming(timings, step, index);
       if (!timing) continue;
       timing.status = step?.status ?? timing.status;
       if (timing.startedAt === null && isStartedStep(step)) timing.startedAt = event.ts;
@@ -236,6 +237,14 @@ function stepLabel(step) {
 function matchByLabel(timings, step) {
   const label = stepLabel(step);
   return label ? timings.find((timing) => timing.step === label) ?? null : null;
+}
+
+function matchTiming(timings, step, index) {
+  if (step?.id) {
+    const byId = timings.find((timing) => timing.id === step.id);
+    if (byId) return byId;
+  }
+  return timings[index] ?? matchByLabel(timings, step);
 }
 
 function isStartedStep(step) {

@@ -45,8 +45,8 @@ const TOOL_ACTIONS = Object.freeze({
 
 const PLAN_STATUS = Object.freeze({
   pending: 'pending',
-  in_progress: 'wired',
-  completed: 'completed',
+  in_progress: 'running',
+  completed: 'coded',
 });
 
 // Claude states a permission problem in prose. This is the one place that
@@ -106,7 +106,8 @@ export function createClaudeDriver({ bin = 'claude', model = null } = {}) {
   function normalizeToolUse(at, block) {
     // Claude has no first-class plan event; its todo list is the equivalent.
     if (block.name === 'TodoWrite') {
-      const steps = (block.input?.todos ?? []).map((todo) => ({
+      const steps = (block.input?.todos ?? []).map((todo, index) => ({
+        id: String(todo.id ?? `f${index + 1}`),
         step: todo.content,
         status: PLAN_STATUS[todo.status] ?? todo.status,
       }));
