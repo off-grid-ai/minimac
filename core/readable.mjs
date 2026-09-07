@@ -66,7 +66,11 @@ export function shortenDetail(detail) {
 export function plainText(source) {
   return String(source ?? '')
     .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/[*_~`#>]/g, '')
+    .replace(/(^|\s)#{1,6}\s+/g, '$1')
+    .replace(/(^|\n)\s*>\s?/g, '$1')
+    .replace(/(^|\s)__([^_\n]+)__($|\s|[.,!?])/g, '$1$2$3')
+    .replace(/(^|[^\w])_([^_\n]+)_($|[^\w])/g, '$1$2$3')
+    .replace(/[\*~`]/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
