@@ -75,7 +75,7 @@ normal, so he never drowns and never polls.
 - `+ harvestVerdicts(event)` — the third harvester beside `harvestGoals()` and
   `harvestReport()`; parses the `minimac-verdict` block and calls `applyVerdict()`.
 - `+ applyVerdict(verdict)` — maps to existing verbs only:
-  `steer→COMMANDS.steer`, `goal→COMMANDS.setGoal`, `bench→COMMANDS.setEnabled`,
+  `steer→COMMANDS.steer`, `goal→COMMANDS.setGoal`, `bench→COMMANDS.setActive`,
   `hold`/`escalate`→annotate the card. Nothing new can touch files.
 - `~ ingest()` — call `harvestVerdicts` alongside the other two.
 - `+ COMMANDS.setGovernance({ mode })` — validated by `isGovernanceMode`.

@@ -23,7 +23,7 @@ Codex daemon: minimac starts one if nothing is listening, and leaves alone one t
 | `--port <n>` | where the floor is served | `4600` |
 | `--engine <name>` | force every seat onto one engine: `codex`, `claude` or `sim` | per-agent from the roster |
 | `--roster <file>` | your own names, colours and meshes for each seat | the built-in roster |
-| `--team "..."` | what the crew calls itself, in every dispatch | `the crew` |
+| `--team "..."` | what the Avengers call themselves in every dispatch | `the Avengers` |
 | `--contract <file>` | seed the standing instruction from this file | `.codex/ENGINEERING_CONTRACT.md` in the repo |
 | `--hook "..."` | extra standing instruction, on top of the contract | none |
 | `--skills a,b` | skills every agent is told to apply, e.g. `hygiene,tests` | none |
@@ -57,7 +57,7 @@ The two engines honour it differently, and it is worth knowing which one a seat 
 
 ## Engines
 
-Each seat runs on Codex or Claude, switchable from the crew panel at any time; it takes
+Each seat runs on Codex or Claude, switchable from the Avengers panel at any time; it takes
 effect on that agent's next dispatch. The floor never knows which engine a desk is on.
 
 - **Codex** talks to `codex app-server` over its JSON-RPC socket. Started automatically.
@@ -72,12 +72,12 @@ effect on that agent's next dispatch. The floor never knows which engine a desk 
    down, writes each of the chosen a real goal, and splits the work into board items with
    owners. He can ask for several of one hero when the work genuinely splits — three pull
    requests to review is three reviewers.
-3. **START ALL.** The crew works. He walks each order across the floor as he gives it.
+3. **START ALL.** The Avengers work. He walks each order across the floor as he gives it.
 4. **Answer what reaches you.** Everything else is his.
 
 ## What you are looking at
 
-- **The crew bar** — always on, never moving: every hero, whether they are working, and
+- **The Avengers bar** — always on, never moving: every hero, whether they are working, and
   what they are doing in plain words. A bubble is an *event*; this is *state*.
 - **The floor** — one desk per agent. Posture is state: typing, thinking, pacing (the loop
   detector firing), slumped when blocked, out of the chair when carrying an order. Monitor
@@ -92,7 +92,8 @@ effect on that agent's next dispatch. The floor never knows which engine a desk 
   overrun, silence, a missing estimate, a plan that was never sharpened) and questions the
   heroes ask you themselves. Answering a question opens a thread; it closes when you say
   SETTLED.
-- **CREW** — each seat's engine, how many of them, and its goal.
+- **AVENGERS** — each seat's engine, how many of them, its goal, its working switch, and
+  a conversation input. The same input stays under a selected agent's feed.
 - **MISSIONS** — every past mission, kept whole. CONTINUE resumes the same conversations;
   RUN AGAIN starts them clean on the same goals.
 
@@ -111,7 +112,9 @@ is gate-completion rate, because an agent can talk for an hour and pass nothing.
 The room derives what nobody reported — repeat loops, time against the agent's own
 estimate, silence that means hung rather than thinking, claims with no command behind them.
 A new finding wakes the orchestrator in one batched turn, and he rules: hold, steer,
-re-goal, bench, or escalate to you. You see every card he touched.
+re-goal, start, bench, or escalate to you. Start opens a real session. Bench stops that
+session and takes the Avenger off the mission; those are one action, not two states.
+You see every card he touched.
 
 Two invariants. An approval freezes an engine and is never delegated. A card *about* the
 orchestrator never goes to the orchestrator — nobody supervises themselves.
@@ -119,6 +122,17 @@ orchestrator never goes to the orchestrator — nobody supervises themselves.
 Heroes can also ask for you directly, for the things watching them could never reveal:
 a decision, a conflict, something they are blocked on. And they can stand themselves down
 when their work is finished, rather than sitting idle in a chair.
+
+## Fleet tools
+
+Every Codex and Claude session gets the same local `minimac` MCP server. The MCP process
+has no fleet state. It sends authenticated calls to the running MINIMAC server, which is
+the single owner of the roster, goals, board, reports, and events.
+
+All Avengers can report progress and escalate a handoff to Thor. Thor can assemble the
+full roster, start or bench an Avenger, change an Avenger's goal, and assign shared board
+work. Assemble starts the selected Avengers and benches all others. These tools use the
+same server operations as the floor controls, so a tool call and a click cannot disagree.
 
 ## Speaking once
 
@@ -136,6 +150,10 @@ would otherwise retype each session is enforced once. It carries the standing in
 (your repo's engineering contract, plus any policy), the role, the crew, the goal, the
 board, that agent's own closed steps, the plan-sharpening loop, the house style, and the
 report contract. Rewrite any editable step live in MIDDLEWARE.
+
+Messages from the agent conversation inputs use this same pipeline. They are stored once,
+then sent with the current middleware. A message to a benched Avenger starts the session
+through that pipeline before it is delivered.
 
 **Plan, sharpen, sharpen again** — for the coder, tester and auditor: write the plan,
 attack it and rewrite, cut it and rewrite, act on the third. The room raises a card when a
