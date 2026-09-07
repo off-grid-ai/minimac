@@ -1633,6 +1633,13 @@
     pointer-events: none;
   }
   #composerInput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 12px -4px var(--accent-glow); }
+  #composer.is-collapsed #composerInput {
+    height: 34px;
+    max-height: 34px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  #composer.is-collapsed #composerInput > * { display: inline; }
   #composerSend { grid-area: send; }
 
   .dock { grid-area: dock; display: flex; align-items: center; gap: calc(var(--step) * 1.5); flex-wrap: wrap; }
@@ -1663,36 +1670,54 @@
     box-shadow: 0 0 12px -3px var(--accent-glow), inset 0 0 10px -6px var(--accent-glow);
   }
 
-  /* Camera scale is a room instrument. Keep it near the lower-right edge of
-     the visible scene, above the composer as that composer grows. */
+  /* Camera scale is a room instrument, so it lives beside the other console
+     instruments instead of floating over the room. */
   #sceneZoom {
-    position: fixed;
-    right: calc(var(--panel-w, 0px) + var(--gap));
-    bottom: calc(var(--composer-h) + var(--gap) * 2);
-    z-index: 49;
     display: inline-flex;
-    align-items: stretch;
-    background: var(--glass);
-    backdrop-filter: blur(8px) saturate(1.1);
+    align-items: center;
+    height: 44px;
+    background: transparent;
     border: 1px solid var(--line);
   }
 
   #sceneZoom button {
+    display: inline-grid;
     width: 44px;
-    height: 44px;
+    height: 42px;
     padding: 0;
     border: 0;
     background: transparent;
     color: var(--text);
-    font: 18px/1 var(--mono);
+    place-items: center;
     cursor: pointer;
     transition: color 140ms ease-out, background-color 140ms ease-out, transform 120ms ease-out;
   }
+
+  #sceneZoom svg,
+  #composerCollapse svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: square;
+    stroke-linejoin: miter;
+  }
+
+  #composerCollapse svg { transition: transform 140ms ease-out; }
+  #composerCollapse[aria-expanded="false"] svg { transform: rotate(180deg); }
+  #composerCollapse { width: 44px; min-height: 44px; justify-content: center; padding: 0; }
 
   #sceneZoom button + output,
   #sceneZoom output + button { border-left: 1px solid var(--line); }
   #sceneZoom button:hover { color: var(--accent); background: var(--accent-soft); }
   #sceneZoom button:active { transform: translateY(1px); }
+  #sceneZoom button:focus-visible,
+  #composerCollapse:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #composerCollapse svg { transition: none; }
+  }
   #sceneZoom button:disabled { color: var(--faint); cursor: default; opacity: 0.5; }
   #sceneZoom button:disabled:hover { background: transparent; }
   #sceneZoom output {
@@ -1907,12 +1932,6 @@
   <canvas id="floor"></canvas>
   <div id="bubbles"></div>
 
-  <div id="sceneZoom" role="group" aria-label="Scene zoom">
-    <button id="sceneZoomOut" type="button" aria-label="Zoom scene out" title="Zoom scene out">-</button>
-    <output id="sceneZoomLevel" aria-live="polite">125%</output>
-    <button id="sceneZoomIn" type="button" aria-label="Zoom scene in" title="Zoom scene in">+</button>
-  </div>
-
   <div id="topbar">
     <span class="brand"><img class="brand-logo" src="/assets/brand/minimac-logo-transparent.svg" alt="MINIMAC"></span>
     <button id="repoPath" type="button" title="Open the repo this fleet works in">~/wednesday/minimac</button>
@@ -2000,6 +2019,19 @@
         decisions <span id="queueCount" aria-label="decisions waiting on you">0</span>
       </button>
       <button class="dock-btn" id="btnRuns" type="button" aria-pressed="false" aria-controls="winRuns">missions</button>
+      <button class="dock-btn mini" id="composerCollapse" type="button" aria-expanded="true"
+              aria-controls="composerInput" aria-label="Collapse mission text" title="Collapse mission text">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div id="sceneZoom" role="group" aria-label="Scene zoom">
+        <button id="sceneZoomOut" type="button" aria-label="Zoom scene out" title="Zoom scene out">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5M7 10h6"/></svg>
+        </button>
+        <output id="sceneZoomLevel" aria-live="polite">125%</output>
+        <button id="sceneZoomIn" type="button" aria-label="Zoom scene in" title="Zoom scene in">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5M7 10h6M10 7v6"/></svg>
+        </button>
+      </div>
       <button class="dock-btn mini" id="btnAttach" type="button"
               aria-label="Attach a file" title="Attach a file — or just drop one on the window">+file</button>
     </div>

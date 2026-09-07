@@ -1264,6 +1264,18 @@ function wireChrome() {
   });
   paintZoom();
 
+  const setComposerCollapsed = (collapsed) => {
+    dom.composer?.classList.toggle('is-collapsed', collapsed);
+    dom.composerCollapse?.setAttribute('aria-expanded', String(!collapsed));
+    const label = collapsed ? 'Expand mission text' : 'Collapse mission text';
+    dom.composerCollapse?.setAttribute('aria-label', label);
+    if (dom.composerCollapse) dom.composerCollapse.title = label;
+  };
+  dom.composerCollapse?.addEventListener('click', () => {
+    setComposerCollapsed(!dom.composer?.classList.contains('is-collapsed'));
+  });
+  dom.composerInput?.addEventListener('focus', () => setComposerCollapsed(false));
+
   for (const name of Object.keys(WINDOW_IDS)) {
     dom[WINDOW_IDS[name][1]]?.addEventListener('click', () => toggleWindow(name));
   }
@@ -2317,7 +2329,7 @@ function pickDom() {
   const ids = [
     'floor', 'topbar', 'repoPath', 'queueCount', 'startAll', 'planAll', 'crewBar',
     'sceneZoom', 'sceneZoomOut', 'sceneZoomLevel', 'sceneZoomIn',
-    'composer', 'composerTarget', 'composerInput', 'composerSend', 'mentionMenu',
+    'composer', 'composerTarget', 'composerInput', 'composerSend', 'composerCollapse', 'mentionMenu',
     'attachments', 'fileInput', 'btnAttach',
     'winDecisions', 'winDecisionsClose', 'queue', 'prayerHead', 'prayerChat',
     'bubbles', 'btnDecisions',
