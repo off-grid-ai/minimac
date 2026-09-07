@@ -117,6 +117,7 @@ export function createStore({ file }) {
        started_at = excluded.started_at`,
   );
   const selectSessions = db.prepare('SELECT * FROM sessions WHERE run_id = ?');
+  const selectEngines = db.prepare('SELECT agent_id, engine FROM engines WHERE run_id = ?');
   const upsertMiddleware = db.prepare(
     `INSERT INTO middleware (name, text, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(name) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`,
@@ -245,6 +246,10 @@ export function createStore({ file }) {
 
     sessionsFor(targetRunId) {
       return selectSessions.all(targetRunId);
+    },
+
+    enginesFor(targetRunId) {
+      return selectEngines.all(targetRunId ?? runId);
     },
 
     saveClaims(agentId, patterns) {

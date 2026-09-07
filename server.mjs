@@ -145,6 +145,11 @@ const store = createStore({ file: join(ROOT, 'data', 'minimac.db') });
 const adopted = store.adoptRun(options.repo);
 let adoptedSessions = [];
 if (adopted) {
+  // Engine selection is run state. Restore it before session reconciliation,
+  // because a handle can only be opened by the engine that created it.
+  for (const row of store.enginesFor(adopted.id)) {
+    state.agents = assignEngine(state.agents, row.agent_id, row.engine);
+  }
   adoptedSessions = store.sessionsFor(adopted.id);
   if (!state.mission && adopted.mission) state.mission = adopted.mission;
   // The mission only arrives here, so the derive at boot ran against an empty
@@ -847,9 +852,19 @@ async function startWorkers(agent, cwd, context) {
     const canResume = index === 0
       && agent.resumeSessionId
       && typeof driver.resume === 'function';
-    sessionIds.push(canResume
-      ? await driver.resume(agent, cwd, agent.resumeSessionId, prompt)
-      : await driver.start(agent, cwd, prompt));
+    if (!canResume) {
+      sessionIds.push(await driver.start(agent, cwd, prompt));
+      continue;
+    }
+    try {
+      sessionIds.push(await driver.resume(agent, cwd, agent.resumeSessionId, prompt));
+    } catch {
+      // A saved handle can disappear, or it can belong to the engine that was
+      // selected before this one. Clear it once, then create the session the
+      // user asked to start. A failed fresh start still reaches the caller.
+      state.agents = patchAgent(state.agents, agent.id, { resumeSessionId: null });
+      sessionIds.push(await driver.start(agent, cwd, prompt));
+    }
   }
 
   state.agents = patchAgent(state.agents, agent.id, { sessionIds });
@@ -1250,11 +1265,17 @@ const COMMANDS = {
   },
 
   async newRun({ mission, autoStart = true }) {
+    const selectedEngines = Object.fromEntries(
+      Object.values(state.agents).map((agent) => [agent.id, agent.engine]),
+    );
     for (const agent of Object.values(state.agents)) {
       if (agent.sessionId) await getDriver(agent.engine).interrupt(agent.sessionId).catch(() => {});
     }
     store.finishRun();
     state.agents = forceEngine(createRoster(DEFAULT_ROSTER, options.rosterOverrides), options.engine);
+    for (const [agentId, engine] of Object.entries(selectedEngines)) {
+      state.agents = assignEngine(state.agents, agentId, engine);
+    }
     state.goals = {};
     state.claims = {};
     state.events = [];
@@ -1673,7 +1694,20 @@ const COMMANDS = {
   },
 
   async assignEngine({ agentId, engine }) {
+    const current = state.agents[agentId];
+    if (!current) throw new Error(`unknown agent: ${agentId}`);
+    if (current.engine === engine) return { engine };
+    if (current.sessionId || current.sessionIds?.length) await interruptAgent(agentId);
     state.agents = assignEngine(state.agents, agentId, engine);
+    state.agents = patchAgent(state.agents, agentId, {
+      enabled: false,
+      status: 'idle',
+      sessionId: null,
+      sessionIds: [],
+      resumeSessionId: null,
+      workItemIds: [],
+      blockedReason: null,
+    });
     store.saveEngine(agentId, engine);
     return { engine };
   },
