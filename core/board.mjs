@@ -277,7 +277,7 @@ export function closeItem(board, id, disposition, replacedBy = null, now = Date.
 // single rule is what stops an agent reporting a push over untested code.
 export function advance(
   board,
-  { id, gate, state, receipt = '', by = null, canManage = false },
+  { id, gate, state, receipt = '', by = null, evidenceBy = by, canManage = false },
   now = Date.now(),
 ) {
   const item = findItem(board, id);
@@ -306,7 +306,7 @@ export function advance(
 
   const gates = { ...item.gates, [gate]: state };
   const evidence = receipt.trim()
-    ? [...item.evidence, { gate, state, receipt: receipt.trim(), by, at: now }]
+    ? [...item.evidence, { gate, state, receipt: receipt.trim(), by: evidenceBy, at: now }]
     : item.evidence;
   const next = { ...item, gates, evidence };
   return {

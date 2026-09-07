@@ -250,11 +250,12 @@ const agentTokens = new Map();
 const agentsByToken = new Map();
 
 function mcpServerFor(agent) {
-  let token = agentTokens.get(agent.id);
+  const principalId = agent.workerId ?? agent.id;
+  let token = agentTokens.get(principalId);
   if (!token) {
     token = randomUUID();
-    agentTokens.set(agent.id, token);
-    agentsByToken.set(token, agent.id);
+    agentTokens.set(principalId, token);
+    agentsByToken.set(token, { agentId: agent.id, workerId: agent.workerId ?? null });
   }
   return {
     command: process.execPath,
@@ -535,7 +536,7 @@ function updateFlows(agentId, updates) {
   return { steps };
 }
 
-function updateCheckpoint(agentId, move) {
+function updateCheckpoint(agentId, move, workerId = null) {
   const manager = state.agents[agentId]?.role === ROLES.ORCHESTRATOR;
   const result = advanceGate(state.board, {
     id: move?.item,
@@ -543,6 +544,7 @@ function updateCheckpoint(agentId, move) {
     state: move?.state,
     receipt: move?.receipt ?? '',
     by: agentId,
+    evidenceBy: workerId ?? agentId,
     canManage: manager,
   });
   if (result.error) {
@@ -598,7 +600,7 @@ function harvestReport(event) {
   // board.mjs refuses anything out of order or without a receipt - so an agent
   // cannot report a push over untested code however confidently it tries.
   for (const move of report.gates ?? []) {
-    const result = updateCheckpoint(event.agentId, move);
+    const result = updateCheckpoint(event.agentId, move, event.payload?.workerId ?? null);
     if (result.error) continue;
     if (result.item.closedAt) completedWork.push(result.item);
   }
@@ -609,7 +611,9 @@ function harvestReport(event) {
   for (const claim of report.claims ?? []) {
     const text = String(claim?.text ?? claim?.claim ?? '').trim();
     if (!text) continue;
-    ingest(createEvent(event.agentId, EVENT_KINDS.CLAIM, { ...claim, text }));
+    ingest(createEvent(event.agentId, EVENT_KINDS.CLAIM, {
+      ...claim, text, workerId: event.payload?.workerId ?? null,
+    }));
   }
   const reportingWorker = event.payload?.workerId
     ? ensureWorkers(state.agents[event.agentId]).find((worker) => worker.id === event.payload.workerId)
@@ -947,6 +951,11 @@ function applyToAgent(agents, event) {
   const workerId = event.payload?.workerId;
 
   if (workerId) {
+    const worker = ensureWorkers(next).find((candidate) => candidate.id === workerId);
+    if (!worker) return agents;
+    const eventSessionId = event.payload?.sessionId;
+    const knownSessionId = worker?.sessionId ?? worker?.resumeSessionId;
+    if (knownSessionId && eventSessionId && knownSessionId !== eventSessionId) return agents;
     let projected = next;
     if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
       const ended = event.payload.state === WORKER_STATE.IDLE
@@ -2238,13 +2247,13 @@ async function command(req, res) {
 
 async function agentTool(req, res) {
   const token = String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-  const callerId = agentsByToken.get(token);
-  if (!callerId) return json(res, 401, { ok: false, error: 'invalid agent tool token' });
+  const principal = agentsByToken.get(token);
+  if (!principal) return json(res, 401, { ok: false, error: 'invalid agent tool token' });
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   try {
     const call = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    const result = await executeAgentTool(callerId, call.name, call.arguments ?? {});
+    const result = await executeAgentTool(principal, call.name, call.arguments ?? {});
     publish({ type: 'state', state: snapshot() });
     return json(res, 200, { ok: true, result });
   } catch (error) {
@@ -2252,7 +2261,8 @@ async function agentTool(req, res) {
   }
 }
 
-async function executeAgentTool(callerId, name, args) {
+async function executeAgentTool(principal, name, args) {
+  const { agentId: callerId, workerId } = principal;
   const caller = state.agents[callerId];
   if (!caller || !roleCanUseTool(caller.role, name)) {
     throw new Error(`${callerId} cannot use ${name}`);
@@ -2261,7 +2271,10 @@ async function executeAgentTool(callerId, name, args) {
   if (name === AGENT_TOOL.REPORT) {
     harvestReport({
       agentId: callerId,
-      payload: { text: `\`\`\`${REPORT_FENCE}\n${JSON.stringify(args)}\n\`\`\`` },
+      payload: {
+        text: `\`\`\`${REPORT_FENCE}\n${JSON.stringify(args)}\n\`\`\``,
+        workerId,
+      },
     });
     return { recorded: true };
   }
@@ -2271,7 +2284,7 @@ async function executeAgentTool(callerId, name, args) {
     return { updated: args.id, status: args.status };
   }
   if (name === AGENT_TOOL.CHECKPOINT) {
-    const result = updateCheckpoint(callerId, args);
+    const result = updateCheckpoint(callerId, args, workerId);
     if (result.error) throw new Error(result.error);
     return { updated: args.item, gate: args.gate, state: args.state };
   }
