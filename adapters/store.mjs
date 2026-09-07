@@ -74,6 +74,24 @@ CREATE TABLE IF NOT EXISTS sessions (
   PRIMARY KEY (run_id, agent_id)
 );
 
+CREATE TABLE IF NOT EXISTS worker_sessions (
+  run_id          INTEGER NOT NULL REFERENCES runs(id),
+  worker_id       TEXT NOT NULL,
+  agent_id        TEXT NOT NULL,
+  checkpoint_id   TEXT,
+  session_id      TEXT NOT NULL,
+  engine          TEXT NOT NULL,
+  state           TEXT NOT NULL,
+  started_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  lease_started_at INTEGER,
+  lease_expires_at INTEGER,
+  PRIMARY KEY (run_id, worker_id)
+);
+
+CREATE INDEX IF NOT EXISTS worker_sessions_run_agent
+  ON worker_sessions(run_id, agent_id, worker_id);
+
 CREATE TABLE IF NOT EXISTS engines (
   run_id   INTEGER NOT NULL REFERENCES runs(id),
   agent_id TEXT NOT NULL,
@@ -128,6 +146,33 @@ export function createStore({ file }) {
        started_at = excluded.started_at`,
   );
   const selectSessions = db.prepare('SELECT * FROM sessions WHERE run_id = ?');
+  const upsertWorkerSession = db.prepare(
+    `INSERT INTO worker_sessions
+       (run_id, worker_id, agent_id, checkpoint_id, session_id, engine, state,
+        started_at, updated_at, lease_started_at, lease_expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(run_id, worker_id) DO UPDATE SET
+       agent_id = excluded.agent_id,
+       checkpoint_id = excluded.checkpoint_id,
+       session_id = excluded.session_id,
+       engine = excluded.engine,
+       state = excluded.state,
+       updated_at = excluded.updated_at,
+       lease_started_at = excluded.lease_started_at,
+       lease_expires_at = excluded.lease_expires_at`,
+  );
+  const selectWorkerSessions = db.prepare(
+    'SELECT * FROM worker_sessions WHERE run_id = ? ORDER BY agent_id, worker_id',
+  );
+  const migrateSessions = db.prepare(
+    `INSERT OR IGNORE INTO worker_sessions
+       (run_id, worker_id, agent_id, checkpoint_id, session_id, engine, state,
+        started_at, updated_at, lease_started_at, lease_expires_at)
+     SELECT run_id, agent_id || ':1', agent_id, NULL, session_id, engine, 'idle',
+       started_at, started_at, NULL, NULL
+     FROM sessions`,
+  );
+  migrateSessions.run();
   const selectEngines = db.prepare('SELECT agent_id, engine FROM engines WHERE run_id = ?');
   const upsertHandoff = db.prepare(
     `INSERT INTO engine_handoffs
@@ -162,6 +207,9 @@ export function createStore({ file }) {
   );
   const countEvents = db.prepare('SELECT COUNT(*) AS n FROM events WHERE run_id = ?');
   const countSessions = db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE run_id = ?');
+  const countWorkerSessions = db.prepare(
+    'SELECT COUNT(*) AS n FROM worker_sessions WHERE run_id = ?',
+  );
   const selectRuns = db.prepare(
     'SELECT id, started_at, ended_at, mission, repo FROM runs ORDER BY id DESC LIMIT ?',
   );
@@ -255,6 +303,24 @@ export function createStore({ file }) {
       }
     },
 
+    saveWorkerSession(worker) {
+      if (runId === null || !worker?.id || !worker?.sessionId) return;
+      const now = Date.now();
+      upsertWorkerSession.run(
+        runId,
+        worker.id,
+        worker.agentId,
+        worker.checkpointId ?? null,
+        worker.sessionId,
+        worker.engine,
+        worker.state ?? 'idle',
+        worker.startedAt ?? now,
+        now,
+        worker.leaseStartedAt ?? null,
+        worker.leaseExpiresAt ?? null,
+      );
+    },
+
     // Middleware overrides outlive a run: they are how this fleet is told to
     // work, not part of any one mission.
     // How far the orchestrator is trusted with the room's decision cards.
@@ -284,6 +350,10 @@ export function createStore({ file }) {
 
     sessionsFor(targetRunId) {
       return selectSessions.all(targetRunId);
+    },
+
+    workerSessionsFor(targetRunId) {
+      return selectWorkerSessions.all(targetRunId ?? runId);
     },
 
     enginesFor(targetRunId) {
@@ -337,7 +407,7 @@ export function createStore({ file }) {
         events: countEvents.get(run.id)?.n ?? 0,
         // Runs recorded before sessions existed cannot be resumed, and the UI
         // must say so rather than offering a button that always fails.
-        sessions: countSessions.get(run.id)?.n ?? 0,
+        sessions: countWorkerSessions.get(run.id)?.n ?? countSessions.get(run.id)?.n ?? 0,
       }));
     },
 
