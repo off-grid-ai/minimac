@@ -169,13 +169,6 @@ export function reportInstruction(role = null) {
     '- Your engine gives you shell and file tools separately. MINIMAC gives you fleet tools. '
       + 'Use only tools the session actually shows you.',
     '- Add "escalate" only when you need attention. Add "standDown" only when you are done.',
-    ...(plans ? [
-      '- approach is the plan you acted on after sharpening it twice: "plan" is the '
-      + 'final one, "sharpened" says what attacking it changed, "cut" says what '
-      + 'making it smaller removed. If either is empty you skipped a pass. '
-      + '"inputs" names the earlier steps you planned against - the results you '
-      + 'read, not the ones you meant to read.',
-    ] : []),
   ].join('\n');
 }
 
