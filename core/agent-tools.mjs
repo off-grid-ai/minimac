@@ -24,6 +24,7 @@ export const AGENT_TOOL = Object.freeze({
   CLOSE: 'close_checkpoint',
   PAUSE: 'pause_checkpoint',
   RESUME: 'resume_checkpoint',
+  EXTEND: 'extend_checkpoint_lease',
 });
 
 const object = (properties, required = []) => ({
@@ -145,6 +146,11 @@ const TOOLS = Object.freeze({
     description: 'Resume one paused checkpoint on its owner and continue its saved engine session.',
     inputSchema: object({ id: { type: 'string' } }, ['id']),
   },
+  [AGENT_TOOL.EXTEND]: {
+    name: AGENT_TOOL.EXTEND,
+    description: 'Extend one running checkpoint lease once. Use this only when the same bounded task is still valid.',
+    inputSchema: object({ id: { type: 'string' } }, ['id']),
+  },
 });
 
 const WORKER_TOOLS = Object.freeze([
@@ -166,6 +172,7 @@ const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.CLOSE,
   AGENT_TOOL.PAUSE,
   AGENT_TOOL.RESUME,
+  AGENT_TOOL.EXTEND,
 ]);
 
 export function toolsForRole(role) {

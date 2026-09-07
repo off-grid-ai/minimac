@@ -62,7 +62,9 @@ import { createGithubChecksPort } from './adapters/github-checks.mjs';
 import { createCiMonitor } from './application/ci-monitor.mjs';
 import { createWorkBoard } from './application/work-board.mjs';
 import { createFleetCoordination } from './application/fleet-coordination.mjs';
+import { createWorkerLeaseService } from './application/worker-leases.mjs';
 import { ORDER_ACTION } from './core/coordination.mjs';
+import { LEASE_LIMIT_MS, finishLease } from './core/leases.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
 import {
   deriveCards,
@@ -301,9 +303,8 @@ for (const engine of Object.values(ENGINES)) {
 }
 
 const subscribers = new Set();
-const WORKER_LIMIT_MS = 480_000;
 const HANDOFF_LIMIT = 16_000;
-const workerTimers = new Map();
+let workerLeases = null;
 
 function boundedHandoff(text) {
   const transcript = String(text ?? '').trim();
@@ -666,7 +667,7 @@ function ingest(rawIncoming) {
     const workerId = incoming.payload?.workerId
       ?? workerForSession(state.agents[incoming.agentId], incoming.payload?.sessionId)?.id;
     if (workerId) {
-      clearWorkerTimer(workerId);
+      workerLeases?.clear(workerId);
       revokeWorkerPrincipal(workerId);
     }
   }
@@ -726,7 +727,7 @@ const workBoard = createWorkBoard({
   saveItem: (item) => store.saveItem(item),
   emit: ingest,
   order: orders,
-  workerLimitMs: WORKER_LIMIT_MS,
+  workerLimitMs: LEASE_LIMIT_MS,
 });
 
 // Close the open prayer on this agent, if there is one. Recorded as an event
@@ -956,7 +957,7 @@ async function startWorkers(agent, cwd, context) {
       state: WORKER_STATE.RUNNING,
       startedAt: worker.startedAt ?? now,
       leaseStartedAt: checkpointId ? now : null,
-      leaseExpiresAt: checkpointId ? now + WORKER_LIMIT_MS : null,
+      leaseExpiresAt: checkpointId ? now + LEASE_LIMIT_MS : null,
     };
     state.agents = patchAgent(
       state.agents,
@@ -968,7 +969,7 @@ async function startWorkers(agent, cwd, context) {
         lease: {
           workerId: worker.id,
           startedAt: now,
-          expiresAt: now + WORKER_LIMIT_MS,
+          expiresAt: now + LEASE_LIMIT_MS,
           state: WORKER_STATE.RUNNING,
         },
       });
@@ -1030,7 +1031,7 @@ function readyWork(agentId) {
       && candidate.outcome
       && candidate.verify
       && Number.isFinite(candidate.estimateMs)
-      && candidate.estimateMs <= WORKER_LIMIT_MS);
+      && candidate.estimateMs <= LEASE_LIMIT_MS);
 }
 
 function checkpointTask(item) {
@@ -1051,40 +1052,6 @@ async function tellThor(from, text) {
   const boss = Object.values(state.agents).find((agent) => agent.role === ROLES.ORCHESTRATOR);
   if (!boss) return null;
   return COMMANDS.say({ target: boss.id, text, from });
-}
-
-function clearWorkerTimer(workerId) {
-  const timer = workerTimers.get(workerId);
-  if (timer) clearTimeout(timer);
-  workerTimers.delete(workerId);
-}
-
-function boundWorker(agentId, workerId, sessionId) {
-  clearWorkerTimer(workerId);
-  const agent = state.agents[agentId];
-  if (!agent || agent.role === ROLES.ORCHESTRATOR) return;
-  workerTimers.set(workerId, setTimeout(() => {
-    const current = state.agents[agentId];
-    const worker = current && workerForSession(current, sessionId);
-    if (worker?.id !== workerId || worker.sessionId !== sessionId) return;
-    ingest(createEvent(agentId, EVENT_KINDS.STATUS, {
-      text: `${worker.checkpointId ?? worker.id} reached its eight-minute work-unit limit`,
-      from: 'minimac',
-      workerId,
-      sessionId,
-    }));
-    void expireWorker(agentId, workerId)
-      .then(async () => {
-        publish({ type: 'state', state: snapshot() });
-        await tellThor(
-          agentId,
-          `${worker.checkpointId ?? worker.id} reached the eight-minute limit. `
-            + 'Its worker stopped and its conversation is resumable. '
-            + 'Review, replace, or split this checkpoint before starting it again.',
-        );
-      })
-      .catch(() => {});
-  }, WORKER_LIMIT_MS));
 }
 
 // Every first dispatch and every steer reads the same live state through this
@@ -1473,7 +1440,19 @@ const COMMANDS = {
     });
     store.clearHandoff(agentId);
     for (const worker of startedWorkers) {
-      if (worker.checkpointId) boundWorker(agentId, worker.id, worker.sessionId);
+      if (worker.checkpointId) {
+        const lease = workerLeases.start({
+          agentId,
+          workerId: worker.id,
+          checkpointId: worker.checkpointId,
+          sessionId: worker.sessionId,
+        });
+        const leased = reviseItem(state.board, worker.checkpointId, { lease });
+        if (!leased.error) {
+          state.board = leased.board;
+          store.saveItem(leased.item);
+        }
+      }
     }
     return {
       sessionId: startedWorkers[0].sessionId,
@@ -1748,6 +1727,19 @@ const COMMANDS = {
     return { item: result.item };
   },
 
+  async extendCheckpointLease({ id }) {
+    const item = findItem(state.board, id);
+    if (!item) throw new Error(`no item ${id}`);
+    const result = workerLeases.extend(item.lease);
+    if (result.error) throw new Error(result.error);
+    const revised = reviseItem(state.board, id, { lease: result.lease });
+    if (revised.error) throw new Error(revised.error);
+    state.board = revised.board;
+    store.saveItem(revised.item);
+    coordination.lease(result.lease.agentId, { ...result.lease, state: 'extended' });
+    return { item: revised.item };
+  },
+
   async reassignCheckpoint({ id, owner }) {
     if (!state.agents[owner] || state.agents[owner].role === ROLES.ORCHESTRATOR) {
       throw new Error(`unknown Avenger: ${owner}`);
@@ -1913,6 +1905,37 @@ coordination = createFleetCoordination({
   },
 });
 
+workerLeases = createWorkerLeaseService({
+  schedule: (action, delay) => {
+    const timer = setTimeout(action, delay);
+    timer.unref?.();
+    return timer;
+  },
+  cancel: clearTimeout,
+  onWarning: (lease) => {
+    const item = findItem(state.board, lease.checkpointId);
+    if (item?.lease?.workerId !== lease.workerId
+      || item.lease.expiresAt !== lease.expiresAt) return;
+    coordination.lease(lease.agentId, { ...lease, state: 'warning' });
+    void coordination.escalate({
+      fromAgentId: lease.agentId,
+      fromWorkerId: lease.workerId,
+      checkpointId: lease.checkpointId,
+      needs: 'decision',
+      why: 'This work unit has two minutes left. Extend it once, split it, or pause it.',
+    }).catch(() => {});
+  },
+  onExpire: (lease) => {
+    const item = findItem(state.board, lease.checkpointId);
+    if (item?.lease?.workerId !== lease.workerId
+      || item.lease.expiresAt !== lease.expiresAt) return;
+    coordination.lease(lease.agentId, { ...lease, state: 'expired' });
+    void expireWorkerLease(lease.agentId, lease.workerId)
+      .then(() => publish({ type: 'state', state: snapshot() }))
+      .catch(() => {});
+  },
+});
+
 const ciOwner = Object.values(state.agents).find((agent) => agent.role === ROLES.CODER)?.id ?? null;
 const ciWatcher = createCiMonitor({
   checks: createGithubChecksPort({ repo: options.repo }),
@@ -1937,7 +1960,7 @@ const ciWatcher = createCiMonitor({
       reason: health === 'failed' ? `CI watcher failed for PR ${number}: ${error}` : undefined },
   )),
   owner: ciOwner,
-  estimateMs: WORKER_LIMIT_MS,
+  estimateMs: LEASE_LIMIT_MS,
   schedule: (action, delay) => {
     const timer = setInterval(action, delay);
     timer.unref?.();
@@ -1961,7 +1984,7 @@ async function interruptWorker(
   if (!sessionId) return false;
   revokeWorkerPrincipal(workerId);
   await getDriver(agent.engine).interrupt(sessionId);
-  clearWorkerTimer(workerId);
+  workerLeases?.clear(workerId);
   const next = patchWorker(state.agents[agentId], workerId, {
     state: workerState,
     sessionId: null,
@@ -1972,13 +1995,12 @@ async function interruptWorker(
   });
   state.agents = patchAgent(state.agents, agentId, next);
   if (worker.checkpointId) {
+    const currentLease = findItem(state.board, worker.checkpointId)?.lease ?? {};
     const leased = reviseItem(state.board, worker.checkpointId, {
-      lease: {
-        ...(findItem(state.board, worker.checkpointId)?.lease ?? {}),
+      lease: finishLease({
+        ...currentLease,
         workerId,
-        state: workerState,
-        endedAt: Date.now(),
-      },
+      }, workerState),
     });
     if (!leased.error) {
       state.board = leased.board;
@@ -1990,7 +2012,7 @@ async function interruptWorker(
   return true;
 }
 
-async function expireWorker(agentId, workerId) {
+async function expireWorkerLease(agentId, workerId) {
   const agent = state.agents[agentId];
   const worker = agent && ensureWorkers(agent).find((candidate) => candidate.id === workerId);
   if (!worker?.sessionId) return false;
@@ -2245,6 +2267,9 @@ async function executeAgentTool(principal, name, args) {
   }
   if (name === AGENT_TOOL.PAUSE) {
     return COMMANDS.pauseCheckpoint({ id: args.id, paused: true });
+  }
+  if (name === AGENT_TOOL.EXTEND) {
+    return COMMANDS.extendCheckpointLease({ id: args.id });
   }
   if (name === AGENT_TOOL.RESUME) {
     return COMMANDS.forceStartCheckpoint({ id: args.id });
