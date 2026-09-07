@@ -521,22 +521,23 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   }
 
   const controls = el('div', 'checkpoint-controls');
+  const actions = el('div', 'checkpoint-actions');
+  controls.append(ownerSelect(item, agents, handlers), actions);
   if (!running) {
-    controls.append(
+    actions.append(
       checkpointButton('Move up', 'arrow-up', () => handlers.move?.(item.id, -1), !movement.canMoveUp),
       checkpointButton('Move down', 'arrow-down', () => handlers.move?.(item.id, 1), !movement.canMoveDown),
     );
   }
-  controls.append(ownerSelect(item, agents, handlers));
   if (item.paused) {
     const cannotResume = !item.owner || waiting.length > 0 || ownerBusy;
     const resume = checkpointButton('Resume', 'play', () => handlers.start?.(item.id), cannotResume);
     if (cannotResume) resume.title = !item.owner
       ? 'Assign an owner first'
       : waiting.length ? 'Waiting on another checkpoint' : `${owner?.name ?? 'Owner'} is already working`;
-    controls.append(resume);
+    actions.append(resume);
   } else {
-    controls.append(checkpointButton('Pause', 'pause', () => handlers.pause?.(item.id, true)));
+    actions.append(checkpointButton('Pause', 'pause', () => handlers.pause?.(item.id, true)));
   }
   if (!running && !item.paused) {
     const cannotStart = !item.owner || waiting.length > 0 || ownerBusy;
@@ -544,7 +545,7 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
     if (cannotStart) start.title = !item.owner
       ? 'Assign an owner first'
       : waiting.length ? 'Waiting on another checkpoint' : `${owner?.name ?? 'Owner'} is already working`;
-    controls.append(start);
+    actions.append(start);
   }
   row.append(controls, checkpointDetails(item));
   return row;
