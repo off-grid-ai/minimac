@@ -739,7 +739,7 @@ function bubbleTextFor(agentId, latest, now) {
   return { text, fresh: true };
 }
 
-function renderActivity(agents) {
+function renderActivity(agents, covered = new Set()) {
   if (!dom.bubbles) return [];
   const now = Date.now();
   // Zoomed into a desk, the room falls quiet: only that agent speaks, so the
@@ -768,6 +768,9 @@ function renderActivity(agents) {
 
   return agents
     .filter((agent) => !agent.offDuty)
+    // A decision is the most important thing this agent has to say. Keep one
+    // bubble at the head instead of stacking a second tail in empty space.
+    .filter((agent) => !covered.has(agent.id))
     // A hero who is not working says nothing. A bubble is what someone is
     // doing NOW; leaving the last thing they ever did floating over an empty
     // chair is what made the room impossible to read.
@@ -897,7 +900,7 @@ function renderBubbles(queue) {
     if (!byAgent.has(decision.agentId)) byAgent.set(decision.agentId, decision);
   }
 
-  const activity = renderActivity(viewAgents(Date.now()));
+  const activity = renderActivity(viewAgents(Date.now()), new Set(byAgent.keys()));
   const alerts = [...byAgent.values()]
     .map((decision) => {
       const at = scene?.screenPos?.(decision.agentId);
@@ -905,8 +908,7 @@ function renderBubbles(queue) {
       const bubble = speechBubble({
         text: plainText(`${decision.agentName}: ${shortenDetail(decision.detail)}`),
         x: at.x,
-        // Stacked clear of the activity bubble, which already sits above the head.
-        y: at.y - 86,
+        y: at.y,
         tone: 'alert',
         onClick: () => openAgentFeed(decision.agentId),
       });
@@ -2142,7 +2144,9 @@ function renderHeader(agents) {
   const parts = [];
   if (left.total > 0) parts.push(`${left.steps} of ${left.total} left`);
   if (left.percentDone !== null) parts.push(`${left.percentDone}% done`);
-  if (burn) parts.push(`${shortMs(burn.actualMs)} of ${shortMs(burn.estimateMs)}`);
+  if (burn) {
+    parts.push(`${shortMs(burn.actualMs)} effort / ${shortMs(burn.estimateMs)} estimate`);
+  }
 
   if (parts.length) {
     const late = !!burn && burn.ratio > 1;

@@ -590,12 +590,13 @@ function decisionCard(decision, handlers) {
 // What the floor derived on its own: a loop, an overrun, a silence.
 function observationCard(decision, handlers) {
   const kind = decision.kind === 'approval' ? 'blocked' : decision.kind;
+  const kindLabel = kind === 'loop' ? 'loop detected' : kind;
   const card = el('div', `decision ${kind}`);
   const header = el('div', 'head');
   header.append(
     el('span', 'who', nameOf(decision)),
     cardTime(decision),
-    el('span', 'kind', kind),
+    el('span', 'kind', kindLabel),
   );
   card.append(header, el('div', 'detail', decision.detail));
 

@@ -279,8 +279,10 @@ export function createScene({ canvas, palette, onSelect, onHover }) {
     focusOn(agentId) {
       focusId = agentId ?? null;
     },
-    // Where to hang floating HTML for an agent: the point just above their
-    // head, projected into CSS pixels on the canvas.
+    // Where to hang fixed HTML for an agent: the point just above their head,
+    // projected into viewport pixels. The canvas begins below the two header
+    // bars and can shrink beside a panel, while #bubbles is fixed to the full
+    // viewport. Returning canvas-local pixels detached bubbles after resize.
     screenPos(agentId) {
       const station = stations.get(agentId);
       if (!station) return null;
@@ -289,8 +291,8 @@ export function createScene({ canvas, palette, onSelect, onHover }) {
       point.project(camera);
       const rect = canvas.getBoundingClientRect();
       return {
-        x: ((point.x + 1) / 2) * rect.width,
-        y: ((1 - point.y) / 2) * rect.height,
+        x: rect.left + ((point.x + 1) / 2) * rect.width,
+        y: rect.top + ((1 - point.y) / 2) * rect.height,
       };
     },
     get error() {

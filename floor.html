@@ -380,9 +380,8 @@
   .icon-btn:hover { color: var(--text); border-color: var(--line); }
 
   /* ------------------------------------------------------------ world layer
-     Cards pinned to a desk. ui/main.mjs sets left/top in CSS pixels, so this
-     plane must never transform or scroll - it only exists to give the
-     bubbles a coordinate space that matches the canvas exactly. */
+     Cards pinned to a desk. ui/scene.mjs projects each head into viewport
+     pixels because this fixed plane covers the viewport, not only the canvas. */
 
   #bubbles {
     position: fixed;
