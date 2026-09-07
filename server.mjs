@@ -60,6 +60,7 @@ import { createRepoIndex } from './adapters/fs.mjs';
 import { createUploads } from './adapters/uploads.mjs';
 import { createGithubChecksPort } from './adapters/github-checks.mjs';
 import { createCiMonitor } from './application/ci-monitor.mjs';
+import { createWorkBoard } from './application/work-board.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
 import {
   deriveCards,
@@ -71,12 +72,10 @@ import {
 } from './core/monitor.mjs';
 import {
   createBoard,
-  addItem,
   closeItem,
   revise as reviseItem,
   setPaused as setCheckpointPaused,
   moveItem as moveCheckpointItem,
-  advance as advanceGate,
   itemsOf,
   itemsFor,
   canWork,
@@ -475,7 +474,7 @@ async function harvestGoals(event) {
   // The work itself. Anything Thor names here becomes a real item every agent
   // can see, with an owner and a gate chain nobody can walk out of order.
   for (const spec of parsed.items ?? []) {
-    addBoardWork(spec, event.agentId);
+    workBoard.add(spec, event.agentId);
   }
 
   let applied = 0;
@@ -492,84 +491,6 @@ async function harvestGoals(event) {
     await startCrew(`${event.agentId} set goals for ${applied} agents`);
   }
   return { applied: true, avengers: named, goals: applied };
-}
-
-function addBoardWork(spec, by) {
-  if (!spec?.title) return { error: 'an item needs a title' };
-  for (const field of ['plan', 'outcome', 'verify']) {
-    if (!String(spec[field] ?? '').trim()) return { error: `an item needs ${field}` };
-  }
-  if (!Number.isFinite(spec.estimateMs) || spec.estimateMs > WORKER_LIMIT_MS) {
-    return { error: 'an item must finish within 480000ms' };
-  }
-  const owner = state.agents[spec.owner] ? spec.owner : null;
-  const result = addItem(state.board, { ...spec, owner });
-  if (result.error) return result;
-  state.board = result.board;
-  store.saveItem(result.item);
-  if (spec.replaces) {
-    const closed = closeItem(state.board, spec.replaces, 'superseded', result.item.id);
-    if (closed.error) return closed;
-    state.board = closed.board;
-    for (const item of state.board.items) store.saveItem(item);
-  }
-  if (result.duplicate) return result;
-  ingest(createEvent(by, EVENT_KINDS.STATUS, {
-    text: `${result.item.id}: ${result.item.title}`
-      + (owner ? ` \u2192 ${state.agents[owner].label ?? owner}` : ' (nobody yet)'),
-    from: 'you',
-  }));
-  if (owner) orders(owner, `${result.item.id}: ${result.item.title}`);
-  return result;
-}
-
-function updateFlows(agentId, updates) {
-  const agent = state.agents[agentId];
-  if (!agent) return { error: `unknown agent: ${agentId}` };
-  let steps = [...(agent.flows ?? [])];
-  for (const step of updates ?? []) {
-    if (!step?.id || !step?.step) continue;
-    if (!String(step.user_visible_result ?? '').trim()) {
-      return { error: `${step.id} needs a stable user-visible result` };
-    }
-    const index = steps.findIndex((candidate) => candidate?.id === step.id);
-    if (index < 0) steps.push(step);
-    else steps[index] = { ...steps[index], ...step };
-  }
-  if (steps.length === 0) return { error: 'a flow update needs a step' };
-  ingest(createEvent(agentId, EVENT_KINDS.PLAN, {
-    steps,
-    updated: (updates ?? []).map((step) => step?.id).filter(Boolean),
-  }));
-  return { steps };
-}
-
-function updateCheckpoint(agentId, move, workerId = null) {
-  const manager = state.agents[agentId]?.role === ROLES.ORCHESTRATOR;
-  const result = advanceGate(state.board, {
-    id: move?.item,
-    gate: move?.gate,
-    state: move?.state,
-    receipt: move?.receipt ?? '',
-    by: agentId,
-    evidenceBy: workerId ?? agentId,
-    canManage: manager,
-  });
-  if (result.error) {
-    ingest(createEvent(agentId, EVENT_KINDS.STATUS, {
-      text: `gate refused: ${result.error}`,
-      from: 'you',
-    }));
-    return result;
-  }
-  state.board = result.board;
-  const item = findItem(state.board, move.item);
-  store.saveItem(item);
-  ingest(createEvent(agentId, EVENT_KINDS.STATUS, {
-    text: `${move.item} ${move.gate}: ${move.state}`,
-    from: 'you',
-  }));
-  return { ...result, item };
 }
 
 function harvestReport(event) {
@@ -608,13 +529,17 @@ function harvestReport(event) {
   // board.mjs refuses anything out of order or without a receipt - so an agent
   // cannot report a push over untested code however confidently it tries.
   for (const move of report.gates ?? []) {
-    const result = updateCheckpoint(event.agentId, move, event.payload?.workerId ?? null);
+    const result = workBoard.updateCheckpoint(
+      event.agentId,
+      move,
+      event.payload?.workerId ?? null,
+    );
     if (result.error) continue;
     if (result.item.closedAt) completedWork.push(result.item);
   }
 
   if (Array.isArray(report.flows) && report.flows.length > 0) {
-    updateFlows(event.agentId, report.flows);
+    workBoard.updateFlows(event.agentId, report.flows);
   }
   for (const claim of report.claims ?? []) {
     const text = String(claim?.text ?? claim?.claim ?? '').trim();
@@ -773,6 +698,16 @@ function orders(toAgentId, text) {
     text: String(text).trim(),
   }));
 }
+
+const workBoard = createWorkBoard({
+  getBoard: () => state.board,
+  setBoard: (board) => { state.board = board; },
+  getAgents: () => state.agents,
+  saveItem: (item) => store.saveItem(item),
+  emit: ingest,
+  order: orders,
+  workerLimitMs: WORKER_LIMIT_MS,
+});
 
 // Close the open prayer on this agent, if there is one. Recorded as an event
 // so the answer is in the run's history beside the question.
@@ -1762,7 +1697,7 @@ const COMMANDS = {
       orders(owner, `${result.item.id}: ${result.item.title}`);
       return { item: result.item };
     }
-    const result = addBoardWork({
+    const result = workBoard.add({
       id, title, plan, outcome, verify, scope, owner, needs, blockedBy, estimateMs,
     }, by);
     if (result.error) throw new Error(result.error);
@@ -1950,7 +1885,7 @@ const ciWatcher = createCiMonitor({
   loadBaseline: ({ scope }) => store.setting(`ci-baseline:${options.repo}:${scope}`, {}),
   saveBaseline: ({ scope }, baseline) =>
     store.saveSetting(`ci-baseline:${options.repo}:${scope}`, baseline),
-  createCheckpoint: (spec) => addBoardWork(spec, 'minimac'),
+  createCheckpoint: (spec) => workBoard.add(spec, 'minimac'),
   notify: (number, work) => tellThor(
     'minimac',
     `CI changed on PR ${number}. Failing now: ${work.summary}. `
@@ -2197,12 +2132,12 @@ async function executeAgentTool(principal, name, args) {
     return { recorded: true };
   }
   if (name === AGENT_TOOL.FLOW) {
-    const result = updateFlows(callerId, [args]);
+    const result = workBoard.updateFlows(callerId, [args]);
     if (result.error) throw new Error(result.error);
     return { updated: args.id, status: args.status };
   }
   if (name === AGENT_TOOL.CHECKPOINT) {
-    const result = updateCheckpoint(callerId, args, workerId);
+    const result = workBoard.updateCheckpoint(callerId, args, workerId);
     if (result.error) throw new Error(result.error);
     return { updated: args.item, gate: args.gate, state: args.state };
   }
