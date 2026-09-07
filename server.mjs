@@ -282,11 +282,15 @@ async function harvestGoals(event) {
 
     const enabled = copies > 0;
     const instances = Math.max(1, copies);
-    if (agent.enabled === enabled && agent.instances === instances) continue;
-    state.agents = patchAgent(state.agents, agentId, { enabled, instances });
-    crew.push(enabled
-      ? `+${agent.label ?? agentId}${instances > 1 ? ` x${instances}` : ''}`
-      : `-${agent.label ?? agentId}`);
+    const changed = isActive(agent) !== enabled || agent.instances !== instances;
+    if (agent.instances !== instances) {
+      state.agents = patchAgent(state.agents, agentId, { instances });
+    }
+    if (changed) {
+      crew.push(enabled
+        ? `+${agent.label ?? agentId}${instances > 1 ? ` x${instances}` : ''}`
+        : `-${agent.label ?? agentId}`);
+    }
   }
   if (crew.length) {
     ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
@@ -310,7 +314,7 @@ async function harvestGoals(event) {
     applied += 1;
   }
   if (named > 0) {
-    await startCrew(`${event.agentId} assembled ${named} Avengers`, true, true);
+    await startCrew(`${event.agentId} assembled ${named} Avengers`, true, crewSpec);
   } else if (applied > 0) {
     await startCrew(`${event.agentId} set goals for ${applied} agents`);
   }
@@ -796,8 +800,8 @@ function middlewareText(name) {
 const PLANNING_TIMEOUT_MS = 180_000;
 
 // Start everyone except the orchestrator, which is already running.
-async function startCrew(note, assembled = true, reconcile = false) {
-  if (!state.awaitingGoals && !reconcile) return;
+async function startCrew(note, assembled = true, desired = null) {
+  if (!state.awaitingGoals && !desired) return;
   state.awaitingGoals = false;
   ingest(
     createEvent('minimac', EVENT_KINDS.STATUS, {
@@ -818,11 +822,14 @@ async function startCrew(note, assembled = true, reconcile = false) {
   const changes = [];
   for (const agent of Object.values(state.agents)) {
     if (agent.role === ROLES.ORCHESTRATOR) continue;
-    if (agent.enabled === false) {
-      if (agent.sessionId) changes.push(COMMANDS.setActive({ agentId: agent.id, active: false }));
-      continue;
+    const active = desired
+      ? desired[agent.id] === true || Number(desired[agent.id]) > 0
+      : agent.enabled !== false;
+    if (active !== isActive(agent)) {
+      changes.push(COMMANDS.setActive({ agentId: agent.id, active }));
+    } else if (!active && agent.enabled !== false) {
+      changes.push(COMMANDS.setActive({ agentId: agent.id, active: false }));
     }
-    if (!agent.sessionId) changes.push(COMMANDS.setActive({ agentId: agent.id, active: true }));
   }
   await Promise.allSettled(changes);
   publish({ type: 'state', state: snapshot() });
@@ -1072,13 +1079,8 @@ const COMMANDS = {
     attachments = [],
     planning = false,
     exclusiveOutput = planning,
-    activate = false,
   }) {
-    const initial = state.agents[agentId];
-    if (initial?.enabled === false && !activate) return { skipped: 'disabled' };
-    if (initial?.enabled === false) {
-      state.agents = patchAgent(state.agents, agentId, { enabled: true });
-    }
+    if (state.agents[agentId]?.enabled === false) return { skipped: 'disabled' };
     ensureRun();
     const agent = state.agents[agentId];
     const goal = getGoal(state.goals, agentId);
@@ -1094,9 +1096,6 @@ const COMMANDS = {
     try {
       sessionId = await startWorkers(agent, cwd, context);
     } catch (error) {
-      if (initial?.enabled === false) {
-        state.agents = patchAgent(state.agents, agentId, { enabled: false });
-      }
       ingest(
         createBlockedEvent(agentId, {
           category: BLOCKED_REASONS.ERROR,
@@ -1174,7 +1173,13 @@ const COMMANDS = {
       });
     }
     ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, { text, from: 'you', attachments }));
-    return COMMANDS.start({ agentId, task: text, mentions: parsed, attachments, activate: true });
+    return COMMANDS.setActive({
+      agentId,
+      active: true,
+      task: text,
+      mentions: parsed,
+      attachments,
+    });
   },
 
   // Make the orchestrator say something to a hero. The floor walks him over.
@@ -1329,7 +1334,7 @@ const COMMANDS = {
 
   // One command owns the mission switch. Off benches and stops the agent. On
   // brings it onto the mission and starts a real middleware-composed session.
-  async setActive({ agentId, active }) {
+  async setActive({ agentId, active, task, mentions, attachments = [] }) {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
     if (!active) {
@@ -1341,7 +1346,14 @@ const COMMANDS = {
       state.agents = patchAgent(state.agents, agentId, { enabled: true });
       return { agentId, active: true, sessionId: agent.sessionId };
     }
-    return COMMANDS.start({ agentId, activate: true });
+    state.agents = patchAgent(state.agents, agentId, { enabled: true });
+    try {
+      return await COMMANDS.start({ agentId, task, mentions, attachments });
+    } catch (error) {
+      state.agents = patchAgent(state.agents, agentId, { enabled: false });
+      publish({ type: 'state', state: snapshot() });
+      throw error;
+    }
   },
 
   async assignEngine({ agentId, engine }) {
