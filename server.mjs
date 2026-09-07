@@ -58,9 +58,13 @@ import {
 import {
   createBoard,
   addItem,
-  assign as assignItem,
+  revise as reviseItem,
   advance as advanceGate,
   itemsOf,
+  itemsFor,
+  canWork,
+  isDone,
+  stateOf as checkpointState,
   findItem,
   progress as boardProgress,
 } from './core/board.mjs';
@@ -116,6 +120,9 @@ const state = {
   // than in the browser, so the same answer reaches the screen AND anything
   // that can act on it.
   cards: [],
+  // Suppressed only while the same condition remains true. When it clears,
+  // the key is released and a later recurrence becomes a new decision.
+  dismissedCards: new Set(),
   // What Thor has said about each card, keyed by cardKey so it dies with it.
   verdicts: {},
   governing: false,
@@ -133,7 +140,9 @@ const store = createStore({ file: join(ROOT, 'data', 'minimac.db') });
 // fleet back to "no goal - this agent would start blind" while the run it
 // belongs to is still sitting in the list marked running.
 const adopted = store.adoptRun(options.repo);
+let adoptedSessions = [];
 if (adopted) {
+  adoptedSessions = store.sessionsFor(adopted.id);
   if (!state.mission && adopted.mission) state.mission = adopted.mission;
   // The mission only arrives here, so the derive at boot ran against an empty
   // one and gave every worker nothing. Derive again now that we know what the
@@ -161,12 +170,13 @@ if (adopted) {
   // see, and no card was ever raised for it.
   state.events = store.replayRun(adopted.id);
   for (const event of state.events) state.agents = applyToAgent(state.agents, event);
-  // The sessions those events belonged to are gone. Nobody is running until
-  // they are started again, and saying otherwise is the dishonesty this whole
-  // tool is against.
+  // Start from a safe projection, then reconcile saved handles with each
+  // engine after its transport is ready. Idle conversations remain resumable.
   for (const agent of Object.values(state.agents)) {
     state.agents = patchAgent(state.agents, agent.id, {
-      status: 'idle', sessionId: null, sessionIds: [], blockedReason: null,
+      status: 'idle', sessionId: null, sessionIds: [], workItemIds: [],
+      resumeSessionId: adoptedSessions.find((row) => row.agent_id === agent.id)?.session_id ?? null,
+      blockedReason: null,
     });
   }
   const adoptedAt = Date.now();
@@ -222,6 +232,38 @@ for (const engine of Object.values(ENGINES)) {
 }
 
 const subscribers = new Set();
+const WORKER_LIMIT_MS = 480_000;
+const workerTimers = new Map();
+
+// A restart does not guess. Ask each engine about the saved handle without
+// starting work. A live thread stays on; a resumable idle thread stays off
+// until the user or Thor starts it.
+async function reconcileAdoptedSessions() {
+  for (const row of adoptedSessions) {
+    const agent = state.agents[row.agent_id];
+    if (!agent) continue;
+    const driver = getDriver(agent.engine);
+    if (typeof driver.reconcile !== 'function') continue;
+    try {
+      const result = await driver.reconcile(agent, options.repo, row.session_id);
+      const live = result?.live === true;
+      state.agents = patchAgent(state.agents, agent.id, {
+        sessionId: live ? result.sessionId ?? row.session_id : null,
+        sessionIds: live ? [result.sessionId ?? row.session_id] : [],
+        resumeSessionId: result?.resumable === false ? null : row.session_id,
+        enabled: live,
+        status: live ? 'running' : (result?.state ?? 'idle'),
+      });
+    } catch {
+      state.agents = patchAgent(state.agents, agent.id, {
+        sessionId: null,
+        sessionIds: [],
+        enabled: false,
+        status: 'idle',
+      });
+    }
+  }
+}
 
 // ---------------------------------------------------------------- ingestion
 
@@ -323,6 +365,12 @@ async function harvestGoals(event) {
 
 function addBoardWork(spec, by) {
   if (!spec?.title) return { error: 'an item needs a title' };
+  for (const field of ['plan', 'outcome', 'verify']) {
+    if (!String(spec[field] ?? '').trim()) return { error: `an item needs ${field}` };
+  }
+  if (!Number.isFinite(spec.estimateMs) || spec.estimateMs > WORKER_LIMIT_MS) {
+    return { error: 'an item must finish within 480000ms' };
+  }
   const owner = state.agents[spec.owner] ? spec.owner : null;
   const result = addItem(state.board, { ...spec, owner });
   if (result.error) return result;
@@ -349,35 +397,27 @@ function harvestReport(event) {
     return; // a malformed block is not a report; the prose still stands
   }
 
-  // A hero asking for the room. It lands in the same queue as anything the
-  // monitor derived, and is governed the same way - two ways in, one way out.
+  // The fallback has the same destination as the MCP tool: Thor. It is not a
+  // human decision and must not enter Mac's queue.
   const plea = typeof report.escalate === 'string'
     ? { why: report.escalate, needs: 'unblock' }
     : report.escalate;
   if (plea?.why && String(plea.why).trim()) {
-    ingest(createEvent(event.agentId, EVENT_KINDS.PRAYER, {
-      why: String(plea.why).trim(),
-      needs: ['decision', 'unblock', 'conflict'].includes(plea.needs) ? plea.needs : 'decision',
-    }));
+    const need = ['decision', 'unblock', 'conflict'].includes(plea.needs)
+      ? plea.needs
+      : 'decision';
+    void tellThor(
+      event.agentId,
+      `${event.agentId} needs ${need}: ${String(plea.why).trim()}`,
+    ).catch(() => {});
   }
 
-  // An agent taking itself off the floor. It is the counterpart to ASSEMBLE:
-  // Thor decides who starts, and each hero decides when it is finished. An
-  // idle seat nobody closes is exactly the noise this is against.
+  // A worker can ask to stand down, but one worker must not stop every session
+  // behind a shared seat. Apply that request after checkpoint moves, when the
+  // server can see whether the whole assigned batch is complete.
   const done = report.standDown;
-  if (done?.why && String(done.why).trim()) {
-    const why = String(done.why).trim();
-    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
-      text: `stood down: ${why}`,
-      from: 'you',
-    }));
-    // Stopped and benched are one state. The same transition is used by Thor
-    // and by the floor toggle, so a self-stop cannot leave its switch on.
-    COMMANDS.setActive({ agentId: event.agentId, active: false })
-      .then(() => publish({ type: 'state', state: snapshot() }))
-      .catch(() => {});
-  }
 
+  const completedWork = [];
   // Gate moves. This is the only way the board changes from a worker, and
   // board.mjs refuses anything out of order or without a receipt - so an agent
   // cannot report a push over untested code however confidently it tries.
@@ -398,6 +438,7 @@ function harvestReport(event) {
     }
     state.board = result.board;
     store.saveItem(result.item);
+    if (result.item.closedAt) completedWork.push(result.item);
     ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
       text: `${move.item} ${move.gate}: ${move.state}`,
       from: 'you',
@@ -411,6 +452,39 @@ function harvestReport(event) {
     const text = String(claim?.text ?? claim?.claim ?? '').trim();
     if (!text) continue;
     ingest(createEvent(event.agentId, EVENT_KINDS.CLAIM, { ...claim, text }));
+  }
+  const assignedIds = state.agents[event.agentId]?.workItemIds ?? [];
+  const assignedDone = assignedIds.length === 0 || assignedIds.every((id) => {
+    const item = findItem(state.board, id);
+    return item && isDone(item);
+  });
+  const isWorker = state.agents[event.agentId]?.role !== ROLES.ORCHESTRATOR;
+  const askedToStop = Boolean(done?.why && String(done.why).trim());
+  const shouldStop = isWorker && assignedDone && (completedWork.length > 0 || askedToStop);
+  if (askedToStop && !assignedDone) {
+    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+      text: `one worker finished its slice: ${String(done.why).trim()}`,
+      from: 'you',
+    }));
+  }
+  if (shouldStop) {
+    const why = askedToStop
+      ? String(done.why).trim()
+      : `completed ${completedWork.map((item) => item.id).join(', ')}`;
+    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+      text: `stood down: ${why}`,
+      from: 'you',
+    }));
+    COMMANDS.setActive({ agentId: event.agentId, active: false })
+      .then(async () => {
+        publish({ type: 'state', state: snapshot() });
+        await tellThor(
+          event.agentId,
+          `${event.agentId} finished its assigned checkpoints. `
+            + 'Review the checkpoints. Assign and start the next ready eight-minute work unit, or leave the seat benched.',
+        );
+      })
+      .catch(() => {});
   }
 }
 
@@ -450,6 +524,9 @@ function partition(event) {
 }
 
 function ingest(incoming) {
+  if (incoming.kind === EVENT_KINDS.STATUS && incoming.payload?.state === 'stopped') {
+    clearWorkerTimer(incoming.agentId);
+  }
   // A result carries its text in its own envelope and is never split, so it
   // goes straight to the parsers.
   if (incoming.kind === EVENT_KINDS.RESULT) {
@@ -554,11 +631,20 @@ function scheduleCards() {
 function refreshCards() {
   const before = state.cards;
   const now = Date.now();
-  const next = stampCards(before, deriveCards(
+  const derived = deriveCards(
     Object.values(state.agents),
     indexByAgent(state.events),
     now,
-  ), now);
+  );
+  const liveKeys = new Set(derived.map(cardKey));
+  for (const key of state.dismissedCards) {
+    if (!liveKeys.has(key)) state.dismissedCards.delete(key);
+  }
+  const next = stampCards(
+    before,
+    derived.filter((card) => !state.dismissedCards.has(cardKey(card))),
+    now,
+  );
   const { raised, cleared } = diffCards(before, next);
   state.cards = next;
 
@@ -673,10 +759,19 @@ function applyToAgent(agents, event) {
 
   if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
     next.status = event.payload.state;
-    if (event.payload.state === 'stopped') {
-      next.sessionId = null;
-      next.sessionIds = [];
-      next.enabled = false;
+    if (event.payload.state === 'stopped' || event.payload.state === 'idle') {
+      const ended = event.payload.sessionId ?? next.sessionId;
+      next.sessionIds = ended
+        ? (next.sessionIds ?? []).filter((id) => id !== ended)
+        : [];
+      next.sessionId = next.sessionIds[0] ?? null;
+      next.resumeSessionId = ended ?? next.resumeSessionId ?? null;
+      if (next.sessionIds.length === 0) {
+        next.workItemIds = [];
+        next.enabled = false;
+      } else {
+        next.status = 'running';
+      }
     }
   }
   if (event.kind === EVENT_KINDS.PLAN) {
@@ -717,8 +812,13 @@ async function startWorkers(agent, cwd, context) {
   const driver = getDriver(agent.engine);
   const sessionIds = [];
 
-  for (const { prompt } of workerDispatches(context)) {
-    sessionIds.push(await driver.start(agent, cwd, prompt));
+  for (const [index, { prompt }] of workerDispatches(context).entries()) {
+    const canResume = index === 0
+      && agent.resumeSessionId
+      && typeof driver.resume === 'function';
+    sessionIds.push(canResume
+      ? await driver.resume(agent, cwd, agent.resumeSessionId, prompt)
+      : await driver.start(agent, cwd, prompt));
   }
 
   state.agents = patchAgent(state.agents, agent.id, { sessionIds });
@@ -761,6 +861,66 @@ function crewRoster() {
     active: isActive(agent),
     claims: state.claims[agent.id] ?? [],
   }));
+}
+
+function readyWork(agentId) {
+  return itemsFor(state.board, agentId).filter((candidate) =>
+    canWork(state.board, candidate, agentId)
+      && candidate.plan
+      && candidate.outcome
+      && candidate.verify
+      && Number.isFinite(candidate.estimateMs)
+      && candidate.estimateMs <= WORKER_LIMIT_MS);
+}
+
+function checkpointTask(item) {
+  return [
+    `# Assigned task: ${item.id}`,
+    '',
+    item.title,
+    '',
+    `Execution plan: ${item.plan}`,
+    `Verifiable outcome: ${item.outcome}`,
+    `Proof: ${item.verify}`,
+    '',
+    'Finish this task within eight minutes. Report the gate receipts, then stand down.',
+  ].join('\n');
+}
+
+async function tellThor(from, text) {
+  const boss = Object.values(state.agents).find((agent) => agent.role === ROLES.ORCHESTRATOR);
+  if (!boss) return null;
+  return COMMANDS.say({ target: boss.id, text, from });
+}
+
+function clearWorkerTimer(agentId) {
+  const timer = workerTimers.get(agentId);
+  if (timer) clearTimeout(timer);
+  workerTimers.delete(agentId);
+}
+
+function boundWorker(agentId, sessionId) {
+  clearWorkerTimer(agentId);
+  const agent = state.agents[agentId];
+  if (!agent || agent.role === ROLES.ORCHESTRATOR) return;
+  workerTimers.set(agentId, setTimeout(() => {
+    const current = state.agents[agentId];
+    if (current?.sessionId !== sessionId) return;
+    ingest(createEvent(agentId, EVENT_KINDS.STATUS, {
+      text: 'eight-minute work-unit limit reached; benched',
+      from: 'minimac',
+    }));
+    void COMMANDS.setActive({ agentId, active: false })
+      .then(async () => {
+        publish({ type: 'state', state: snapshot() });
+        await tellThor(
+          agentId,
+          `${agentId} reached the eight-minute limit and was benched. `
+            + 'Review the checkpoints and replace or split the work unit before starting a worker.',
+        );
+      })
+      .catch(() => {});
+  }, WORKER_LIMIT_MS));
 }
 
 // Every first dispatch and every steer reads the same live state through this
@@ -1058,6 +1218,7 @@ const COMMANDS = {
     // theirs - which is how a LICENSE plan turned up under a CI mission.
     state.board = createBoard();
     state.cards = [];
+    state.dismissedCards = new Set();
     state.verdicts = {};
     state.mission = mission ?? '';
     const id = store.startRun(state.mission, options.repo);
@@ -1085,13 +1246,21 @@ const COMMANDS = {
     const agent = state.agents[agentId];
     const goal = getGoal(state.goals, agentId);
     if (!goal?.objective) throw new Error(`${agentId} has no goal - set the mission first`);
+    const assignedItems = agent.role === ROLES.ORCHESTRATOR || task
+      ? []
+      : readyWork(agentId).slice(0, Math.max(1, agent.instances ?? 1));
+    const tasks = agent.role === ROLES.ORCHESTRATOR || task
+      ? [task ?? state.mission]
+      : assignedItems.map(checkpointTask);
+    if (!tasks.length) throw new Error(`${agentId} has no ready checkpoint`);
     const cwd = options.isolate ? await worktrees.create(agentId) : options.repo;
-    const context = promptContext(agent, task ?? state.mission, {
+    const context = promptContext(agent, tasks[0], {
       mentions,
       attachments,
       // A planning turn owns the goals fence. Do not add the report fence.
       exclusiveOutput,
     });
+    context.tasks = tasks;
     let sessionId;
     try {
       sessionId = await startWorkers(agent, cwd, context);
@@ -1105,14 +1274,20 @@ const COMMANDS = {
       throw error;
     }
     // Re-read: events arriving during the await already changed this agent.
-    state.agents = patchAgent(state.agents, agentId, { sessionId, status: 'running' });
+    state.agents = patchAgent(state.agents, agentId, {
+      sessionId,
+      status: 'running',
+      workItemIds: assignedItems.map((item) => item.id),
+      resumeSessionId: null,
+    });
     store.saveSession(agentId, sessionId, agent.engine);
-    return { sessionId, workers: agent.instances };
+    boundWorker(agentId, sessionId);
+    return { sessionId, workers: state.agents[agentId].sessionIds?.length ?? 1 };
   },
 
   // The composer's single verb. One line of text, whatever it names, ends up
   // in exactly one place: the mission, or one agent.
-  async say({ target, text, attachments = [] }) {
+  async say({ target, text, attachments = [], from = 'you' }) {
     const parsed = parseMentions(text, { agentIds: Object.keys(state.agents) });
     // A pasted path is an attachment, so dragging a file in and pasting its
     // path behave the same way.
@@ -1169,10 +1344,10 @@ const COMMANDS = {
       return COMMANDS.steer({
         agentId,
         text: body,
-        event: { text, attachments },
+        event: { text, attachments, from },
       });
     }
-    ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, { text, from: 'you', attachments }));
+    ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, { text, from, attachments }));
     return COMMANDS.setActive({
       agentId,
       active: true,
@@ -1242,6 +1417,18 @@ const COMMANDS = {
     return { settled: true };
   },
 
+  async dismissDecision({ key }) {
+    const card = state.cards.find((candidate) => cardKey(candidate) === key);
+    if (!card) return { dismissed: false };
+    if (card.kind === 'approval') {
+      throw new Error('answer the approval before it can leave Decisions');
+    }
+    if (card.kind === 'prayer') answerPrayer(card.agentId, 'dismissed by Mac');
+    state.dismissedCards.add(key);
+    refreshCards();
+    return { dismissed: true };
+  },
+
   async steer({ agentId, text, event = null }) {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`no agent ${agentId}`);
@@ -1271,7 +1458,7 @@ const COMMANDS = {
     ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, {
       text: event?.text ?? text,
       attachments: event?.attachments ?? [],
-      from: 'you',
+      from: event?.from ?? 'you',
     }));
     return { delivered: sent.delivered };
   },
@@ -1315,19 +1502,26 @@ const COMMANDS = {
     return { agentId, instances: count };
   },
 
-  async assignWork({ id, title, scope, owner, needs, blockedBy, estimateMs, by = 'minimac' }) {
+  async assignWork({
+    id, title, plan, outcome, verify, scope, owner, needs, blockedBy, estimateMs,
+    by = 'minimac',
+  }) {
     if (!state.agents[owner] || state.agents[owner].role === ROLES.ORCHESTRATOR) {
       throw new Error(`unknown Avenger: ${owner}`);
     }
     if (id) {
-      const result = assignItem(state.board, id, owner);
+      const result = reviseItem(state.board, id, {
+        title, plan, outcome, verify, scope, owner, needs, blockedBy, estimateMs,
+      });
       if (result.error) throw new Error(result.error);
       state.board = result.board;
       store.saveItem(result.item);
       orders(owner, `${result.item.id}: ${result.item.title}`);
       return { item: result.item };
     }
-    const result = addBoardWork({ title, scope, owner, needs, blockedBy, estimateMs }, by);
+    const result = addBoardWork({
+      title, plan, outcome, verify, scope, owner, needs, blockedBy, estimateMs,
+    }, by);
     if (result.error) throw new Error(result.error);
     return { item: result.item, duplicate: result.duplicate === true };
   },
@@ -1382,11 +1576,13 @@ const COMMANDS = {
 async function interruptAgent(agentId) {
   const agent = state.agents[agentId];
   if (!agent) throw new Error(`no agent ${agentId}`);
+  clearWorkerTimer(agentId);
   answerPrayer(agentId, 'stopped by Mac');
   const had = agent.sessionIds?.length || (agent.sessionId ? 1 : 0);
   if (had) await eachSession(agent, (id) => getDriver(agent.engine).interrupt(id));
   state.agents = patchAgent(state.agents, agentId, {
-    status: 'stopped', sessionId: null, sessionIds: [],
+    status: 'stopped', sessionId: null, sessionIds: [], workItemIds: [],
+    resumeSessionId: agent.sessionId ?? agent.resumeSessionId ?? null,
   });
   refreshCards();
 }
@@ -1414,6 +1610,7 @@ function snapshot() {
     // Every card carries whatever Thor said about it. Nothing is hidden.
     cards: state.cards.map((card) => ({
       ...card,
+      key: cardKey(card),
       verdict: state.verdicts[cardKey(card)] ?? null,
     })),
     board: itemsOf(state.board),
@@ -1533,11 +1730,59 @@ async function executeAgentTool(callerId, name, args) {
     });
     return { recorded: true };
   }
+  if (name === AGENT_TOOL.INSPECT) {
+    const checkpoints = itemsOf(state.board);
+    const avengers = Object.values(state.agents)
+      .filter((agent) => agent.role !== ROLES.ORCHESTRATOR)
+      .map((agent) => {
+        const inUse = agent.sessionIds?.length || (agent.sessionId ? 1 : 0);
+        const owned = checkpoints.filter((item) => item.owner === agent.id && !isDone(item));
+        const ready = owned.filter((item) => canWork(state.board, item, agent.id));
+        return {
+          id: agent.id,
+          role: agent.role,
+          enabled: agent.enabled !== false,
+          status: agent.status,
+          capacity: agent.instances,
+          inUse,
+          free: Math.max(0, agent.instances - inUse),
+          activeCheckpointIds: agent.workItemIds ?? [],
+          readyCheckpointIds: ready.map((item) => item.id),
+          blockedCheckpointIds: owned
+            .filter((item) => !canWork(state.board, item, agent.id))
+            .map((item) => item.id),
+          goal: getGoal(state.goals, agent.id)?.objective ?? null,
+        };
+      });
+    return {
+      capacity: {
+        seats: avengers.length,
+        workerSlots: avengers.reduce((sum, agent) => sum + agent.capacity, 0),
+        inUse: avengers.reduce((sum, agent) => sum + agent.inUse, 0),
+        free: avengers.reduce((sum, agent) => sum + agent.free, 0),
+        readyUnowned: checkpoints.filter((item) =>
+          !item.owner && checkpointState(state.board, item) !== 'blocked').length,
+      },
+      avengers,
+      checkpoints: checkpoints.map((item) => ({
+        id: item.id,
+        title: item.title,
+        owner: item.owner,
+        state: checkpointState(state.board, item),
+        blockedBy: item.blockedBy,
+        estimateMs: item.estimateMs,
+      })),
+    };
+  }
   if (name === AGENT_TOOL.ESCALATE) {
-    const details = [args.why, args.agent && `Avenger: ${args.agent}`, args.receipt && `Receipt: ${args.receipt}`]
-      .filter(Boolean)
-      .join('\n');
-    ingest(createEvent(callerId, EVENT_KINDS.PRAYER, { why: details, needs: args.needs }));
+    const who = caller.label ?? caller.name ?? callerId;
+    const brief = [
+      `${who} needs ${args.needs}: ${String(args.why).trim()}`,
+      args.agent && `Avenger involved: ${args.agent}`,
+      args.receipt && `Receipt: ${args.receipt}`,
+    ].filter(Boolean).join('\n');
+    const sent = await tellThor(callerId, brief);
+    if (!sent) throw new Error('no Thor on the floor');
     return { escalated: true, to: 'thor' };
   }
   if (name === AGENT_TOOL.ASSEMBLE) {
@@ -1691,11 +1936,21 @@ function ensureRun() {
   return id;
 }
 
-// A restart is NOT the end of a run: closing it here is what made every
-// restart lose the mission and leave the whole crew goal-less, because there
-// was no open run left to rejoin. Only STOP ends a run.
+// A restart is NOT the end of a run. Stop live engine work, but do not finish
+// the run or delete its resumable conversation handles.
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  for (const agent of Object.values(state.agents)) {
+    if (!agent.sessionId && !agent.sessionIds?.length) continue;
+    await eachSession(agent, (id) => getDriver(agent.engine).interrupt(id)).catch(() => {});
+  }
+  process.exit(0);
+}
+
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => process.exit(0));
+  process.on(signal, () => { void shutdown(); });
 }
 
 // Codex agents need a daemon listening before they can start. Bringing it up
@@ -1754,4 +2009,6 @@ server.listen(options.port, async () => {
   );
   process.stdout.write(`remote control: ${remoteLine()}\n`);
   await ensureEngines();
+  await reconcileAdoptedSessions();
+  publish({ type: 'state', state: snapshot() });
 });

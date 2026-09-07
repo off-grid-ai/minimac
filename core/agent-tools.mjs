@@ -8,6 +8,7 @@ import { buildOutputSchema } from './dispatch.mjs';
 
 export const AGENT_TOOL = Object.freeze({
   REPORT: 'report_progress',
+  INSPECT: 'inspect_avengers',
   ESCALATE: 'escalate_to_thor',
   ASSEMBLE: 'assemble_avengers',
   START: 'start_avenger',
@@ -26,14 +27,19 @@ const object = (properties, required = []) => ({
 const TOOLS = Object.freeze({
   [AGENT_TOOL.REPORT]: {
     name: AGENT_TOOL.REPORT,
-    description: 'Report flows, evidence, and board gate results to MINIMAC. This replaces a minimac fenced report.',
+    description: 'Report flows, evidence, and checkpoint gate results to MINIMAC. This replaces a minimac fenced report.',
     inputSchema: buildOutputSchema(),
+  },
+  [AGENT_TOOL.INSPECT]: {
+    name: AGENT_TOOL.INSPECT,
+    description: 'Read the live Avengers, their worker capacity, and every ready or blocked checkpoint before assigning work.',
+    inputSchema: object({}),
   },
   [AGENT_TOOL.ESCALATE]: {
     name: AGENT_TOOL.ESCALATE,
-    description: 'Ask Thor for a decision, unblock, or conflict ruling. Mac can see the same request. Do not ask Mac to relay it.',
+    description: 'Ask Thor for a decision, unblock, or conflict ruling. Mac can see it. Lead with the exact ask, then say why. Use plain language and no more than four short lines. Put command output in receipt, not in the ask.',
     inputSchema: object({
-      why: { type: 'string', description: 'The exact handoff or decision that Thor must make.' },
+      why: { type: 'string', description: 'The exact ask first, then why it is needed. Plain language, 3 to 4 short lines maximum.' },
       needs: { type: 'string', enum: ['decision', 'unblock', 'conflict'] },
       agent: { type: 'string', description: 'The Avenger involved, if another Avenger is needed.' },
       receipt: { type: 'string', description: 'The command or observed result that supports the request.' },
@@ -41,7 +47,7 @@ const TOOLS = Object.freeze({
   },
   [AGENT_TOOL.ASSEMBLE]: {
     name: AGENT_TOOL.ASSEMBLE,
-    description: 'Apply the full Avengers roster, goals, and shared board plan. False benches an Avenger. True or 1 to 4 starts the seat.',
+    description: 'Apply the full Avengers roster, goals, and shared checkpoint plan. False benches an Avenger. True or 1 to 4 starts the seat.',
     inputSchema: object({
       crew: {
         type: 'object',
@@ -53,18 +59,21 @@ const TOOLS = Object.freeze({
         type: 'array',
         items: object({
           title: { type: 'string' },
+          plan: { type: 'string', description: 'A short ordered execution plan for this one task.' },
+          outcome: { type: 'string', description: 'The result a person or reviewer can verify.' },
+          verify: { type: 'string', description: 'The command or real-surface check that proves the outcome.' },
           scope: { type: 'string' },
           owner: { type: 'string' },
           needs: { type: 'array', items: { type: 'string', enum: GATES } },
           blockedBy: { type: 'array', items: { type: 'string' } },
-          estimateMs: { type: 'integer', minimum: 1 },
-        }, ['title', 'scope', 'owner', 'needs', 'blockedBy', 'estimateMs']),
+          estimateMs: { type: 'integer', minimum: 1, maximum: 480000 },
+        }, ['title', 'plan', 'outcome', 'verify', 'scope', 'owner', 'needs', 'blockedBy', 'estimateMs']),
       },
     }, ['crew', 'goals', 'items']),
   },
   [AGENT_TOOL.START]: {
     name: AGENT_TOOL.START,
-    description: 'Start or resume one benched Avenger through the full MINIMAC middleware.',
+    description: 'Start one benched Avenger on its next ready checkpoint through the full MINIMAC middleware. Each checkpoint must be an eight-minute work unit.',
     inputSchema: object({ agentId: { type: 'string' } }, ['agentId']),
   },
   [AGENT_TOOL.BENCH]: {
@@ -82,15 +91,18 @@ const TOOLS = Object.freeze({
   },
   [AGENT_TOOL.ASSIGN]: {
     name: AGENT_TOOL.ASSIGN,
-    description: 'Create a shared board item or change the owner of an existing item.',
+    description: 'Create or update one shared checkpoint. Give an existing checkpoint id to change its owner, dependencies, plan, outcome, proof, or estimate without making a duplicate.',
     inputSchema: object({
       id: { type: 'string', description: 'Existing item id to reassign. Omit to create an item.' },
       title: { type: 'string' },
+      plan: { type: 'string' },
+      outcome: { type: 'string' },
+      verify: { type: 'string' },
       scope: { type: 'string' },
       owner: { type: 'string' },
       needs: { type: 'array', items: { type: 'string', enum: GATES } },
       blockedBy: { type: 'array', items: { type: 'string' } },
-      estimateMs: { type: 'integer', minimum: 1 },
+      estimateMs: { type: 'integer', minimum: 1, maximum: 480000 },
     }, ['owner']),
   },
 });
@@ -98,6 +110,7 @@ const TOOLS = Object.freeze({
 const WORKER_TOOLS = Object.freeze([AGENT_TOOL.REPORT, AGENT_TOOL.ESCALATE]);
 const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.REPORT,
+  AGENT_TOOL.INSPECT,
   AGENT_TOOL.ASSEMBLE,
   AGENT_TOOL.START,
   AGENT_TOOL.BENCH,

@@ -10,6 +10,8 @@
  *   onEvent(handler)           -> void   // handler receives normalized Events only
  *
  * Optional:
+ *   reconcile(agent, cwd, sessionId) -> Promise<{ live, state, resumable }>
+ *     Check a saved session at server startup without starting new work.
  *   resume(agent, cwd, sessionId, prompt) -> Promise<sessionId>
  *     Continue an existing conversation rather than opening a new one. Falls
  *     back to start() when the engine cannot reach that session any more.

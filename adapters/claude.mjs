@@ -39,7 +39,8 @@ const TOOL_ACTIONS = Object.freeze({
   WebSearch: 'search',
   WebFetch: 'read',
   Task: 'tool',
-  ToolSearch: 'search',
+  // Selecting an engine tool is control traffic, not a repository search.
+  ToolSearch: 'tool',
   Skill: 'tool',
 });
 
@@ -75,14 +76,14 @@ export function createClaudeDriver({
 
   // ------------------------------------------------------------ normalizing
 
-  function normalize(agentId, line) {
+  function normalize(agentId, line, sessionId) {
     let message;
     try {
       message = JSON.parse(line);
     } catch {
       return;
     }
-    const at = (kind, payload) => emit(createEvent(agentId, kind, payload));
+    const at = (kind, payload) => emit(createEvent(agentId, kind, { ...payload, sessionId }));
 
     if (message.type === 'assistant') {
       for (const block of message.message?.content ?? []) {
@@ -222,7 +223,7 @@ export function createClaudeDriver({
     const lines = session.buffer.split('\n');
     session.buffer = lines.pop() ?? '';
     for (const line of lines) {
-      if (line.trim()) normalize(session.agentId, line);
+      if (line.trim()) normalize(session.agentId, line, sessionId);
     }
   }
 
@@ -294,6 +295,7 @@ export function createClaudeDriver({
       emit(createEvent(agent.id, EVENT_KINDS.STATUS, {
         state: code === 0 ? 'idle' : 'stopped',
         code,
+        sessionId,
       }));
     });
 
@@ -324,6 +326,12 @@ export function createClaudeDriver({
   }
 
   return {
+    // A new MINIMAC process cannot attach to the old child's pipes. The
+    // conversation can be resumed, but it is not live now.
+    async reconcile(agent, cwd, sessionId) {
+      return { sessionId, live: false, state: 'idle', resumable: true };
+    },
+
     async start(agent, cwd, prompt) {
       const sessionId = randomUUID();
       launch(agent, cwd, sessionId, false);

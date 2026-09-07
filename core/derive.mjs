@@ -28,6 +28,8 @@ const LOOP_DEFAULTS = Object.freeze({
   windowMs: 300_000, // only the last five minutes can be a live loop
 });
 
+const LOOPABLE_ACTIONS = new Set(['read', 'edit', 'run', 'search']);
+
 const SILENCE_DEFAULTS = Object.freeze({
   thinkingMs: 45_000,  // below this, quiet is just the gap between events
   hungMs: 420_000,     // above this, quiet with nothing in flight is hung
@@ -117,11 +119,16 @@ function confidenceOf(count, threshold) {
 // Completion events describe an outcome, not an attempt; counting them would
 // double every tool call and halve the threshold.
 function isLoopableTool(event) {
+  const target = String(event.payload?.target ?? '');
   return (
     event.kind === EVENT_KINDS.TOOL &&
     event.payload?.phase !== 'completed' &&
-    !!event.payload?.action &&
-    !!event.payload?.target
+    LOOPABLE_ACTIONS.has(event.payload?.action) &&
+    !!target &&
+    // Claude records its tool picker as `select:<tool names>`. Old runs can
+    // contain these as searches, so exclude them here as well as fixing the
+    // adapter. Tool discovery cannot prove that repository work is looping.
+    !target.startsWith('select:')
   );
 }
 

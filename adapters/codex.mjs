@@ -311,7 +311,7 @@ export function createCodexDriver({
     const threadId = params.threadId ?? params.conversationId;
     const agentId = agentByThread.get(threadId);
     if (!agentId) return undefined;
-    const at = (kind, payload) => emit(createEvent(agentId, kind, payload));
+    const at = (kind, payload) => emit(createEvent(agentId, kind, { ...payload, sessionId: threadId }));
 
     switch (method) {
       case 'turn/started':
@@ -432,6 +432,28 @@ export function createCodexDriver({
   // ------------------------------------------------------------------ port
 
   return {
+    async reconcile(agent, cwd, sessionId) {
+      await connect();
+      // Register first so any status notification emitted during resume has a
+      // destination. This does not start a turn.
+      agentByThread.set(sessionId, agent.id);
+      const result = await request('thread/resume', {
+        threadId: sessionId,
+        cwd,
+        config: mcpConfig(agent),
+      });
+      const thread = result?.thread ?? {};
+      const threadId = thread.id ?? sessionId;
+      agentByThread.set(threadId, agent.id);
+      const state = threadState(thread.status);
+      const activeTurn = [...(thread.turns ?? [])].reverse().find((turn) => {
+        const type = typeof turn.status === 'string' ? turn.status : turn.status?.type;
+        return ['active', 'running', 'inProgress'].includes(type);
+      });
+      if (activeTurn?.id) turnByThread.set(threadId, activeTurn.id);
+      return { sessionId: threadId, live: state === 'running', state, resumable: true };
+    },
+
     async start(agent, cwd, prompt) {
       await connect();
       const thread = await request('thread/start', {

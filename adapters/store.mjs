@@ -219,7 +219,7 @@ export function createStore({ file }) {
     // work, not part of any one mission.
     // How far the orchestrator is trusted with the room's decision cards.
     // A setting, not a run detail: it outlives runs and restarts.
-    // The board belongs to the run: reopening a run reopens its work, and a
+    // Checkpoints belong to the run: reopening a run reopens its work, and a
     // restart mid-mission does not lose who owned what.
     saveItem(item) {
       if (runId === null || !item?.id) return;

@@ -9,7 +9,7 @@
 //
 //   scope  - a path, "off-grid-ai/mobile/release". One field gives every
 //            altitude: zoomed out is the first segment, zoomed in is the last.
-// Gate state belongs to the shared board in board.mjs. A flow describes the
+// Gate state belongs to shared checkpoints in board.mjs. A flow describes the
 // user result and its delivery stage; it does not keep a second gate copy.
 //
 // Pure. No DOM, no clock it was not handed, no I/O.

@@ -69,7 +69,7 @@ effect on that agent's next dispatch. The floor never knows which engine a desk 
 1. **Type the mission.** Every seat gets a role-derived goal immediately, so nobody can be
    dispatched blind. Those show as `GOAL · default` — placeholders, not decisions.
 2. **ASSEMBLE.** The orchestrator decides who the mission actually needs, stands the rest
-   down, writes each of the chosen a real goal, and splits the work into board items with
+   down, writes each chosen Avenger a real goal, and splits the work into checkpoints with
    owners. He can ask for several of one hero when the work genuinely splits — three pull
    requests to review is three reviewers.
 3. **START ALL.** The Avengers work. He walks each order across the floor as he gives it.
@@ -85,9 +85,9 @@ effect on that agent's next dispatch. The floor never knows which engine a desk 
   who is not working says nothing.
 - **The header** — the whole question at once: what is left, how far along, and time
   against the fleet's own estimate. Red when the fleet is past its promise.
-- **FEED** — the stream, with the board pinned above it. Filters: `all`, `crosstalk` (only
+- **FEED** — the event stream, with a compact Checkpoints status card. Filters: `all`, `crosstalk` (only
   the heroes talking to each other), `signal` (that plus anything that changes what happens
-  next), `evidence` (claims, and the command behind each), `board` (work moving).
+  next), and `evidence` (claims, and the command behind each).
 - **DECISIONS** — the only thing allowed to interrupt you. Derived cards (a loop, an
   overrun, silence, a missing estimate, a plan that was never sharpened) and questions the
   heroes ask you themselves. Answering a question opens a thread; it closes when you say
@@ -99,7 +99,7 @@ effect on that agent's next dispatch. The floor never knows which engine a desk 
 
 Standing at a desk shows that agent's own flow and evidence there.
 
-## The board
+## Checkpoints
 
 One shared list of work, so coordination stops being prose. An item has an owner, a gate
 chain — `coding → wiring → lint → test → commits → push` — evidence, and what it is waiting
@@ -127,11 +127,12 @@ when their work is finished, rather than sitting idle in a chair.
 
 Every Codex and Claude session gets the same local `minimac` MCP server. The MCP process
 has no fleet state. It sends authenticated calls to the running MINIMAC server, which is
-the single owner of the roster, goals, board, reports, and events.
+the single owner of the roster, goals, checkpoints, reports, and events.
 
-All Avengers can report progress and escalate a handoff to Thor. Thor can assemble the
-full roster, start or bench an Avenger, change an Avenger's goal, and assign shared board
-work. Assemble starts the selected Avengers and benches all others. These tools use the
+All Avengers can report progress and escalate a handoff to Thor. Thor can inspect live
+capacity and checkpoints, assemble the full roster, start or bench an Avenger, change an
+Avenger's goal, and assign shared checkpoint work. Assemble starts the selected Avengers
+and benches all others. These tools use the
 same server operations as the floor controls, so a tool call and a click cannot disagree.
 
 ## Speaking once
@@ -148,7 +149,7 @@ The composer has three destinations besides a named hero:
 Every dispatch and every steer is composed through one ordered pipeline, so a rule you
 would otherwise retype each session is enforced once. It carries the standing instruction
 (your repo's engineering contract, plus any policy), the role, the crew, the goal, the
-board, that agent's own closed steps, the plan-sharpening loop, the house style, and the
+checkpoints, that agent's own closed steps, the plan-sharpening loop, the house style, and the
 report contract. Rewrite any editable step live in MIDDLEWARE.
 
 Messages from the agent conversation inputs use this same pipeline. They are stored once,
@@ -162,12 +163,12 @@ step ran on a first draft.
 ## Where the data goes
 
 `data/minimac.db` (SQLite, via Node's built-in `node:sqlite`). Every mission, event, goal,
-board item and claim is recorded, so a morning that went wrong can be reopened and read
+checkpoint and claim is recorded, so a morning that went wrong can be reopened and read
 back — and so estimates can eventually come from your real history instead of a guess.
 
-A restart is not the end of a mission: minimac rejoins the open one, replays its history
-into the monitor, and honestly resets every agent to idle with no session, because those
-sessions really are gone.
+A restart is not the end of a mission: MINIMAC rejoins the open run, replays its history,
+and checks each saved engine handle. A verified live Codex thread stays live. An idle Codex
+thread or Claude conversation stays off but resumable, so the next start keeps its context.
 
 `GET /runs` lists missions. `GET /replay?run=<id>&agent=<id>` returns one agent's stream.
 

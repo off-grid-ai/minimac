@@ -1,4 +1,4 @@
-// The board. One shared list of work, owned by nobody's context window.
+// Checkpoints. One shared list of work, owned by nobody's context window.
 //
 // Everything before this was private: each hero held its own goal and its own
 // self-reported flow, so nobody knew what anyone else was doing and the only
@@ -7,8 +7,8 @@
 // put that sentence except a bubble.
 //
 // A work item is that place. It has an owner, a gate chain that must be walked
-// in order, and evidence. Every dispatch carries the board; every report writes
-// to it. The conversation becomes disposable and the board becomes the truth.
+// in order, and evidence. Every dispatch carries the checkpoints; every report
+// writes to them. The conversation becomes disposable and checkpoints become truth.
 //
 // Pure. No clock it was not handed, no I/O, no DOM.
 
@@ -44,7 +44,8 @@ export function createBoard() {
 }
 
 export function createItem({
-  id, title, scope = '', owner = null, blockedBy = [], estimateMs = null, needs = null,
+  id, title, plan = '', outcome = '', verify = '', scope = '', owner = null,
+  blockedBy = [], estimateMs = null, needs = null,
 }, now = Date.now()) {
   const gates = {};
   // Only the gates this item actually needs. A docs change has no test gate,
@@ -60,6 +61,9 @@ export function createItem({
   return {
     id,
     title: String(title ?? '').trim(),
+    plan: String(plan ?? '').trim(),
+    outcome: String(outcome ?? '').trim(),
+    verify: String(verify ?? '').trim(),
     scope: String(scope ?? '').trim(),
     owner,
     gates,
@@ -99,7 +103,7 @@ export function isDone(item) {
   return nextGate(item) === null;
 }
 
-// Which items this one is still waiting on. An id that is not on the board is
+// Which items this one is still waiting on. An id that is not in checkpoints is
 // not a dependency - it is a typo, and silently blocking forever on a typo is
 // worse than ignoring it.
 export function unmetDeps(board, item) {
@@ -145,11 +149,21 @@ export function addItem(board, spec, now = Date.now()) {
   const title = String(spec?.title ?? '').trim();
   if (!title) return { board, error: 'an item needs a title' };
   // The same open work, twice, is one piece of work. Engines re-send a block
-  // and a re-assemble restates the plan; neither should double the board.
+  // and a re-assemble restates the plan; neither should double the checkpoints.
   const twin = itemsOf(board).find(
     (item) => !isDone(item) && item.title === title && (item.owner ?? null) === (spec.owner ?? null),
   );
-  if (twin) return { board, item: twin, duplicate: true };
+  if (twin) {
+    const item = {
+      ...twin,
+      plan: String(spec.plan ?? twin.plan ?? '').trim(),
+      outcome: String(spec.outcome ?? twin.outcome ?? '').trim(),
+      verify: String(spec.verify ?? twin.verify ?? '').trim(),
+      estimateMs: spec.estimateMs ?? twin.estimateMs,
+      blockedBy: spec.blockedBy ?? twin.blockedBy,
+    };
+    return { board: replace(board, twin.id, item), item, duplicate: true };
+  }
   const id = spec.id && !findItem(board, spec.id) ? spec.id : nextId(itemsOf(board));
   const item = createItem({ ...spec, id, title }, now);
   return { board: { ...board, items: [...itemsOf(board), item] }, item };
@@ -160,6 +174,32 @@ export function assign(board, id, owner) {
   if (!item) return { board, error: `no item ${id}` };
   if (isDone(item)) return { board, error: `${id} is already finished` };
   return { board: replace(board, id, { owner: owner ?? null }), item: { ...item, owner } };
+}
+
+// Edit one checkpoint in place. Re-planning must not make a duplicate, and a
+// dependency edit must keep gate receipts that still apply.
+export function revise(board, id, change = {}) {
+  const item = findItem(board, id);
+  if (!item) return { board, error: `no item ${id}` };
+  if (isDone(item)) return { board, error: `${id} is already finished` };
+  const next = { ...item };
+  for (const field of ['title', 'plan', 'outcome', 'verify', 'scope']) {
+    if (change[field] !== undefined) next[field] = String(change[field]).trim();
+  }
+  for (const field of ['owner', 'estimateMs']) {
+    if (change[field] !== undefined) next[field] = change[field];
+  }
+  if (change.blockedBy !== undefined) next.blockedBy = [...change.blockedBy];
+  if (change.needs !== undefined) {
+    const wanted = Array.isArray(change.needs) && change.needs.length > 0
+      ? change.needs
+      : CHAIN;
+    next.gates = Object.fromEntries(wanted.map((gate) => [
+      gate,
+      item.gates?.[gate] ?? GATE_STATE.PENDING,
+    ]));
+  }
+  return { board: replace(board, id, next), item: next };
 }
 
 // Move one gate. This is where the chain is ENFORCED: a gate cannot pass while
@@ -229,9 +269,9 @@ export function progress(board) {
 
 // ------------------------------------------------------------- for a prompt
 
-// The board as an agent should read it: what is mine, what is waiting on me,
+// Checkpoints as an agent should read them: what is mine, what is waiting on me,
 // and what everyone else is holding. Short on purpose - it rides on every
-// message, so a board that costs a page is a board nobody reads twice.
+// message, so checkpoints that cost a page will not be read twice.
 export function boardBrief(board, agentId = null) {
   const items = itemsOf(board);
   if (items.length === 0) return null;
@@ -241,6 +281,9 @@ export function boardBrief(board, agentId = null) {
     const blocked = unmetDeps(board, item);
     const bits = [
       `- ${item.id}  ${item.title}`,
+      item.plan ? `      plan: ${item.plan}` : null,
+      item.outcome ? `      outcome: ${item.outcome}` : null,
+      item.verify ? `      verify: ${item.verify}` : null,
       item.scope ? `      where: ${item.scope}` : null,
       `      owner: ${item.owner ?? 'UNASSIGNED'}`,
       gate ? `      next gate: ${gate}` : '      finished',
@@ -253,7 +296,7 @@ export function boardBrief(board, agentId = null) {
   const rest = items.filter((item) => !mine.includes(item));
 
   return [
-    '# The board',
+    '# Checkpoints',
     '',
     'This is the shared truth. Read it before you act and report against it.',
     ...(mine.length ? ['', '## Yours', '', ...mine.map(line)] : []),

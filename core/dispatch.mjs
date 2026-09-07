@@ -27,7 +27,9 @@ const ROLE_PROMPTS = Object.freeze({
   [ROLES.ORCHESTRATOR]:
     'You route work. You do not write production code. You assign tasks to workers, ' +
     'watch their flows, and escalate to the human when two workers disagree on a fact ' +
-    'or a worker fails the same step twice.',
+    'or a worker fails the same step twice. Treat checkpoints as a queue of work units. ' +
+    'Each worker gets one ready item that takes no more than eight minutes, with a plan, ' +
+    'a verifiable outcome, and its proof. When it stops, assign and start the next ready item.',
   [ROLES.CODER]:
     'You write the smallest coherent change that satisfies the flow contract. ' +
     'You touch only files inside your claim.',
@@ -105,7 +107,7 @@ export function buildOutputSchema() {
       },
       gates: {
         type: 'array',
-        description: 'Changes to the shared board. This is the only writable gate state.',
+        description: 'Changes to shared checkpoints. This is the only writable gate state.',
         items: {
           type: 'object',
           required: ['item', 'gate', 'state', 'receipt'],
@@ -119,9 +121,9 @@ export function buildOutputSchema() {
       },
       escalate: {
         type: 'object',
-        description: 'Ask for attention. Only for what watching you could never reveal.',
+        description: 'Ask for attention. Lead with the exact ask, then say why. Use plain language and no more than four short lines.',
         properties: {
-          why: { type: 'string' },
+          why: { type: 'string', description: 'The exact ask first, then why it is needed. Plain language, 3 to 4 short lines maximum.' },
           needs: { type: 'string', enum: ['decision', 'unblock', 'conflict'] },
         },
       },
@@ -205,7 +207,7 @@ export function reportInstruction(role = null) {
       + 'A time estimate is a forecast, not a measured claim.',
     '- If you have no command behind a number, set receipt to "" and say so.',
     '- If your work no longer matches your goal, say so in a flow step rather than continuing.',
-    `- gates are board moves. The fixed gates are: ${GATES.join(', ')}. Name the item id `
+    `- gates are checkpoint moves. The fixed gates are: ${GATES.join(', ')}. Name the item id `
       + 'you own, the gate, and '
       + 'the command that proved it. A pass without a receipt is rejected, and a '
       + 'gate cannot pass before the ones before it.',
@@ -222,6 +224,9 @@ export function reportInstruction(role = null) {
       + 'what nobody could work out by watching you: you need a decision, you are blocked '
       + 'on something you cannot get, or your work collides with another agent\'s. Leave it '
       + 'out entirely when you are simply working.',
+    '- In an escalation, lead with the exact thing you want. Then say why you need it. '
+      + 'Use plain language and no more than four short lines. Put commands and detailed '
+      + 'proof in the receipt or your progress report, not in the request.',
     '- Use the MINIMAC escalate_to_thor tool for a handoff. It reaches Thor and stays '
       + 'visible to Mac. Never ask Mac to relay routine work.',
     '- Your engine gives you shell and file tools separately. MINIMAC gives you fleet tools. '
@@ -354,14 +359,17 @@ export function composeDispatch(context) {
 // is allowed to rebuild or drop parts of that context.
 export function workerDispatches(context) {
   const agent = context.agent;
-  const count = Math.max(1, agent?.instances ?? 1);
+  const tasks = Array.isArray(context.tasks) && context.tasks.length > 0
+    ? context.tasks
+    : [context.task];
+  const count = Math.min(Math.max(1, agent?.instances ?? 1), tasks.length);
   return Array.from({ length: count }, (_, index) => {
     const instance = count > 1
       ? { index: index + 1, label: `${agent.name} #${index + 1}` }
       : null;
     return {
       instance,
-      prompt: composeDispatch({ ...context, instance }),
+      prompt: composeDispatch({ ...context, task: tasks[index], instance }),
     };
   });
 }
@@ -433,7 +441,7 @@ export function dispatchPipeline(extraSteps = []) {
         ? `# Named by the operator\n\nStart from these files:\n${mentions.files.join('\n')}`
         : null)),
 
-    defineStep('board', ({ board, agent }) => boardBrief(board, agent?.id)),
+    defineStep('checkpoints', ({ board, agent }) => boardBrief(board, agent?.id)),
 
     defineStep('prior-steps', ({ steps }) => priorSteps(steps)),
 
@@ -489,6 +497,9 @@ function crewSection(agent, crew, team) {
     ...others,
     '',
     'How this team works:',
+    ...(agent.role === ROLES.ORCHESTRATOR ? [
+      '- Call inspect_avengers before you assign or start work. Use its live capacity and ready checkpoints.',
+    ] : []),
     '- You do not message another agent directly and you never wait on one silently.',
     '- Use escalate_to_thor for a needed handoff. MINIMAC sends it to Thor and shows it to Mac.',
     '- Never ask Mac to carry a routine message between Avengers.',
@@ -515,11 +526,14 @@ export function planningTask(mission, crew) {
     goals: { [first]: 'one sentence that says what done looks like' },
     items: [{
       title: 'what a person gets when this is done',
+      plan: 'read the failing result; make the smallest fix; run the proof check',
+      outcome: 'the assigned check passes on the changed head',
+      verify: 'the exact command or hosted check that proves the result',
       scope: 'repo/area',
       owner: first,
       needs: ['coding', 'lint', 'test'],
       blockedBy: [],
-      estimateMs: 600000,
+      estimateMs: 480000,
     }],
   }, null, 2);
 
@@ -566,15 +580,18 @@ export function planningTask(mission, crew) {
       + 'invents work to look busy.',
     '- Only give a goal to an agent you set true.',
     '',
-    'Rules for the board ("items") - this is the work itself:',
+    'Rules for the checkpoints ("items") - this is the work itself:',
     '- Split the mission into the smallest number of items that can be worked '
       + 'INDEPENDENTLY. Two items must never need the same file at the same time.',
     '- Every item has exactly one owner from the crew you brought on.',
+    '- Every item is one task that finishes within eight minutes. Split anything larger.',
+    '- "plan" is the short execution order. "outcome" is the result to verify. '
+      + '"verify" is the exact command or real-surface check that proves it.',
     '- "needs" lists only the gates this item really has. A docs change has no '
       + 'test gate; inventing one makes an item nobody can ever finish.',
     '- "blockedBy" names the item ids that must finish first. Use it - it is how '
       + 'one hero waits on another without either of them guessing.',
-    '- Give each item an estimate in milliseconds. For example, ten minutes is 600000.',
+    '- Give each item an estimate in milliseconds, with a maximum of 480000.',
     '- The gates are walked in order and a pass needs the command that proved it. '
       + 'Nobody can report a push over untested code.',
     '',
