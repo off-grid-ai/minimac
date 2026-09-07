@@ -1005,6 +1005,133 @@
   .flow-result { font-size: 12px; color: var(--text); }
   .flow.is-verified .flow-result { color: var(--accent); }
 
+  /* --------------------------------------------------------- checkpoints
+     This is a work queue, not a build log. The collapsed row says the user
+     outcome, owner and current state. Technical details stay one click away. */
+  .checkpoint-summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    border: 1px solid var(--line);
+    background: var(--line);
+    gap: 1px;
+    margin-bottom: calc(var(--step) * 3);
+  }
+
+  .checkpoint-count {
+    background: var(--surface);
+    color: var(--faint);
+    padding: calc(var(--step) * 2);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    white-space: nowrap;
+  }
+
+  .checkpoint-count strong { color: var(--text); font-weight: 400; }
+  .checkpoint-count:first-child strong { color: var(--accent); }
+  .checkpoint-section { margin-bottom: calc(var(--step) * 4); }
+  .checkpoint-section-title {
+    display: flex;
+    align-items: baseline;
+    gap: calc(var(--step) * 2);
+    margin: 0;
+    padding: 0 0 calc(var(--step) * 1.5);
+    color: var(--faint);
+    font-size: 9px;
+    font-weight: 400;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .checkpoint-section-title span { color: var(--text); }
+  .checkpoint-empty { margin: 0; padding: calc(var(--step) * 3) 0; color: var(--faint); }
+  .checkpoint-row {
+    display: grid;
+    gap: calc(var(--step) * 2);
+    padding: calc(var(--step) * 2.5) 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .checkpoint-row.is-running { border-left: 2px solid var(--accent); padding-left: calc(var(--step) * 2); }
+  .checkpoint-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: calc(var(--step) * 3);
+    align-items: baseline;
+  }
+
+  .checkpoint-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .checkpoint-state {
+    color: var(--muted);
+    font-size: 10px;
+    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+  }
+
+  .checkpoint-row.is-running .checkpoint-state { color: var(--accent); }
+  .checkpoint-controls { display: flex; align-items: center; gap: calc(var(--step) * 1.5); flex-wrap: wrap; }
+  .checkpoint-button,
+  .checkpoint-owner {
+    min-height: 44px;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    color: var(--muted);
+    font: 9px/1 var(--mono);
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+
+  .checkpoint-button { padding: 0 calc(var(--step) * 2); cursor: pointer; }
+  .checkpoint-button:hover,
+  .checkpoint-owner:hover { color: var(--text); border-color: var(--accent-edge); }
+  .checkpoint-button:disabled { opacity: .35; cursor: default; }
+  .checkpoint-button:disabled:hover { color: var(--muted); border-color: var(--line); }
+  .checkpoint-owner { min-width: 120px; padding: 0 calc(var(--step) * 1.5); cursor: pointer; }
+  .checkpoint-details { color: var(--muted); }
+  .checkpoint-details > summary {
+    width: fit-content;
+    color: var(--faint);
+    cursor: pointer;
+    font-size: 9px;
+    letter-spacing: .12em;
+  }
+
+  .checkpoint-details > summary:hover { color: var(--text); }
+  .checkpoint-detail-body {
+    display: grid;
+    gap: calc(var(--step) * 1.5);
+    margin-top: calc(var(--step) * 2);
+    padding: calc(var(--step) * 2);
+    background: var(--nested);
+    border-left: 1px solid var(--line);
+  }
+
+  .checkpoint-detail-line {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: calc(var(--step) * 2);
+    align-items: baseline;
+  }
+
+  .checkpoint-detail-line > span { color: var(--faint); font-size: 9px; letter-spacing: .1em; }
+  .checkpoint-detail-line > p { margin: 0; color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+
+  @media (max-width: 720px) {
+    .checkpoint-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .checkpoint-line { grid-template-columns: minmax(0, 1fr); gap: var(--step); }
+  }
+
   .ladder { display: inline-flex; align-items: center; gap: calc(var(--step) * 1.5); white-space: nowrap; }
   .ladder .pips { display: inline-flex; gap: 2px; }
   .ladder .pips i { width: 8px; height: 3px; background: var(--sunk); display: block; }

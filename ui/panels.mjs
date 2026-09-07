@@ -11,8 +11,8 @@
 // what it will hold instead of showing an empty box.
 
 import { burnRatio } from '../core/derive.mjs';
-import { GATES, rollup, remaining } from '../core/flows.mjs';
-import { nextGate, isDone, unmetDeps, stateOf } from '../core/board.mjs';
+import { rollup, remaining } from '../core/flows.mjs';
+import { compareQueueOrder, nextGate, isDone, unmetDeps } from '../core/board.mjs';
 import { ENGINES } from '../core/roster.mjs';
 
 const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
@@ -283,87 +283,147 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
     root.replaceChildren(emptyBoard());
     return;
   }
-  const nameOfId = (id) => agents.find((a) => a.id === id)?.name ?? id;
   const frag = document.createDocumentFragment();
-
-  const head = el('div', 'flow-left');
-  head.append(
-    el('span', 'flow-left-label', 'checkpoints'),
-    el('span', 'flow-left-value',
-      `${velocity?.done ?? 0} of ${velocity?.items ?? items.length} items done`),
-    el('span', 'flow-left-pct',
-      velocity?.percent === null || velocity?.percent === undefined
-        ? '' : `${velocity.percent}% of gates passed`),
-  );
-  frag.append(head);
-
-  const enabled = agents.filter((agent) =>
-    agent.role !== 'orchestrator' && agent.enabled !== false);
-  const slots = enabled.reduce((sum, agent) => sum + Math.max(1, agent.instances ?? 1), 0);
-  const inUse = enabled.reduce((sum, agent) =>
+  const workers = agents.filter((agent) => agent.role !== 'orchestrator');
+  const activeIds = new Set(workers.flatMap((agent) =>
+    agent.sessionId ? (agent.workItemIds ?? []) : []));
+  const ordered = items.filter((item) => !isDone(item)).sort(compareQueueOrder);
+  const running = ordered.filter((item) => activeIds.has(item.id));
+  const pending = ordered.filter((item) => !activeIds.has(item.id));
+  const done = items.filter(isDone);
+  const slots = workers
+    .filter((agent) => agent.enabled !== false)
+    .reduce((sum, agent) => sum + Math.max(1, agent.instances ?? 1), 0);
+  const inUse = workers.reduce((sum, agent) =>
     sum + (agent.sessionIds?.length || (agent.sessionId ? 1 : 0)), 0);
-  const ready = items.filter((item) =>
-    ['open', 'assigned'].includes(stateOf({ items }, item))).length;
-  const capacity = el('div', 'flow-left');
-  capacity.append(
-    el('span', 'flow-left-label', 'capacity'),
-    el('span', 'flow-left-value', `${inUse} of ${slots} worker slots in use`),
-    el('span', 'flow-left-pct', `${Math.max(0, slots - inUse)} free · ${ready} ready`),
+
+  const summary = el('div', 'checkpoint-summary');
+  summary.append(
+    summaryCount(running.length, 'running'),
+    summaryCount(pending.length, 'pending'),
+    summaryCount(done.length, 'done'),
+    summaryCount(Math.max(0, slots - inUse), 'free'),
   );
-  frag.append(capacity);
+  frag.append(summary);
 
-  // Grouped by where the work is, so a multi-repo mission reads per repo.
-  const byScope = new Map();
-  for (const item of items) {
-    const scope = item.scope || 'unscoped';
-    if (!byScope.has(scope)) byScope.set(scope, []);
-    byScope.get(scope).push(item);
-  }
-
-  for (const [scope, group] of byScope) {
-    const label = el('div', 'board-scope', scope);
-    frag.append(label);
-    for (const item of group) {
-      frag.append(boardRow(item, items, nameOfId, handlers));
-    }
-  }
+  frag.append(checkpointSection('running now', running, items, workers, activeIds, handlers));
+  frag.append(checkpointSection('pending', pending, items, workers, activeIds, handlers));
   root.replaceChildren(frag);
 }
 
-function boardRow(item, all, nameOfId, handlers) {
-  const state = stateOf({ items: all }, item);
-  const row = el('div', `board-item is-${state}`);
+function summaryCount(value, label) {
+  const count = el('span', 'checkpoint-count');
+  count.append(el('strong', '', String(value)), document.createTextNode(` ${label}`));
+  return count;
+}
 
-  const top = el('div', 'board-head');
-  top.append(
-    el('span', 'board-id', item.id),
-    el('span', 'board-title', item.title),
-    el('span', 'board-owner', item.owner ? nameOfId(item.owner) : 'nobody'),
-  );
-  row.append(top);
-
-  const gates = el('span', 'gates');
-  for (const gate of GATES) {
-    if (!(gate in (item.gates ?? {}))) continue;
-    const chip = el('span', `gate is-${item.gates[gate]}`, gate);
-    chip.title = `${gate}: ${item.gates[gate]}`;
-    gates.append(chip);
+function checkpointSection(label, items, all, agents, activeIds, handlers) {
+  const section = el('section', 'checkpoint-section');
+  const heading = el('h3', 'checkpoint-section-title', label);
+  heading.append(el('span', '', String(items.length)));
+  section.append(heading);
+  if (!items.length) {
+    section.append(el('p', 'checkpoint-empty', label === 'running now'
+      ? 'Nothing is running.' : 'Nothing is waiting.'));
+    return section;
   }
-  const foot = el('div', 'board-foot');
-  foot.append(gates);
+  items.forEach((item, index) => section.append(checkpointRow(
+    item, all, agents, activeIds.has(item.id), handlers,
+    { canMoveUp: index > 0, canMoveDown: index < items.length - 1 },
+  )));
+  return section;
+}
 
+function checkpointRow(item, all, agents, running, handlers, movement) {
+  const row = el('article', `checkpoint-row${running ? ' is-running' : ''}`);
   const waiting = unmetDeps({ items: all }, item);
-  const next = nextGate(item);
-  foot.append(el('span', 'board-next',
-    isDone(item) ? 'done'
-      : waiting.length ? `waiting on ${waiting.join(', ')}`
-        : next ? `next: ${next}` : ''));
-  row.append(foot);
+  const owner = agents.find((agent) => agent.id === item.owner);
+  const ownerBusy = owner?.sessionId && !(owner.workItemIds ?? []).includes(item.id);
+  const label = item.outcome || item.title;
+  const line = el('div', 'checkpoint-line');
+  line.append(
+    el('span', 'checkpoint-label', label),
+    el('span', 'checkpoint-state', checkpointStatus(item, running, waiting, owner)),
+  );
+  row.append(line);
 
-  if (!item.owner && handlers.focus) {
-    row.title = 'nobody owns this yet';
+  const controls = el('div', 'checkpoint-controls');
+  if (!running) {
+    controls.append(
+      checkpointButton('UP', () => handlers.move?.(item.id, -1), !movement.canMoveUp),
+      checkpointButton('DOWN', () => handlers.move?.(item.id, 1), !movement.canMoveDown),
+    );
   }
+  controls.append(
+    ownerSelect(item, agents, handlers),
+    checkpointButton(item.paused ? 'RESUME' : 'PAUSE',
+      () => handlers.pause?.(item.id, !item.paused)),
+  );
+  if (!running) {
+    const cannotStart = !item.owner || waiting.length > 0 || ownerBusy;
+    const start = checkpointButton('START NOW', () => handlers.start?.(item.id), cannotStart);
+    if (cannotStart) start.title = !item.owner
+      ? 'Assign an owner first'
+      : waiting.length ? 'Waiting on another checkpoint' : `${owner?.name ?? 'Owner'} is already working`;
+    controls.append(start);
+  }
+  row.append(controls, checkpointDetails(item));
   return row;
+}
+
+function checkpointStatus(item, running, waiting, owner) {
+  const who = owner?.name ?? 'No owner';
+  if (running) return `${who} - ${nextGate(item) ?? 'finishing'}`;
+  if (item.paused) return `${who} - paused`;
+  if (waiting.length) return `${who} - waiting`;
+  if (!item.owner) return 'Needs owner';
+  return `${who} - ready`;
+}
+
+function checkpointButton(label, action, disabled = false) {
+  const button = el('button', 'checkpoint-button', label);
+  button.type = 'button';
+  button.disabled = disabled;
+  button.onclick = action;
+  return button;
+}
+
+function ownerSelect(item, agents, handlers) {
+  const select = el('select', 'checkpoint-owner');
+  select.setAttribute('aria-label', `Owner for ${item.outcome || item.title}`);
+  const empty = el('option', '', 'ASSIGN');
+  empty.value = '';
+  empty.disabled = true;
+  empty.selected = !item.owner;
+  select.append(empty);
+  for (const agent of agents) {
+    const option = el('option', '', agent.name);
+    option.value = agent.id;
+    option.selected = agent.id === item.owner;
+    select.append(option);
+  }
+  select.onchange = () => handlers.reassign?.(item.id, select.value);
+  return select;
+}
+
+function checkpointDetails(item) {
+  const details = el('details', 'checkpoint-details');
+  details.append(el('summary', '', 'DETAILS'));
+  const body = el('div', 'checkpoint-detail-body');
+  body.append(
+    detailLine('TASK', item.title),
+    detailLine('PLAN', item.plan),
+    detailLine('PROOF', item.verify),
+    detailLine('STEP', nextGate(item) ?? 'done'),
+  );
+  details.append(body);
+  return details;
+}
+
+function detailLine(label, value) {
+  const line = el('div', 'checkpoint-detail-line');
+  line.append(el('span', '', label), el('p', '', value || 'Not set'));
+  return line;
 }
 
 function emptyBoard() {

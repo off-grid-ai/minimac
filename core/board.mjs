@@ -24,6 +24,7 @@ export const ITEM_STATE = Object.freeze({
   ASSIGNED: 'assigned', // owned, not started
   WORKING: 'working',   // at least one gate moving
   BLOCKED: 'blocked',   // waiting on another item, or on Mac
+  PAUSED: 'paused',     // held by Mac until resumed or force-started
   DONE: 'done',         // every gate passed
 });
 
@@ -68,6 +69,7 @@ export function createItem({
     owner,
     gates,
     blockedBy: [...blockedBy],
+    paused: false,
     evidence: [],
     estimateMs,
     createdAt: now,
@@ -115,6 +117,7 @@ export function unmetDeps(board, item) {
 
 export function stateOf(board, item) {
   if (isDone(item)) return ITEM_STATE.DONE;
+  if (item.paused) return ITEM_STATE.PAUSED;
   if (unmetDeps(board, item).length > 0) return ITEM_STATE.BLOCKED;
   if (!item.owner) return ITEM_STATE.OPEN;
   const moved = Object.values(item.gates ?? {}).some((state) => state !== GATE_STATE.PENDING);
@@ -124,6 +127,7 @@ export function stateOf(board, item) {
 // Can this agent legitimately work on this item right now?
 export function canWork(board, item, agentId) {
   if (!item || isDone(item)) return false;
+  if (item.paused) return false;
   if (item.owner && item.owner !== agentId) return false;
   return unmetDeps(board, item).length === 0;
 }
@@ -174,6 +178,40 @@ export function assign(board, id, owner) {
   if (!item) return { board, error: `no item ${id}` };
   if (isDone(item)) return { board, error: `${id} is already finished` };
   return { board: replace(board, id, { owner: owner ?? null }), item: { ...item, owner } };
+}
+
+export function compareQueueOrder(a, b) {
+  const left = Number.isFinite(a.queueOrder) ? a.queueOrder : Number.MAX_SAFE_INTEGER;
+  const right = Number.isFinite(b.queueOrder) ? b.queueOrder : Number.MAX_SAFE_INTEGER;
+  return left - right || (a.createdAt ?? 0) - (b.createdAt ?? 0);
+}
+
+export function setPaused(board, id, paused) {
+  const item = findItem(board, id);
+  if (!item) return { board, error: `no item ${id}` };
+  if (isDone(item)) return { board, error: `${id} is already finished` };
+  const next = { ...item, paused: Boolean(paused) };
+  return { board: replace(board, id, next), item: next };
+}
+
+// Queue order is part of the shared checkpoint record. Moving an item swaps it
+// with the next unfinished item. Completed work keeps its historical place.
+export function moveItem(board, id, direction, fixedIds = []) {
+  const items = itemsOf(board);
+  const fixed = new Set(fixedIds);
+  const open = items
+    .filter((item) => !isDone(item) && !fixed.has(item.id))
+    .sort(compareQueueOrder);
+  const from = open.findIndex((item) => item.id === id);
+  if (from < 0) return { board, error: `no open item ${id}` };
+  const to = Math.max(0, Math.min(open.length - 1, from + Math.sign(direction)));
+  if (from === to) return { board, items };
+  [open[from], open[to]] = [open[to], open[from]];
+  const queueOrder = new Map(open.map((item, index) => [item.id, index]));
+  const moved = items.map((item) => queueOrder.has(item.id)
+    ? { ...item, queueOrder: queueOrder.get(item.id) }
+    : item);
+  return { board: { ...board, items: moved }, items: moved };
 }
 
 // Edit one checkpoint in place. Re-planning must not make a duplicate, and a
@@ -286,6 +324,7 @@ export function boardBrief(board, agentId = null) {
       item.verify ? `      verify: ${item.verify}` : null,
       item.scope ? `      where: ${item.scope}` : null,
       `      owner: ${item.owner ?? 'UNASSIGNED'}`,
+      item.paused ? '      paused by Mac' : null,
       gate ? `      next gate: ${gate}` : '      finished',
       blocked.length ? `      waiting on: ${blocked.join(', ')}` : null,
     ];

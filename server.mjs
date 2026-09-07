@@ -59,11 +59,14 @@ import {
   createBoard,
   addItem,
   revise as reviseItem,
+  setPaused as setCheckpointPaused,
+  moveItem as moveCheckpointItem,
   advance as advanceGate,
   itemsOf,
   itemsFor,
   canWork,
   isDone,
+  unmetDeps,
   stateOf as checkpointState,
   findItem,
   progress as boardProgress,
@@ -1241,15 +1244,19 @@ const COMMANDS = {
     attachments = [],
     planning = false,
     exclusiveOutput = planning,
+    checkpointIds = null,
   }) {
     if (state.agents[agentId]?.enabled === false) return { skipped: 'disabled' };
     ensureRun();
     const agent = state.agents[agentId];
     const goal = getGoal(state.goals, agentId);
     if (!goal?.objective) throw new Error(`${agentId} has no goal - set the mission first`);
+    const selectedItems = Array.isArray(checkpointIds)
+      ? checkpointIds.map((id) => findItem(state.board, id)).filter(Boolean)
+      : null;
     const assignedItems = agent.role === ROLES.ORCHESTRATOR || task
       ? []
-      : readyWork(agentId).slice(0, Math.max(1, agent.instances ?? 1));
+      : selectedItems ?? readyWork(agentId).slice(0, Math.max(1, agent.instances ?? 1));
     const tasks = agent.role === ROLES.ORCHESTRATOR || task
       ? [task ?? state.mission]
       : assignedItems.map(checkpointTask);
@@ -1527,6 +1534,64 @@ const COMMANDS = {
     return { item: result.item, duplicate: result.duplicate === true };
   },
 
+  async moveCheckpoint({ id, direction }) {
+    const running = Object.values(state.agents).flatMap((agent) => agent.workItemIds ?? []);
+    const result = moveCheckpointItem(state.board, id, direction, running);
+    if (result.error) throw new Error(result.error);
+    state.board = result.board;
+    for (const item of result.items) store.saveItem(item);
+    return { id, direction: Math.sign(direction) };
+  },
+
+  async pauseCheckpoint({ id, paused = true }) {
+    const item = findItem(state.board, id);
+    if (!item) throw new Error(`no item ${id}`);
+    if (paused && item.owner) await interruptCheckpoint(item.owner, id);
+    const result = setCheckpointPaused(state.board, id, paused);
+    if (result.error) throw new Error(result.error);
+    state.board = result.board;
+    store.saveItem(result.item);
+    return { item: result.item };
+  },
+
+  async reassignCheckpoint({ id, owner }) {
+    if (!state.agents[owner] || state.agents[owner].role === ROLES.ORCHESTRATOR) {
+      throw new Error(`unknown Avenger: ${owner}`);
+    }
+    const item = findItem(state.board, id);
+    if (!item) throw new Error(`no item ${id}`);
+    if (item.owner && item.owner !== owner) await interruptCheckpoint(item.owner, id);
+    const result = reviseItem(state.board, id, { owner });
+    if (result.error) throw new Error(result.error);
+    state.board = result.board;
+    store.saveItem(result.item);
+    orders(owner, `${result.item.id}: ${result.item.title}`);
+    return { item: result.item };
+  },
+
+  async forceStartCheckpoint({ id }) {
+    let item = findItem(state.board, id);
+    if (!item) throw new Error(`no item ${id}`);
+    if (!item.owner) throw new Error('assign this checkpoint first');
+    if (unmetDeps(state.board, item).length > 0) {
+      throw new Error('this checkpoint is waiting on another checkpoint');
+    }
+    if ((state.agents[item.owner]?.workItemIds ?? []).includes(id)) {
+      return { item, alreadyRunning: true };
+    }
+    if (state.agents[item.owner]?.sessionId) {
+      throw new Error(`${state.agents[item.owner].label ?? item.owner} is already working`);
+    }
+    if (item.paused) {
+      const resumed = setCheckpointPaused(state.board, id, false);
+      state.board = resumed.board;
+      item = resumed.item;
+      store.saveItem(item);
+    }
+    state.agents = patchAgent(state.agents, item.owner, { enabled: true });
+    return COMMANDS.start({ agentId: item.owner, checkpointIds: [id] });
+  },
+
   // One command owns the mission switch. Off benches and stops the agent. On
   // brings it onto the mission and starts a real middleware-composed session.
   async setActive({ agentId, active, task, mentions, attachments = [] }) {
@@ -1574,6 +1639,32 @@ const COMMANDS = {
 // End a live engine session without deciding mission membership. This is an
 // internal lifecycle step used by the one public active/bench transition and
 // by Thor's isolated assemble turn. It is not a command clients can call.
+async function interruptCheckpoint(agentId, itemId) {
+  const agent = state.agents[agentId];
+  if (!agent) return false;
+  const workIds = agent.workItemIds ?? [];
+  const index = workIds.indexOf(itemId);
+  if (index < 0) return false;
+  const sessionIds = agent.sessionIds?.length
+    ? agent.sessionIds
+    : [agent.sessionId].filter(Boolean);
+  const sessionId = sessionIds[index] ?? (workIds.length === 1 ? agent.sessionId : null);
+  if (!sessionId) return false;
+  await getDriver(agent.engine).interrupt(sessionId);
+  const remainingSessions = sessionIds.filter((_, at) => at !== index);
+  const remainingWork = workIds.filter((_, at) => at !== index);
+  if (remainingSessions.length === 0) clearWorkerTimer(agentId);
+  state.agents = patchAgent(state.agents, agentId, {
+    sessionId: remainingSessions[0] ?? null,
+    sessionIds: remainingSessions,
+    workItemIds: remainingWork,
+    status: remainingSessions.length ? 'running' : 'stopped',
+    resumeSessionId: sessionId,
+  });
+  refreshCards();
+  return true;
+}
+
 async function interruptAgent(agentId) {
   const agent = state.agents[agentId];
   if (!agent) throw new Error(`no agent ${agentId}`);

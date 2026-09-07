@@ -105,6 +105,8 @@ const ACTION_WORDS = Object.freeze({
   setRepo: 'change folder', claim: 'claim files', release: 'release files',
   setMiddleware: 'edit middleware', resetMiddleware: 'reset middleware',
   assemble: 'assemble', settlePrayer: 'settle', setActive: 'set active',
+  moveCheckpoint: 'reorder checkpoint', pauseCheckpoint: 'pause checkpoint',
+  reassignCheckpoint: 'reassign checkpoint', forceStartCheckpoint: 'start checkpoint',
 });
 
 async function send(type, payload = {}) {
@@ -590,8 +592,16 @@ function renderPanels() {
     });
   }
   if (dom.checkpoints && windows?.isOpen('checkpoints')) {
-    renderChanged('checkpoints', dom.checkpoints, [state.board, state.velocity], () => {
-      panels.renderBoard(dom.checkpoints, state.board, state.velocity, agents, { focus });
+    const workState = agents.map((agent) => [
+      agent.id, agent.status, agent.enabled, agent.sessionId, agent.workItemIds,
+    ]);
+    renderChanged('checkpoints', dom.checkpoints, [state.board, state.velocity, workState], () => {
+      panels.renderBoard(dom.checkpoints, state.board, state.velocity, agents, {
+        move: (id, direction) => send('moveCheckpoint', { id, direction }),
+        pause: (id, paused) => send('pauseCheckpoint', { id, paused }),
+        start: (id) => send('forceStartCheckpoint', { id }),
+        reassign: (id, owner) => send('reassignCheckpoint', { id, owner }),
+      });
     });
   }
   // The focused flow stays available here and at the desk. The panel is the

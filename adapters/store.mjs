@@ -7,6 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { compareQueueOrder } from '../core/board.mjs';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs (
@@ -229,7 +230,8 @@ export function createStore({ file }) {
     itemsFor(targetRunId) {
       return selectItems.all(targetRunId ?? runId)
         .map((row) => { try { return JSON.parse(row.payload); } catch { return null; } })
-        .filter(Boolean);
+        .filter(Boolean)
+        .sort(compareQueueOrder);
     },
 
     saveMiddleware(name, text) {
