@@ -516,6 +516,9 @@ function updateFlows(agentId, updates) {
   let steps = [...(agent.flows ?? [])];
   for (const step of updates ?? []) {
     if (!step?.id || !step?.step) continue;
+    if (!String(step.user_visible_result ?? '').trim()) {
+      return { error: `${step.id} needs a stable user-visible result` };
+    }
     const index = steps.findIndex((candidate) => candidate?.id === step.id);
     if (index < 0) steps.push(step);
     else steps[index] = { ...steps[index], ...step };

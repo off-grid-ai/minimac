@@ -1414,7 +1414,16 @@ function rememberFeedRow(key, open) {
 // fragments from the same live session. Normal messages remain separate.
 function coalesceFeedLines(lines) {
   const grouped = [];
+  const operations = new Map();
   for (const line of lines) {
+    if (line.operationId) {
+      const previousIndex = operations.get(line.operationId);
+      if (previousIndex !== undefined) {
+        grouped[previousIndex] = line;
+        continue;
+      }
+      operations.set(line.operationId, grouped.length);
+    }
     const previous = grouped.at(-1);
     const sameStream = line.message && previous?.message
       && line.streamId && line.streamId === previous.streamId;
@@ -1599,11 +1608,18 @@ function feedEntry(agent, event) {
       tone: '',
     };
   }
-  if (event.kind === EVENT_KINDS.TOOL && payload.phase !== 'completed') {
+  if (event.kind === EVENT_KINDS.TOOL) {
     const target = String(payload.target ?? '');
     const short = payload.action === 'run' ? summariseCommand(target) : target.replace(/\s+/g, ' ').trim();
+    const completed = payload.phase === 'completed';
+    const result = completed ? (payload.ok === false ? ' - failed' : ' - done') : '';
     return {
-      at, who, text: `${payload.action} ${short}`, tone: 'tool', full: target,
+      at,
+      who,
+      text: `${payload.action} ${short}${result}`,
+      tone: completed && payload.ok === false ? 'alert' : 'tool',
+      full: [target, payload.detail].filter(Boolean).join('\n\n'),
+      operationId: `${event.agentId}:${payload.sessionId ?? ''}:${payload.toolUseId ?? `${payload.action}:${target}`}`,
     };
   }
   if (event.kind === EVENT_KINDS.CLAIM) {
