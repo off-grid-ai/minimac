@@ -42,7 +42,8 @@
     --pixel: Silkscreen, Menlo, monospace;
     --step: 4px;
     --radius: 2px;
-    --topbar-h: 34px;
+    --topbar-h: 48px;
+    --crew-h: 40px;
     /* The console's live height. ui/main.mjs writes the measured value here
        after autosizing, so the bottom slots ride up as the console grows.
        Left alone it keeps the one-line height. */
@@ -120,11 +121,60 @@
     font-variant-ligatures: none;
   }
 
+  /* Always on, never moving: who is working and what they are doing. */
+  .crewbar {
+    position: fixed;
+    top: var(--topbar-h);
+    left: 0;
+    right: var(--panel-w, 0px);
+    height: var(--crew-h);
+    z-index: 30;
+    display: flex;
+    gap: 1px;
+    box-sizing: border-box;
+    background: var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  .crewcell {
+    flex: 1 1 0; min-width: 0;
+    display: flex; flex-direction: column; gap: 1px; align-items: flex-start;
+    padding: 5px 8px; cursor: pointer; text-align: left;
+    background: var(--surface); border: 0; border-top: 2px solid transparent;
+    font: inherit; color: inherit;
+  }
+  .crewcell:hover { background: var(--sunk); }
+  .crewcell[data-focus="yes"] { background: var(--sunk); }
+  .crewcell-name {
+    font-size: 9px; letter-spacing: .12em; text-transform: uppercase;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+  }
+  .crewcell-doing {
+    font-size: 10px; color: var(--faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+  }
+  /* Working reads bright; idle reads dead. The delta has to carry across the room. */
+  .crewcell[data-state="on"] { border-top-color: var(--accent); }
+  .crewcell[data-state="on"] .crewcell-name { color: var(--accent); }
+  .crewcell[data-state="on"] .crewcell-doing { color: var(--text); }
+  .crewcell[data-state="blocked"] { border-top-color: var(--danger); }
+  .crewcell[data-state="blocked"] .crewcell-name { color: var(--danger); }
+  .crewcell[data-state="blocked"] .crewcell-doing { color: var(--danger); }
+  .crewcell[data-state="idle"] .crewcell-name { color: var(--muted); }
+  .crewcell[data-state="off"] { opacity: .38; }
+
   #floor {
     position: fixed;
     inset: 0;
-    width: 100%;
-    height: 100%;
+    /* The crew bar takes real height, exactly as the panel takes real width.
+       Floating it over the room clipped every bubble behind it. */
+    top: calc(var(--topbar-h) + var(--crew-h));
+    height: auto;
+    /* The panel COEXISTS with the room, it does not sit on top of it. The
+       canvas gives up exactly the panel's width, so opening a panel never
+       hides an agent - it makes the room narrower and the camera pulls back
+       to keep the whole crew in frame. */
+    right: var(--panel-w, 0px);
+    width: auto;
     display: block;
     background: var(--floor-bg);
     image-rendering: pixelated;
@@ -881,37 +931,77 @@
   .ladder[data-status="wired"] .word { color: var(--muted); }
   .ladder[data-status="verified"] .word { color: var(--accent); }
 
-  .burn { display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: calc(var(--step) * 2); align-items: center; }
+  /* The flow tree. Same row shape at group, repo and step, so a column of
+     gates reads straight down a multi-repo mission. */
+  .flow-left {
+    display: flex; align-items: baseline; gap: calc(var(--step) * 1.5);
+    padding: calc(var(--step)) 0 calc(var(--step) * 1.5);
+    border-bottom: 1px solid var(--line); margin-bottom: calc(var(--step) * 1.5);
+    font-size: 11px;
+  }
+  .flow-left-label { color: var(--faint); letter-spacing: .14em; text-transform: uppercase; font-size: 9px; }
+  .flow-left-value { color: var(--text); font-variant-numeric: tabular-nums; }
+  .flow-left-pct { margin-left: auto; color: var(--accent); font-variant-numeric: tabular-nums; }
 
-  .bar { height: 6px; background: var(--sunk); position: relative; overflow: hidden; }
-
-  .bar > span {
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 100%;
-    background: var(--accent);
-    transform-origin: left center;
-    transform: scaleX(0);
-    transition: transform 240ms ease-out;
+  .flow-scope-head {
+    display: flex; align-items: center; gap: calc(var(--step) * 1.5);
+    width: 100%; padding: calc(var(--step)) 0; cursor: pointer;
+    background: transparent; border: 0; color: inherit; font: inherit; text-align: left;
+  }
+  .flow-scope-head:hover .flow-scope-name { color: var(--accent); }
+  .flow-caret { flex: none; width: 10px; color: var(--faint); font-size: 10px; }
+  .flow-scope-name {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text); font-size: 12px;
+  }
+  .flow-scope-count {
+    flex: none; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums;
+  }
+  .flow-scope-pct {
+    flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums;
+    min-width: 34px; text-align: right;
   }
 
-  /* Scale ticks turn a bar into a gauge. */
-  .bar::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: repeating-linear-gradient(90deg, transparent 0 11px, var(--surface) 11px 12px);
-    pointer-events: none;
+  /* The gates, said in words. They were single letters and two of them were
+     "C" - unreadable, and nothing to hover for an explanation. */
+  .gates { flex: none; display: flex; flex-wrap: wrap; gap: 3px; }
+  .gate {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 1px 5px; font-size: 9px; line-height: 1.5;
+    letter-spacing: .06em; text-transform: uppercase;
+    border: 1px solid var(--line); color: var(--faint); background: transparent;
+    cursor: help;
   }
+  .gate::before { content: ""; }
+  .gate.is-pass { border-color: var(--accent); color: var(--accent); }
+  .gate.is-pass::before { content: "✓"; font-size: 9px; }
+  .gate.is-fail {
+    border-color: var(--danger); color: var(--danger); background: var(--danger-soft);
+  }
+  .gate.is-fail::before { content: "✕"; font-size: 9px; }
+  .gate.is-running { border-color: var(--accent); color: var(--accent); opacity: .6; }
+  .gate.is-running::before { content: ""; }
 
-  /* Over estimate the gauge inverts: the track carries the alarm, the fill is
-     solid, and the raw multiple is stated rather than implied. */
-  .burn.over .bar { background: var(--danger-soft); box-shadow: inset 0 0 0 1px var(--danger-edge); }
-  .burn.over .bar > span { background: var(--danger); }
-  .burn.none .bar { background: repeating-linear-gradient(90deg, var(--sunk) 0 3px, transparent 3px 6px); }
+  /* Altitude: the whole mission, one repo, one feature, or every step. */
+  .zoom {
+    display: flex; align-items: center; gap: 4px;
+    padding-bottom: calc(var(--step) * 1.5);
+  }
+  .zoom-step {
+    background: transparent; border: 1px solid var(--line); color: var(--faint);
+    font: inherit; font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+    padding: 2px 7px; cursor: pointer;
+  }
+  .zoom-step:hover { color: var(--text); }
+  .zoom-step[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
-  .ratio { font-variant-numeric: tabular-nums; font-size: 11px; text-align: right; color: var(--faint); }
-  .burn.over .ratio { color: var(--danger); }
+  /* One line: what it is, the two durations, how far past the promise. */
+  .burn { display: flex; align-items: baseline; gap: calc(var(--step) * 1.5); font-size: 11px; }
+  .burn-label { color: var(--faint); letter-spacing: 0.14em; text-transform: uppercase; font-size: 9px; }
+  .burn-value { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .burn-pct { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .burn.over .burn-value, .burn.over .burn-pct { color: var(--danger); }
+  .burn.none .burn-value { color: var(--faint); }
 
   /* -------------------------------------------------------------- evidence */
 
@@ -1318,26 +1408,27 @@
      The mark ships as flat black artwork, so it is used as a MASK rather than
      an image: the colour then comes from the theme and never disappears
      against a dark bar. */
+  /* The artwork as drawn. It was a CSS mask filled with the accent, which is
+     why it came out green - a mask throws the logo's own colours away. */
   .brand { display: inline-flex; align-items: center; }
   .brand-logo {
     display: block;
     width: 116px;
     height: 26px;
-    background-color: var(--accent);
-    -webkit-mask: url("/assets/brand/minimac-logo-transparent.svg") no-repeat left center;
-    mask: url("/assets/brand/minimac-logo-transparent.svg") no-repeat left center;
-    -webkit-mask-size: contain;
-    mask-size: contain;
+    object-fit: contain;
+    object-position: left center;
   }
 </style>
 </head>
 <body>
+  <div id="crewBar" class="crewbar" role="group" aria-label="the crew, and what each is doing"></div>
   <canvas id="floor"></canvas>
   <div id="bubbles"></div>
 
   <div id="topbar">
-    <span class="brand" role="img" aria-label="MINIMAC"><span class="brand-logo"></span></span>
+    <span class="brand"><img class="brand-logo" src="/assets/brand/minimac-logo-transparent.svg" alt="MINIMAC"></span>
     <button id="repoPath" type="button" title="Open the repo this fleet works in">~/wednesday/minimac</button>
+    <button class="btn" id="planAll" type="button" title="Thor decides who this mission needs, brings them on and stands the rest down">ASSEMBLE</button>
     <button class="btn primary" id="startAll" type="button">START ALL</button>
     <button class="btn stop" id="stopAll" type="button" title="Interrupt every running agent and close the run">STOP</button>
     <!-- The floor's voice. A switch, not a button: it has two states and you
@@ -1352,28 +1443,7 @@
 
   <!-- Instruments. ui/windows.mjs places, drags and resizes these. -->
   <div id="windows">
-    <section class="win" id="winFlows" hidden aria-label="Flow contract">
-      <i class="hud-frame" aria-hidden="true"></i>
-      <header class="win-bar" id="winFlowsBar">
-        <span class="win-title">flow</span>
-        <span class="win-sub" id="focusName">—</span>
-        <span class="spacer"></span>
-        <span class="readout" id="roFlows">0/0 VERIFIED</span>
-        <button class="icon-btn" id="winFlowsClose" type="button" aria-label="Close flow contract">✕</button>
-      </header>
-      <div class="win-body" id="flows"></div>
-    </section>
 
-    <section class="win" id="winEvidence" hidden aria-label="Evidence tape">
-      <i class="hud-frame" aria-hidden="true"></i>
-      <header class="win-bar" id="winEvidenceBar">
-        <span class="win-title">evidence</span>
-        <span class="spacer"></span>
-        <span class="readout" id="roEvidence">0 CLAIMS · 0 GUESSED</span>
-        <button class="icon-btn" id="winEvidenceClose" type="button" aria-label="Close evidence tape">✕</button>
-      </header>
-      <div class="win-body" id="evidence"></div>
-    </section>
 
     <!-- The whole crew at once. Flow and evidence belong to ONE agent and now
          live at that agent's desk; who is on the mission is a fleet-wide
@@ -1405,7 +1475,7 @@
       <header class="win-bar" id="winRunsBar">
         <span class="win-title">runs</span>
         <span class="spacer"></span>
-        <span class="readout" id="roRuns">0 RUNS</span>
+        <span class="readout" id="roRuns">0 MISSIONS</span>
         <button class="icon-btn" id="winRunsClose" type="button" aria-label="Close runs">✕</button>
       </header>
       <div class="win-body" id="runs"></div>
@@ -1423,13 +1493,11 @@
     <button class="btn primary" id="composerSend" type="button">SEND</button>
 
     <div class="dock">
-      <button class="dock-btn" id="btnFlows" type="button" aria-pressed="false" aria-controls="winFlows">flow</button>
-      <button class="dock-btn" id="btnEvidence" type="button" aria-pressed="false" aria-controls="winEvidence">evidence</button>
       <button class="dock-btn" id="btnCrew" type="button" aria-pressed="false" aria-controls="winCrew">crew</button>
       <button class="dock-btn" id="btnDecisions" type="button" aria-pressed="false" aria-controls="winDecisions">
         decisions <span id="queueCount" aria-label="decisions waiting on you">0</span>
       </button>
-      <button class="dock-btn" id="btnRuns" type="button" aria-pressed="false" aria-controls="winRuns">runs</button>
+      <button class="dock-btn" id="btnRuns" type="button" aria-pressed="false" aria-controls="winRuns">missions</button>
       <button class="dock-btn mini" id="btnAttach" type="button"
               aria-label="Attach a file" title="Attach a file — or just drop one on the window">+file</button>
     </div>

@@ -7,14 +7,27 @@ import {
   agentPose,
   detectLoops,
   eventsPerMin,
+  agentBurn,
+  fleetBurn,
   gradeClaims,
   pendingDecisions,
   stepTimings,
 } from '../core/derive.mjs';
+import { remaining } from '../core/flows.mjs';
+import {
+  createQueue as createErrands,
+  enqueue as enqueueErrand,
+  advance as advanceErrands,
+  waypointFor as errandWaypoint,
+  speaker as errandSpeaker,
+  spoken as errandSpoken,
+  ERRAND,
+} from '../core/errands.mjs';
 import { createScene, deskSpot } from './scene.mjs';
+import { seatOf } from './layout.mjs';
 import * as panels from './panels.mjs';
 import { renderQueue, renderRoster, renderFlows, renderEvidence } from './panels.mjs';
-import { createComposer, MISSION_TARGET } from './composer.mjs';
+import { createComposer, MISSION_TARGET, SPEAK_TARGETS } from './composer.mjs';
 import { createSidePanel } from './sidepanel.mjs';
 import { createGoalStrip } from './goalstrip.mjs';
 import { createSound } from './sound.mjs';
@@ -26,6 +39,10 @@ import {
   plainText,
   shortenDetail,
   summariseCommand,
+  isMachineNoise,
+  FEED_PRESETS,
+  passesPreset,
+  doingWords,
 } from '../core/readable.mjs';
 
 const PULSE_MS = 900;
@@ -39,6 +56,17 @@ const state = {
   agents: {},
   goals: {},
   claims: {},
+  cards: null,
+  board: [],
+  velocity: null,
+  // Orders being carried across the floor, one at a time.
+  errands: createErrands(),
+  errandPhase: null,
+  hovered: null,
+  feedPreset: 'all',
+  // Which hero's question you are answering. A prayer is a conversation, not
+  // a one-line reply typed into a card that then vanishes.
+  prayerWith: null,
   repo: '',
   eventsByAgent: {},
   focus: null,
@@ -70,12 +98,13 @@ const sound = createSound();
 // Names for what you just did, so an action is never silent. One place, so
 // every button reads the same way in the feed.
 const ACTION_WORDS = Object.freeze({
-  start: 'start', interrupt: 'stop', say: 'send', steer: 'steer',
+  start: 'start', interrupt: 'kill', say: 'send', steer: 'steer',
   approve: 'answer', setGoal: 'set goal', clearGoal: 'clear goal',
   assignEngine: 'switch engine', setMission: 'set mission', newRun: 'new run',
   continueRun: 'continue run', resumeRun: 'run again', stopRun: 'stop run',
   setRepo: 'change folder', claim: 'claim files', release: 'release files',
   setMiddleware: 'edit middleware', resetMiddleware: 'reset middleware',
+  assemble: 'assemble', settlePrayer: 'settle',
 });
 
 async function send(type, payload = {}) {
@@ -120,6 +149,9 @@ function applySnapshot(snapshot) {
   noticeHandouts(state.goals, snapshot.goals);
   state.goals = snapshot.goals;
   state.claims = snapshot.claims;
+  state.cards = snapshot.cards ?? null;
+  state.board = snapshot.board ?? state.board;
+  state.velocity = snapshot.velocity ?? state.velocity;
   state.repo = snapshot.repo ?? state.repo;
   state.mission = snapshot.mission ?? state.mission;
   state.runId = snapshot.runId ?? state.runId;
@@ -169,6 +201,7 @@ function ingest(event, agent) {
   state.eventsByAgent[event.agentId] = [...list.slice(-800), event];
 
   queueMove(event);
+  noticeErrand(event);
   if (!event.payload?.local) sound.play(cueFor(event));
   if (event.kind === EVENT_KINDS.PING) {
     if (event.payload.kind === 'verified') addPulse(event.agentId);
@@ -185,12 +218,25 @@ const MOVE_BY_ROLE = Object.freeze({
   auditor: 'portal',         // a finding
   ux: 'beam',                // a report published
   product: 'hex',            // the contract accepted
+  reviewer: 'binary',        // a merge verdict
 });
 
 
 const MOVE_COOLDOWN_MS = 4000;
 const MOVE_LIFE_MS = 900;
 const lastMoveAt = new Map();
+
+// Thor giving somebody their orders is a thing that HAPPENS in the room: he
+// gets up, walks over, and says it. A ping is exactly that signal.
+function noticeErrand(event) {
+  if (event.kind !== EVENT_KINDS.PING) return;
+  const message = event.payload?.text ?? event.payload?.reason ?? '';
+  state.errands = enqueueErrand(state.errands, {
+    heroId: event.agentId,
+    toId: event.payload?.toAgentId ?? event.payload?.to,
+    message,
+  }, Date.now());
+}
 
 function queueMove(event) {
   const agent = state.agents[event.agentId];
@@ -236,6 +282,10 @@ function moveTrigger(agent, event) {
       return event.kind === EVENT_KINDS.RESULT ? { tone: 'neutral' } : null;
     case 'product':
       return event.kind === EVENT_KINDS.PLAN ? { tone: 'ok' } : null;
+    case 'reviewer':
+      return event.kind === EVENT_KINDS.RESULT
+        ? { tone: payload.isError ? 'fail' : 'ok' }
+        : null;
     default:
       return null;
   }
@@ -252,6 +302,14 @@ function orderedAgents() {
     ...all.filter((agent) => agent.role !== 'orchestrator'),
     ...all.filter((agent) => agent.role === 'orchestrator'),
   ];
+}
+
+// Which desk a worker sits at. One definition, so a waypoint and a nameplate
+// can never disagree about where somebody is.
+function workerIndex(agentId) {
+  return orderedAgents()
+    .filter((agent) => agent.role !== 'orchestrator')
+    .findIndex((agent) => agent.id === agentId);
 }
 
 function firstWorker() {
@@ -271,8 +329,29 @@ function viewAgents(now) {
       offDuty: agent.enabled === false,
       pose: agentPose(agent, events, now),
       eventsPerMin: eventsPerMin(events, now),
-      loopCount: detectLoops(events)[0]?.count ?? 0,
+      // Same rule as the pose: a finished loop is history, not an alarm.
+      loopCount: agent.status === 'running' ? (detectLoops(events)[0]?.count ?? 0) : 0,
       goal: state.goals[agent.id] ?? null,
+      // Where this agent must be standing right now, if they are carrying an
+      // order. The scene walks them there; nothing else changes.
+      // deskSpot flattens z into y for the 2D overlays, so it CANNOT be used
+      // as a walk target - every waypoint came out with z undefined and the
+      // body walked to NaN. seatOf is the floor's own x/z.
+      errand: (() => {
+        const at = errandWaypoint(state.errands, agent.id, (id) => {
+          const other = state.agents[id];
+          if (!other) return null;
+          return seatOf({
+            ...other,
+            index: workerIndex(id),
+            isOrchestrator: other.role === 'orchestrator',
+          });
+        });
+        return at ? { at, phase: state.errands.active?.phase } : null;
+      })(),
+      // One promise against one reality, computed once here so the nameplate,
+      // the desk and the header can never disagree about it.
+      burn: agentBurn({ ...agent, flows: measuredFlows(agent) }, now),
     };
     if (!isOrchestrator) index += 1;
     return model;
@@ -307,7 +386,16 @@ function claimsFor(agentId) {
   return gradeClaims(claims).graded;
 }
 
+// The room derives its own cards on the server now, so the screen renders what
+// the monitor found rather than working it out a second time. The local pass
+// stays as the fallback for a server that has not sent any yet (an old build,
+// or the first frame after a reload).
 function decisions(now) {
+  if (state.cards) return state.cards;
+  return deriveLocalCards(now);
+}
+
+function deriveLocalCards(now) {
   return orderedAgents().filter((agent) => agent.enabled !== false).flatMap((agent) => {
     const events = state.eventsByAgent[agent.id] ?? [];
     const approval = pendingApproval(events);
@@ -382,6 +470,22 @@ function isTypingIn(root) {
     && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement);
 }
 
+// The walkover, tick by tick. Two signature moves bracket it: the carrier's
+// as they set off, and the RECEIVER's as the order lands - so a delivery reads
+// as one hero acting on another, not as somebody wandering the room.
+function stepErrands(now) {
+  const before = state.errands.active;
+  state.errands = advanceErrands(state.errands, now);
+  const after = state.errands.active;
+
+  const wasKey = before ? `${before.key}:${before.phase}` : null;
+  const isKey = after ? `${after.key}:${after.phase}` : null;
+  if (wasKey === isKey) return;
+
+  if (after?.phase === ERRAND.GOING) fireMove(after.heroId, 'neutral');
+  if (after?.phase === ERRAND.TALKING) fireMove(after.toId, 'ok');
+}
+
 function renderPanels() {
   const now = Date.now();
   const agents = viewAgents(now);
@@ -406,30 +510,108 @@ function renderPanels() {
     const running = agents.filter((agent) => agent.status === 'running').length;
     dom.roCrew.textContent = `${running}/${agents.length} RUNNING`;
   }
-  if (dom.flows && focused) renderFlows(dom.flows, { ...focused, flows: measuredFlows(focused) });
+  // FLOW and EVIDENCE are no longer global windows: the board owns work state
+  // and the feed owns evidence. What remains is per-agent, and that lives at
+  // the desk - see renderStrip.
   if (dom.focusName) dom.focusName.textContent = focused?.name ?? '';
-  if (dom.evidence) renderEvidence(dom.evidence, focused ? claimsFor(focused.id) : []);
   // Never rebuild a panel while the user is typing in it: replaceChildren
   // destroys the field mid-keystroke. The redraw waits for the blur.
-  if (dom.queue && !isTypingIn(dom.queue)) renderQueue(dom.queue, queue, handlers);
+  // One queue. A hero's question is a decision like any other, so answering it
+  // happens here rather than behind a second tab that counted the same things.
+  if (dom.queue && !isTypingIn(dom.queue)) {
+    if (state.prayerWith && prayerThread(state.prayerWith)) renderPrayer(dom.queue);
+    else renderQueue(dom.queue, queue, handlers);
+  }
   if (dom.queueCount) dom.queueCount.textContent = String(queue.length);
-  composer?.setTarget(state.target, agents);
+  windows?.setCount?.('decisions', queue.length);
+  windows?.setCount?.('prayer', orderedAgents().filter((a) => prayerThread(a.id)).length);
+  composer?.setTarget(state.target, agents, state.mission ?? '');
   renderBubbles(queue);
   renderStrip(agents);
   renderHeader(agents);
   renderFeed();
+  renderCrewBar(agents);
+  renderPrayer();
   if (dom.runs) panels.renderRuns?.(dom.runs, state.runs, handlers);
   if (dom.roRuns) dom.roRuns.textContent = `${state.runs.length} RUNS`;
 }
 
-// Standing at a desk adds exactly one row to the console: that agent's goal,
-// editable in place. The goal itself still lives on the server - this only
-// shows it and hands an edit straight back.
+// Standing at a desk shows that agent's whole standing: their goal, editable in
+// place, the flow contract they accepted, and every claim they have made with
+// the command behind it. None of it lives here - the goal goes back to the
+// server, the flows and claims are derived from the event stream.
+// The crew bar. Who is working, and what each of them is doing, in one row
+// that never moves. A bubble is an EVENT - it appears, is read, and goes; "what
+// is Hulk doing right now" is STATE, and state belongs somewhere fixed. Using
+// a transient channel for persistent information is why the floor read as
+// noise.
+function lastAction(agentId) {
+  const events = state.eventsByAgent[agentId] ?? [];
+  return [...events].reverse().find((event) =>
+    event.kind === EVENT_KINDS.TOOL || event.kind === EVENT_KINDS.MESSAGE) ?? null;
+}
+
+function agoWords(ts) {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`;
+}
+
+function doingNow(agent) {
+  if (agent.offDuty) return 'stood down for this mission';
+  if (agent.status === 'blocked') return agent.blockedReason ?? 'waiting on you';
+
+  const last = lastAction(agent.id);
+  // Not working is a FACT with a time on it. "not working" alone told you
+  // nothing about whether that was a second ago or an hour.
+  if (agent.status !== 'running') {
+    return last ? `stopped · last moved ${agoWords(last.ts)}` : 'never started';
+  }
+  if (!last) return 'starting up';
+  if (last.kind === EVENT_KINDS.TOOL) {
+    return doingWords(last.payload?.action, last.payload?.target);
+  }
+  const said = plainText(last.payload?.text ?? '');
+  return said ? said.slice(0, 60) : 'thinking';
+}
+
+function renderCrewBar(agents) {
+  if (!dom.crewBar) return;
+  const cells = agents.map((agent) => {
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'crewcell';
+    cell.dataset.state = agent.offDuty
+      ? 'off'
+      : agent.status === 'running' ? 'on' : agent.status === 'blocked' ? 'blocked' : 'idle';
+    if (agent.id === state.focus) cell.dataset.focus = 'yes';
+
+    const name = document.createElement('span');
+    name.className = 'crewcell-name';
+    name.textContent = agent.name ?? agent.id;
+
+    const doing = document.createElement('span');
+    doing.className = 'crewcell-doing';
+    doing.textContent = doingNow(agent);
+
+    cell.append(name, doing);
+    cell.title = `${agent.label ?? agent.name} - ${doingNow(agent)}`;
+    cell.onclick = () => focus(agent.id === state.focus ? null : agent.id);
+    return cell;
+  });
+  dom.crewBar.replaceChildren(...cells);
+}
+
 function renderStrip(agents) {
   if (!strip) return;
   const agent = agents.find((candidate) => candidate.id === state.focus);
-  if (agent) strip.render(agent);
-  else strip.close();
+  if (!agent) return strip.close();
+  strip.render({
+    ...agent,
+    flows: measuredFlows(agent),
+    claims: claimsFor(agent.id),
+  });
 }
 
 // A decision belongs to a desk, so it is shown at that desk. Only the most
@@ -450,6 +632,11 @@ function bubbleTextFor(agentId, latest, now) {
     return { text: held.text, fresh: now - held.at < FRESH_MS };
   }
   const text = plainText(describeEvent(latest));
+  // The server strips a report block before it is ever spoken, but history
+  // recorded before that fix still holds the fragments, and a bubble is the
+  // one surface where a stray "] }" is unmissable. Never speak payload: keep
+  // whatever the agent last actually said instead.
+  if (isMachineNoise(text)) return held ? { text: held.text, fresh: false } : null;
   if (!held || held.text !== text) shownBubble.set(agentId, { text, at: now });
   return { text, fresh: true };
 }
@@ -461,9 +648,35 @@ function renderActivity(agents) {
   // focused conversation is not competing with five others. `state.focus` is
   // the one record of which desk you are standing at - the camera, the console
   // target and the goal strip all read the same field.
+  // While an order is being carried, the room holds ONE bubble: the hero
+  // saying it. Hover overrides that - pointing at somebody is asking about
+  // them, and your attention outranks the choreography.
+  const carrying = errandSpeaker(state.errands, state.hovered);
+  const order = errandSpoken(state.errands, state.hovered);
+
+  if (order) {
+    const at = scene?.screenPos?.(order.agentId);
+    if (!at) return [];
+    const to = state.agents[order.toId];
+    return [speechBubble({
+      text: to ? `${to.label ?? to.name}: ${order.text}` : order.text,
+      fresh: true,
+      x: at.x,
+      y: at.y,
+      tone: 'live',
+      onClick: () => openAgentFeed(order.agentId),
+    })];
+  }
+
   return agents
     .filter((agent) => !agent.offDuty)
+    // A hero who is not working says nothing. A bubble is what someone is
+    // doing NOW; leaving the last thing they ever did floating over an empty
+    // chair is what made the room impossible to read.
+    .filter((agent) => agent.status === 'running' || agent.status === 'blocked')
     .filter((agent) => !state.focus || agent.id === state.focus)
+    // A walk in progress silences everyone but the one being pointed at.
+    .filter((agent) => !state.errands.active || !carrying || agent.id === carrying)
     .map((agent) => {
       const events = state.eventsByAgent[agent.id] ?? [];
       // A claim is the one thing an agent says that comes with a receipt, so
@@ -476,6 +689,7 @@ function renderActivity(agents) {
       const at = scene?.screenPos?.(agent.id);
       if (!at) return null;
       const said = bubbleTextFor(agent.id, last, now);
+      if (!said?.text) return null; // nothing this agent said is worth speaking
       return speechBubble({
         text: said.text,
         fresh: said.fresh,
@@ -610,12 +824,14 @@ function renderBubbles(queue) {
 // will collide. Rather than let one clip the other, they are nudged apart
 // after layout - alerts hold their place, activity gives way.
 function deoverlap(bubbles) {
-  const TOP = 58;
+  // Bubbles live inside the ROOM, not the whole window. The room now starts
+  // below the top bar and the crew bar.
+  const chrome = (name, fallback) => Number.parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue(name),
+  ) || fallback;
+  const TOP = chrome('--topbar-h', 48) + chrome('--crew-h', 40) + 8;
   const BOTTOM = window.innerHeight - 150;
-  const panelWidth = Number.parseFloat(
-    getComputedStyle(document.documentElement).getPropertyValue('--panel-w'),
-  ) || 0;
-  const RIGHT = window.innerWidth - panelWidth - 8;
+  const RIGHT = window.innerWidth - chrome('--panel-w', 0) - 8;
   const GAP = 6;
   const placed = [];
 
@@ -660,6 +876,10 @@ function deoverlap(bubbles) {
 
 function frame() {
   const now = Date.now();
+  // A walk is a clock, not an event. Advancing it only inside renderPanels
+  // meant the queue moved when something happened to be reported and stalled
+  // the rest of the time.
+  stepErrands(now);
   state.pulses = state.pulses.filter((pulse) => now - pulse.born < PULSE_MS);
   state.pings = state.pings.filter((ping) => now - ping.born < PING_MS);
   state.moves = state.moves.filter((move) => now - move.born < MOVE_LIFE_MS);
@@ -692,8 +912,6 @@ function frame() {
 // agent's desk.
 const WINDOW_IDS = {
   feed: ['winFeed', 'btnFeed'],
-  flows: ['winFlows', 'btnFlows'],
-  evidence: ['winEvidence', 'btnEvidence'],
   crew: ['winCrew', 'btnCrew'],
   decisions: ['winDecisions', 'btnDecisions'],
   runs: ['winRuns', 'btnRuns'],
@@ -794,6 +1012,12 @@ const handlers = {
     renderPanels();
   },
   act: (action, decision, from) => {
+    // RETRY dispatches the agent again. For an agent blocked because its engine
+    // never came up, this is the only action on the card that can clear it.
+    if (action === 'retry') {
+      flyTo({ agentId: decision.agentId, text: 'retry', from, tone: 'ok' });
+      return send('start', { agentId: decision.agentId });
+    }
     if (action === 'kill') {
       flyTo({ agentId: decision.agentId, text: 'stop', from, tone: 'fail' });
       return send('interrupt', { agentId: decision.agentId });
@@ -805,6 +1029,9 @@ const handlers = {
           'Stop. Split the current step into smaller steps and report the new flow contract ' +
           'before continuing.',
       });
+    }
+    if (action === 'answer' || decision.kind === 'prayer') {
+      return openPrayer(decision.agentId);
     }
     return focus(decision.agentId);
   },
@@ -860,6 +1087,11 @@ function addPing(fromId, toId) {
 // -------------------------------------------------------------------- boot
 
 function wireChrome() {
+  // ASSEMBLE before START: Thor decides who this mission actually needs,
+  // brings them on, stands the rest down, and gives each of the chosen a goal.
+  // Nobody is dispatched blind, and nobody is dispatched who has nothing to do.
+  dom.planAll?.addEventListener('click', () => send('assemble'));
+
   dom.startAll?.addEventListener('click', () => {
     for (const agent of orderedAgents()) {
       if (agent.enabled !== false) send('start', { agentId: agent.id });
@@ -883,8 +1115,6 @@ function wireChrome() {
   for (const name of Object.keys(WINDOW_IDS)) {
     dom[WINDOW_IDS[name][1]]?.addEventListener('click', () => toggleWindow(name));
   }
-  dom.winFlowsClose?.addEventListener('click', () => toggleWindow('flows'));
-  dom.winEvidenceClose?.addEventListener('click', () => toggleWindow('evidence'));
   dom.winCrewClose?.addEventListener('click', () => toggleWindow('crew'));
   dom.winDecisionsClose?.addEventListener('click', () => toggleWindow('decisions'));
   dom.winRunsClose?.addEventListener('click', () => toggleWindow('runs'));
@@ -931,13 +1161,20 @@ function clearFeedFilter() {
 }
 
 function renderFeed() {
-  if (!feedBody || dom.winFeed?.hidden !== false) return;
+  // The side panel adopts the feed BODY and leaves the old window element
+  // hidden, so testing that window meant the feed never drew while docked -
+  // which is why its filters were nowhere to be found. Ask the body whether it
+  // is actually on screen instead.
+  if (!feedBody || !feedBody.isConnected || feedBody.offsetParent === null) return;
 
   const lines = [];
   for (const [agentId, events] of Object.entries(state.eventsByAgent)) {
     if (state.feedFilter && agentId !== state.feedFilter) continue;
     const agent = state.agents[agentId];
     for (const event of events.slice(-300)) {
+      // The preset decides the altitude: everything, only the heroes talking
+      // to each other, or that plus whatever changes what happens next.
+      if (!passesPreset(event, state.feedPreset)) continue;
       const entry = feedEntry(agent, event);
       if (entry) lines.push({ ...entry, ts: event.ts });
     }
@@ -953,12 +1190,76 @@ function renderFeed() {
 
   const atBottom = feedBody.scrollHeight - feedBody.scrollTop - feedBody.clientHeight < 40;
   const rows = deduped.slice(-400).map(feedRow);
-  feedBody.replaceChildren(...(state.feedFilter ? [filterChip(), ...rows] : rows));
+  // The board is pinned above the stream. One surface answers both questions a
+  // person actually has: where does the work stand, and what just happened.
+  const header = [presetBar(), boardBlock(), ...(state.feedFilter ? [filterChip()] : [])]
+    .filter(Boolean);
+  feedBody.replaceChildren(...header, ...rows);
   // Only follow the tail if the reader was already at it.
   if (atBottom) feedBody.scrollTop = feedBody.scrollHeight;
 }
 
 // A visible reminder that you are reading one agent, with the way back on it.
+// Where the work stands, pinned above the stream it belongs to.
+let boardOpen = true;
+
+function boardBlock() {
+  const items = state.board ?? [];
+  if (items.length === 0) return null;
+  // It is the point of the BOARD tag, and useful background on ALL. It would
+  // only be noise on the others.
+  if (!['all', 'board'].includes(state.feedPreset)) return null;
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'border:1px solid var(--line,#262626);margin:0 0 8px;'
+    + 'background:var(--sunk,#151515)';
+
+  const head = document.createElement('button');
+  head.type = 'button';
+  const v = state.velocity ?? {};
+  head.textContent = `${boardOpen ? '\u25be' : '\u25b8'} BOARD  `
+    + `${v.done ?? 0} of ${v.items ?? items.length} done`
+    + (v.percent === null || v.percent === undefined ? '' : `  ·  ${v.percent}% of gates passed`);
+  head.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;'
+    + 'border:0;color:var(--accent,#34d399);font:inherit;font-size:9px;letter-spacing:.12em;'
+    + 'padding:6px 8px;cursor:pointer';
+  head.onclick = () => { boardOpen = !boardOpen; renderFeed(); };
+  wrap.append(head);
+
+  if (boardOpen) {
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:0 8px 8px';
+    panels.renderBoard(body, items, state.velocity, orderedAgents(), { focus });
+    wrap.append(body);
+  }
+  return wrap;
+}
+
+// Three altitudes on the same stream, always visible above it.
+function presetBar() {
+  const bar = document.createElement('div');
+  bar.style.cssText = [
+    'position:sticky', 'top:0', 'z-index:2', 'display:flex', 'gap:4px',
+    'padding:2px 0 6px', 'background:var(--surface,#121212)',
+  ].join(';');
+  for (const preset of FEED_PRESETS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = preset.label;
+    button.title = preset.blurb;
+    const on = preset.id === state.feedPreset;
+    button.style.cssText = 'background:transparent;font:inherit;font-size:9px;'
+      + 'letter-spacing:.1em;text-transform:uppercase;padding:2px 7px;cursor:pointer;'
+      + `border:1px solid ${on ? 'var(--accent,#34d399)' : 'var(--line,#262626)'};`
+      + `color:${on ? 'var(--accent,#34d399)' : 'var(--faint,#5a5a5a)'}`;
+    button.onclick = () => {
+      state.feedPreset = preset.id;
+      renderFeed();
+    };
+    bar.append(button);
+  }
+  return bar;
+}
+
 function filterChip() {
   const chip = document.createElement('div');
   chip.style.cssText = [
@@ -1072,10 +1373,134 @@ function mountFeed() {
   mountFeedButton();
 }
 
+// The prayer thread. One hero asked you something only they could know to
+// ask; this is where the two of you settle it. It stays open until YOU say it
+// is settled - answering once does not end a conversation.
+function openPrayer(agentId) {
+  state.prayerWith = agentId;
+  openWindow('decisions');
+  schedulePanels();
+}
+
+function prayerThread(agentId) {
+  const events = state.eventsByAgent[agentId] ?? [];
+  const start = events.findLastIndex(
+    (event) => event.kind === EVENT_KINDS.PRAYER && !event.payload?.answered,
+  );
+  if (start === -1) return null;
+  const question = events[start].payload;
+  // Everything either of you has said since they asked.
+  const said = events.slice(start + 1).filter((event) =>
+    event.kind === EVENT_KINDS.MESSAGE || event.kind === EVENT_KINDS.PRAYER);
+  return { question, said, askedAt: events[start].ts };
+}
+
+function renderPrayer(into) {
+  const prayerBody = into;
+  if (!prayerBody) return;
+  const agentId = state.prayerWith;
+  const agent = agentId ? state.agents[agentId] : null;
+  const thread = agentId ? prayerThread(agentId) : null;
+
+  // No thread picked - so show WHO is waiting. The tab counts four questions;
+  // opening it to "nobody has asked you anything" is the badge calling the
+  // panel a liar.
+  if (!agent || !thread) {
+    const waiting = orderedAgents()
+      .map((candidate) => ({ agent: candidate, thread: prayerThread(candidate.id) }))
+      .filter((row) => row.thread);
+
+    if (waiting.length === 0) {
+      const idle = document.createElement('div');
+      idle.style.cssText = 'padding:10px 0;color:var(--muted,#8a8a8a)';
+      idle.textContent = agentId
+        ? 'settled - nothing is waiting on you here'
+        : 'nobody has asked you anything';
+      prayerBody.replaceChildren(idle);
+      return;
+    }
+
+    const head = document.createElement('div');
+    head.style.cssText = 'font-size:9px;letter-spacing:.12em;color:var(--faint,#5a5a5a);padding-bottom:8px';
+    head.textContent = `${waiting.length} WAITING ON YOU`;
+
+    const rows = waiting.map(({ agent: who, thread: t }) => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;'
+        + 'border:0;border-bottom:1px solid var(--line,#262626);color:inherit;font:inherit;'
+        + 'padding:8px 0;cursor:pointer';
+      const name = document.createElement('div');
+      name.style.cssText = 'font-size:9px;letter-spacing:.12em;color:var(--accent,#34d399)';
+      name.textContent = (who.label ?? who.name).toUpperCase();
+      const asked = document.createElement('div');
+      asked.style.cssText = 'padding-top:2px';
+      asked.textContent = t.question.why;
+      row.append(name, asked);
+      row.onclick = () => openPrayer(who.id);
+      return row;
+    });
+    prayerBody.replaceChildren(head, ...rows);
+    return;
+  }
+
+  const rows = [];
+  const who = document.createElement('button');
+  who.type = 'button';
+  who.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;border:0;'
+    + 'font:inherit;font-size:10px;letter-spacing:.12em;color:var(--accent,#34d399);'
+    + 'padding:0 0 6px;cursor:pointer';
+  who.textContent = `\u2190 ${(agent.label ?? agent.name).toUpperCase()} ASKED YOU`;
+  who.title = 'back to everyone waiting';
+  who.onclick = () => { state.prayerWith = null; schedulePanels(); };
+  rows.push(who);
+
+  const asked = document.createElement('div');
+  asked.style.cssText = 'padding:8px 10px;border-left:2px solid var(--accent,#34d399);'
+    + 'background:var(--sunk,#1a1a1a);margin-bottom:10px';
+  asked.textContent = thread.question.why;
+  rows.push(asked);
+
+  for (const event of thread.said) {
+    const mine = event.payload?.from === 'you';
+    const line = document.createElement('div');
+    line.style.cssText = 'padding:5px 0;border-bottom:1px solid var(--line,#262626)';
+    const tag = document.createElement('span');
+    tag.style.cssText = `font-size:9px;letter-spacing:.12em;margin-right:8px;color:${
+      mine ? 'var(--accent,#34d399)' : 'var(--muted,#8a8a8a)'}`;
+    tag.textContent = mine ? 'YOU' : (agent.label ?? agent.name).toUpperCase();
+    line.append(tag, document.createTextNode(plainText(event.payload?.text ?? event.payload?.answer ?? '')));
+    rows.push(line);
+  }
+
+  const reply = document.createElement('input');
+  reply.placeholder = `answer ${agent.label ?? agent.name}`;
+  reply.style.cssText = 'width:100%;margin-top:10px;background:var(--bg,#0d0d0d);'
+    + 'border:1px solid var(--line,#262626);color:inherit;font:inherit;padding:6px 8px';
+  reply.onkeydown = (event) => {
+    event.stopPropagation();
+    if (event.key !== 'Enter' || !reply.value.trim()) return;
+    send('say', { target: agentId, text: reply.value.trim() });
+    reply.value = '';
+  };
+  rows.push(reply);
+
+  const settled = document.createElement('button');
+  settled.type = 'button';
+  settled.textContent = 'SETTLED';
+  settled.title = 'close this question - it stays open until you say so';
+  settled.style.cssText = 'margin-top:8px;background:transparent;border:1px solid var(--line,#262626);'
+    + 'color:var(--muted,#8a8a8a);font:inherit;font-size:9px;letter-spacing:.12em;padding:3px 9px;cursor:pointer';
+  settled.onclick = () => send('settlePrayer', { agentId });
+  rows.push(settled);
+
+  prayerBody.replaceChildren(...rows);
+}
+
 // A switch on the console, cloned from its neighbours so it cannot drift out
 // of style with them.
 function mountFeedButton() {
-  const sibling = dom.btnFlows ?? dom.btnCrew ?? dom.btnDecisions;
+  const sibling = dom.btnCrew ?? dom.btnDecisions;
   if (!sibling?.parentElement) return;
   const button = sibling.cloneNode(false);
   button.id = 'btnFeed';
@@ -1340,7 +1765,16 @@ function boot() {
   try {
     // Clicking a desk selects the agent AND opens their side of the story -
     // the feed, filtered to them. Selecting in silence was the complaint.
-    scene = createScene({ canvas: dom.floor, palette, onSelect: openAgentFeed });
+    scene = createScene({
+      canvas: dom.floor,
+      palette,
+      onSelect: openAgentFeed,
+      onHover: (id) => {
+        if (state.hovered === id) return;
+        state.hovered = id;
+        schedulePanels(); // the bubble follows the pointer at once
+      },
+    });
   } catch (error) {
     note(`floor unavailable: ${error.message}. The windows still work.`);
   }
@@ -1373,12 +1807,19 @@ function boot() {
   mountMiddleware();
 
   // The console's extra row when a desk is focused.
-  strip = createGoalStrip({ handlers, console: dom.composer });
+  strip = createGoalStrip({
+    handlers,
+    console: dom.composer,
+    // The desk draws a flow and a claim with the same functions the panels
+    // use. One way to draw each, wherever it appears.
+    renderFlows,
+    renderEvidence,
+  });
 
   windows = createSidePanel({
     entries: windowEntries(),
-    labels: { feed: 'FEED', flows: 'FLOW', evidence: 'EVIDENCE', crew: 'CREW',
-              decisions: 'DECISIONS', runs: 'RUNS', middleware: 'MIDDLEWARE' },
+    labels: { feed: 'FEED', crew: 'CREW', decisions: 'DECISIONS',
+              runs: 'MISSIONS', middleware: 'MIDDLEWARE' },
     onChange: () => renderPanels(),
   });
 
@@ -1386,6 +1827,15 @@ function boot() {
   // A read-only window onto the one part of the floor you cannot see. It
   // reports; nothing in the app ever reads it back.
   window.minimac = Object.freeze({ sound: () => sound.probe() });
+  // A read-only probe for verifying the walk without eyes on the screen.
+  window.__mmErrand = () => ({
+    active: state.errands.active
+      ? { hero: state.errands.active.heroId, to: state.errands.active.toId,
+          phase: state.errands.active.phase }
+      : null,
+    pending: state.errands.pending.length,
+    waypoint: viewAgents(Date.now()).find((a) => a.errand)?.errand ?? null,
+  });
   dom.btnAttach?.addEventListener('click', () => dom.fileInput?.click());
   subscribe();
   loadRuns();
@@ -1421,13 +1871,12 @@ function note(text) {
 
 function pickDom() {
   const ids = [
-    'floor', 'topbar', 'repoPath', 'queueCount', 'startAll',
+    'floor', 'topbar', 'repoPath', 'queueCount', 'startAll', 'planAll', 'crewBar',
     'composer', 'composerTarget', 'composerInput', 'composerSend', 'mentionMenu',
     'attachments', 'fileInput', 'btnAttach',
     'winDecisions', 'winDecisionsClose', 'queue', 'bubbles', 'btnDecisions',
     'winCrew', 'winCrewClose', 'roster', 'roCrew', 'btnCrew',
-    'winFlows', 'winFlowsClose', 'flows', 'roFlows', 'btnFlows', 'focusName',
-    'winEvidence', 'winEvidenceClose', 'evidence', 'roEvidence', 'btnEvidence',
+    'focusName',
     'winRuns', 'winRunsClose', 'runs', 'roRuns', 'btnRuns', 'stopAll', 'btnSound',
   ];
   return Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
@@ -1510,6 +1959,13 @@ function mountHeader() {
   dom.topbar.append(headerEl);
 }
 
+// Durations in the fewest characters that stay honest.
+function shortMs(ms) {
+  const m = Math.round((ms ?? 0) / 60000);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}`;
+}
+
 function renderHeader(agents) {
   if (!headerEl) return;
   const running = agents.filter((agent) => agent.status === 'running').length;
@@ -1537,5 +1993,33 @@ function renderHeader(agents) {
     'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:'
     + (mission ? 'var(--text,#e8e8e8)' : 'var(--muted,#8a8a8a)');
 
-  headerEl.replaceChildren(chip, text);
+  // The north star as one number: ten minutes of agent work should take ten
+  // minutes. It sits in the top bar because it is the only figure that is
+  // always worth a glance.
+  // The question is never "how long" on its own. It is how much longer, what
+  // is left, and how far along - so the header answers all three without being
+  // asked, which is the whole reason this exists.
+  const measured = agents.map((agent) => ({ ...agent, flows: measuredFlows(agent) }));
+  const burn = fleetBurn(measured);
+  const left = remaining(measured.flatMap((agent) => agent.flows));
+  const kids = [chip, text];
+
+  const parts = [];
+  if (left.total > 0) parts.push(`${left.steps} of ${left.total} left`);
+  if (left.percentDone !== null) parts.push(`${left.percentDone}% done`);
+  if (burn) parts.push(`${shortMs(burn.actualMs)} of ${shortMs(burn.estimateMs)}`);
+
+  if (parts.length) {
+    const late = !!burn && burn.ratio > 1;
+    const fleet = document.createElement('span');
+    fleet.textContent = parts.join(' · ');
+    fleet.title = late
+      ? 'the fleet is past the time it promised itself'
+      : 'what is left, how far along, and time against the fleet\'s own estimate';
+    fleet.style.cssText = 'flex:none;margin-left:auto;padding-left:10px;font-size:10px;'
+      + 'letter-spacing:.08em;font-variant-numeric:tabular-nums;color:'
+      + (late ? 'var(--danger,#f87171)' : 'var(--muted,#8a8a8a)');
+    kids.push(fleet);
+  }
+  headerEl.replaceChildren(...kids);
 }
