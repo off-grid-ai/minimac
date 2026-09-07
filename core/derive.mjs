@@ -317,8 +317,8 @@ export function eventsPerMin(events, now = Date.now(), windowMs = 60_000) {
 
 // Thinking and hung look identical from outside: no output. They are told
 // apart by two measured things - whether a unit of work is still open, and how
-// this agent's own rhythm compares to the gap it is in now. A fixed threshold
-// would call a slow model hung and a fast one healthy.
+// this agent's own rhythm compares to the gap it is in now. Quiet with no open
+// work is idle, not a request for the operator to make a decision.
 export function silence(agent, events, now = Date.now(), options = {}) {
   const { thinkingMs, hungMs, baselineFactor, minSamples } = { ...SILENCE_DEFAULTS, ...options };
   const lastTs = events[events.length - 1]?.ts ?? agent?.lastEventTs ?? null;
@@ -452,11 +452,11 @@ export function pendingDecisions(agent, events, now = Date.now()) {
   }
 
   const quiet = silence(agent, events, now);
-  if (quiet.state === SILENCE.HUNG && agent.status === 'running') {
+  if (quiet.state === SILENCE.HUNG && quiet.inFlight && agent.status === 'running') {
     decisions.push({
       agentId: agent.id,
       kind: 'silent',
-      detail: `no output for ${seconds(quiet.quietMs)}s, nothing in flight${
+      detail: `no output for ${seconds(quiet.quietMs)}s while ${quiet.openWork.action} ${quiet.openWork.target ?? ''} is still open${
         quiet.baselineMs === null ? '' : ` (usual gap ${seconds(quiet.baselineMs)}s)`
       }`,
       actions: ['steer', 'kill'],
