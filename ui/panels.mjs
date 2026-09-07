@@ -322,10 +322,9 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
   const redraw = () => renderBoard(root, board, velocity, agents, handlers);
   const frag = document.createDocumentFragment();
   const workers = agents.filter((agent) => agent.role !== 'orchestrator');
-  const activeIds = new Set(workers.flatMap((agent) =>
-    agent.sessionId ? (agent.workItemIds ?? []) : []));
   const ordered = items.filter((item) => !isClosed(item)).sort(compareQueueOrder);
-  const running = ordered.filter((item) => activeIds.has(item.id));
+  const running = ordered.filter((item) => item.lease?.state === 'running');
+  const activeIds = new Set(running.map((item) => item.id));
   const pending = ordered.filter((item) => !activeIds.has(item.id));
   const done = items.filter(isDone).sort(compareQueueOrder);
   const slots = workers
@@ -493,17 +492,27 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   const waiting = unmetDeps({ items: all }, item);
   const owner = agents.find((agent) => agent.id === item.owner);
   const ownerBusy = owner?.sessionId && !(owner.workItemIds ?? []).includes(item.id);
-  const label = item.outcome || item.title;
+  const heading = item.title || item.outcome;
+  const description = item.outcome && item.outcome !== heading ? item.outcome : item.plan;
   const line = el('div', 'checkpoint-line');
   const title = el('div', 'checkpoint-title');
+  const headingId = `checkpoint-${item.id}-title`;
+  row.setAttribute('aria-labelledby', headingId);
+  const label = el('span', 'checkpoint-label', heading);
+  label.id = headingId;
   title.append(
     el('span', 'checkpoint-id', item.id),
-    el('span', 'checkpoint-label', label),
+    label,
   );
-  line.append(
-    title,
-    el('span', 'checkpoint-state', checkpointStatus(item, running, waiting, owner, done)),
+  const descriptionNode = el('p', 'checkpoint-description', description || 'No result description.');
+  const meta = el('div', 'checkpoint-meta');
+  const status = el('span', 'checkpoint-state');
+  status.append(
+    checkpointIcon(checkpointStatusIcon(item, running, waiting, done)),
+    document.createTextNode(checkpointStatus(item, running, waiting, owner, done)),
   );
+  meta.append(status, checkpointTiming(item));
+  line.append(title, descriptionNode, meta);
   row.append(line);
 
   if (done) {
@@ -514,24 +523,24 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   const controls = el('div', 'checkpoint-controls');
   if (!running) {
     controls.append(
-      checkpointButton('UP', () => handlers.move?.(item.id, -1), !movement.canMoveUp),
-      checkpointButton('DOWN', () => handlers.move?.(item.id, 1), !movement.canMoveDown),
+      checkpointButton('Move up', 'arrow-up', () => handlers.move?.(item.id, -1), !movement.canMoveUp),
+      checkpointButton('Move down', 'arrow-down', () => handlers.move?.(item.id, 1), !movement.canMoveDown),
     );
   }
   controls.append(ownerSelect(item, agents, handlers));
   if (item.paused) {
     const cannotResume = !item.owner || waiting.length > 0 || ownerBusy;
-    const resume = checkpointButton('RESUME', () => handlers.start?.(item.id), cannotResume);
+    const resume = checkpointButton('Resume', 'play', () => handlers.start?.(item.id), cannotResume);
     if (cannotResume) resume.title = !item.owner
       ? 'Assign an owner first'
       : waiting.length ? 'Waiting on another checkpoint' : `${owner?.name ?? 'Owner'} is already working`;
     controls.append(resume);
   } else {
-    controls.append(checkpointButton('PAUSE', () => handlers.pause?.(item.id, true)));
+    controls.append(checkpointButton('Pause', 'pause', () => handlers.pause?.(item.id, true)));
   }
   if (!running && !item.paused) {
     const cannotStart = !item.owner || waiting.length > 0 || ownerBusy;
-    const start = checkpointButton('START NOW', () => handlers.start?.(item.id), cannotStart);
+    const start = checkpointButton('Start now', 'play', () => handlers.start?.(item.id), cannotStart);
     if (cannotStart) start.title = !item.owner
       ? 'Assign an owner first'
       : waiting.length ? 'Waiting on another checkpoint' : `${owner?.name ?? 'Owner'} is already working`;
@@ -551,10 +560,65 @@ function checkpointStatus(item, running, waiting, owner, done = false) {
   return `${who} - ready`;
 }
 
-function checkpointButton(label, action, disabled = false) {
-  const button = el('button', 'checkpoint-button', label);
+function checkpointStatusIcon(item, running, waiting, done) {
+  if (done) return 'check';
+  if (running) return 'activity';
+  if (item.paused) return 'pause';
+  if (waiting.length) return 'clock';
+  return 'ready';
+}
+
+function checkpointTiming(item) {
+  const timing = el('span', 'checkpoint-timing');
+  timing.append(checkpointIcon('clock'));
+  const startedAt = item.lease?.startedAt;
+  if (!Number.isFinite(startedAt)) {
+    timing.append(el('span', '', 'NOT STARTED'));
+    return timing;
+  }
+  const start = el('time', 'checkpoint-start', `START ${formatCheckpointStart(startedAt)}`);
+  start.dateTime = new Date(startedAt).toISOString();
+  const elapsed = el('span', 'checkpoint-elapsed');
+  elapsed.dataset.startedAt = String(startedAt);
+  if (Number.isFinite(item.lease?.endedAt)) {
+    elapsed.dataset.endedAt = String(item.lease.endedAt);
+  }
+  timing.append(start, elapsed);
+  refreshCheckpointTimes(timing);
+  return timing;
+}
+
+export function refreshCheckpointTimes(root, now = Date.now()) {
+  if (!root) return;
+  for (const elapsed of root.querySelectorAll('.checkpoint-elapsed')) {
+    const startedAt = Number(elapsed.dataset.startedAt);
+    const endedAt = Number(elapsed.dataset.endedAt);
+    const end = Number.isFinite(endedAt) ? endedAt : now;
+    elapsed.textContent = `ELAPSED ${formatCheckpointElapsed(Math.max(0, end - startedAt))}`;
+  }
+}
+
+function formatCheckpointStart(value) {
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatCheckpointElapsed(value) {
+  const total = Math.floor(value / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  return hours > 0
+    ? `${hours}h ${pad2(minutes)}m`
+    : `${minutes}m ${pad2(seconds)}s`;
+}
+
+function checkpointButton(label, iconName, action, disabled = false) {
+  const button = el('button', 'checkpoint-button');
   button.type = 'button';
   button.disabled = disabled;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.append(checkpointIcon(iconName));
   button.onclick = action;
   return button;
 }
@@ -575,6 +639,26 @@ function ownerSelect(item, agents, handlers) {
   }
   select.onchange = () => handlers.reassign?.(item.id, select.value);
   return select;
+}
+
+const CHECKPOINT_ICONS = Object.freeze({
+  'arrow-up': '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  'arrow-down': '<path d="M12 5v14M18 13l-6 6-6-6"/>',
+  play: '<path d="m8 5 11 7-11 7Z"/>',
+  pause: '<path d="M9 5v14M15 5v14"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+  activity: '<path d="M4 12h3l2-5 4 10 2-5h5"/>',
+  clock: '<circle cx="12" cy="12" r="8"/><path d="M12 8v5l3 2"/>',
+  ready: '<circle cx="12" cy="12" r="4"/>',
+});
+
+function checkpointIcon(name) {
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('viewBox', '0 0 24 24');
+  icon.setAttribute('aria-hidden', 'true');
+  icon.classList.add('checkpoint-icon');
+  icon.innerHTML = CHECKPOINT_ICONS[name] ?? CHECKPOINT_ICONS.ready;
+  return icon;
 }
 
 function checkpointDetails(item) {

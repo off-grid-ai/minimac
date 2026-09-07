@@ -47,6 +47,8 @@ const PULSE_MS = 900;
 const PING_MS = 700;
 const PANEL_THROTTLE_MS = 150;
 const RUNS_REFRESH_MS = 3000;
+const CHECKPOINT_CLOCK_MS = 1000;
+let lastCheckpointClockAt = 0;
 
 const dom = pickDom();
 
@@ -997,6 +999,11 @@ function frame() {
     const owed = neglect(state.waiting, now);
     state.neglect = owed.level;
     sound.setNeglect(owed.level);
+  }
+  if (dom.checkpoints && windows?.isOpen('checkpoints')
+    && now - lastCheckpointClockAt >= CHECKPOINT_CLOCK_MS) {
+    lastCheckpointClockAt = now;
+    panels.refreshCheckpointTimes(dom.checkpoints, now);
   }
   requestAnimationFrame(frame);
 }

@@ -1121,7 +1121,7 @@
     grid-template-columns: minmax(240px, 1fr) auto;
     grid-template-areas: "line controls" "details details";
     gap: calc(var(--step) * 2);
-    align-items: center;
+    align-items: start;
     padding: calc(var(--step) * 2.5) 0;
     border-bottom: 1px solid var(--line-soft);
   }
@@ -1153,14 +1153,35 @@
   .checkpoint-label {
     flex: 1;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     color: var(--text);
     font-size: 13px;
+    line-height: 1.35;
+    font-weight: 400;
+  }
+
+  .checkpoint-description {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.45;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .checkpoint-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: calc(var(--step) * 3);
+    min-width: 0;
   }
 
   .checkpoint-state {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--step);
     color: var(--muted);
     font-size: 10px;
     white-space: nowrap;
@@ -1168,11 +1189,32 @@
     letter-spacing: .08em;
   }
 
+  .checkpoint-timing {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(var(--step) * 1.5);
+    color: var(--faint);
+    font-size: 9px;
+    letter-spacing: .08em;
+    white-space: nowrap;
+  }
+
+  .checkpoint-icon {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: square;
+    stroke-linejoin: miter;
+  }
+
   .checkpoint-row.is-running .checkpoint-state { color: var(--accent); }
   .checkpoint-controls {
     grid-area: controls;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: flex-end;
     gap: calc(var(--step) * 1.5);
     white-space: nowrap;
@@ -1189,7 +1231,13 @@
     text-transform: uppercase;
   }
 
-  .checkpoint-button { padding: 0 calc(var(--step) * 2); cursor: pointer; }
+  .checkpoint-button {
+    display: inline-grid;
+    width: 44px;
+    padding: 0;
+    place-items: center;
+    cursor: pointer;
+  }
   .checkpoint-button:hover,
   .checkpoint-owner:hover { color: var(--text); border-color: var(--accent-edge); }
   .checkpoint-button:disabled { opacity: .35; cursor: default; }
