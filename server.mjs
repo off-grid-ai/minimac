@@ -1088,9 +1088,6 @@ const COMMANDS = {
     if (!state.mission) throw new Error('set the mission first - there is nobody to assemble for');
     const orchestrator = Object.values(state.agents).find((a) => a.role === 'orchestrator');
     if (!orchestrator) throw new Error('no orchestrator on the floor');
-    if (orchestrator.enabled === false) {
-      throw new Error(`${orchestrator.label ?? 'the orchestrator'} is off this mission`);
-    }
     ensureRun();
     ingest(createEvent(orchestrator.id, EVENT_KINDS.STATUS, {
       text: 'assembling: deciding who this mission needs, and standing the rest down',
@@ -1104,11 +1101,18 @@ const COMMANDS = {
       await interruptAgent(orchestrator.id);
     }
     state.awaitingGoals = true;
-    await COMMANDS.start({
-      agentId: orchestrator.id,
-      task: planningTask(state.mission, crewRoster()),
-      planning: true,
-    });
+    try {
+      await COMMANDS.setActive({
+        agentId: orchestrator.id,
+        active: true,
+        task: planningTask(state.mission, crewRoster()),
+        planning: true,
+        exclusiveOutput: true,
+      });
+    } catch (error) {
+      state.awaitingGoals = false;
+      throw error;
+    }
     // If nothing comes back, the crew still starts - late beats never.
     setTimeout(() => {
       if (state.awaitingGoals) startCrew('the orchestrator did not set goals in time', false);
@@ -1631,7 +1635,15 @@ const COMMANDS = {
 
   // One command owns the mission switch. Off benches and stops the agent. On
   // brings it onto the mission and starts a real middleware-composed session.
-  async setActive({ agentId, active, task, mentions, attachments = [] }) {
+  async setActive({
+    agentId,
+    active,
+    task,
+    mentions,
+    attachments = [],
+    planning = false,
+    exclusiveOutput = planning,
+  }) {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
     if (!active) {
@@ -1645,7 +1657,14 @@ const COMMANDS = {
     }
     state.agents = patchAgent(state.agents, agentId, { enabled: true });
     try {
-      return await COMMANDS.start({ agentId, task, mentions, attachments });
+      return await COMMANDS.start({
+        agentId,
+        task,
+        mentions,
+        attachments,
+        planning,
+        exclusiveOutput,
+      });
     } catch (error) {
       state.agents = patchAgent(state.agents, agentId, { enabled: false });
       publish({ type: 'state', state: snapshot() });
