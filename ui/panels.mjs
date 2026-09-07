@@ -401,7 +401,6 @@ function scopeRows(agent, node, depth, redraw) {
     el('span', 'flow-caret', open ? '▾' : '▸'),
     el('span', 'flow-scope-name', node.name || 'all'),
     el('span', 'flow-scope-count', open ? '' : `${node.totals.steps} steps`),
-    gateStrip(node.gates),
     el('span', 'flow-scope-pct', node.percentDone === null ? '' : `${node.percentDone}%`),
   );
   head.onclick = () => {
@@ -421,12 +420,11 @@ function scopeRows(agent, node, depth, redraw) {
   return rows;
 }
 
-// Six letters, one per gate, in the order work passes through them. Colour is
-// the whole message: you read a column of these down a multi-repo mission and
-// the red one is the hold-up.
 // One step: what a person will see, how far it has got, and its time.
 function flowRow(step) {
-  const status = LADDER.includes(step.status) ? step.status : 'coded';
+  const status = step.status === 'pending' || LADDER.includes(step.status)
+    ? step.status
+    : 'pending';
   const row = el('div', `flow${status === 'verified' ? ' is-verified' : ''}`);
   const head = el('div', 'flow-head');
   head.append(el('div', 'flow-result', step.user_visible_result ?? step.step), ladder(status));
@@ -435,7 +433,7 @@ function flowRow(step) {
 }
 
 function ladder(status) {
-  const reached = LADDER.indexOf(status) + 1;
+  const reached = status === 'pending' ? 0 : LADDER.indexOf(status) + 1;
   const wrap = el('span', 'ladder');
   wrap.dataset.status = status;
   wrap.setAttribute('aria-label', `status: ${status}`);
@@ -443,18 +441,6 @@ function ladder(status) {
   for (let i = 0; i < LADDER.length; i += 1) pips.append(el('i', i < reached ? 'on' : ''));
   wrap.append(pips, el('span', 'word', status));
   return wrap;
-}
-
-function gateStrip(gates) {
-  const strip = el('span', 'gates');
-  for (const gate of GATES) {
-    const state = gates?.[gate] ?? 'pending';
-    const pip = el('span', `gate is-${state}`);
-    pip.textContent = gate;
-    pip.title = `${gate}: ${state}`;
-    strip.append(pip);
-  }
-  return strip;
 }
 
 // Is this step running late?

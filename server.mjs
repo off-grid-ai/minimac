@@ -20,7 +20,7 @@ import { claimFiles, releaseClaim } from './core/claims.mjs';
 import {
   composeDispatch,
   buildOutputSchema,
-  withHook,
+  workerDispatches,
   REPORT_FENCE,
   GOALS_FENCE,
   planningTask,
@@ -521,9 +521,7 @@ async function governanceTurn(raised) {
       const sent = await eachSession(boss, (id) =>
         getDriver(boss.engine).steer(
           id,
-          withHook(
-            task, options.hookText, middleware, boss, boss.flows ?? [], state.board,
-          ),
+          composeDispatch(promptContext(boss, task, { exclusiveOutput: true })),
         ));
       if (!sent.delivered) throw new Error(sent.failures[0] ?? 'the engine took nothing');
     } else {
@@ -607,7 +605,12 @@ function applyToAgent(agents, event) {
 // later plan cannot quietly move the goalposts.
 function mergeFlows(existing, incoming) {
   return incoming.map((step, index) => {
-    const previous = existing[index];
+    // A stable flow id keeps an estimate attached to the same promise when an
+    // agent inserts or reorders steps. Old engine-native plans may have no id,
+    // so their existing index remains the narrow compatibility fallback.
+    const previous = step?.id
+      ? existing.find((candidate) => candidate?.id === step.id)
+      : existing[index];
     return {
       ...step,
       estimateMs: previous?.estimateMs ?? step.estimateMs ?? null,
@@ -619,28 +622,11 @@ function mergeFlows(existing, incoming) {
 // One seat, one or more workers. Each gets its own session and its own slice
 // label, and every event still carries the seat's id - so the floor shows one
 // desk while the work runs in parallel behind it.
-async function startWorkers(agent, cwd, task, mentions, attachments) {
+async function startWorkers(agent, cwd, context) {
   const driver = getDriver(agent.engine);
   const sessionIds = [];
 
-  for (let index = 0; index < agent.instances; index += 1) {
-    const instance = agent.instances > 1
-      ? { index: index + 1, label: `${agent.name} #${index + 1}` }
-      : null;
-    const prompt = composeDispatch({
-      agent,
-      instance,
-      goal: getGoal(state.goals, agent.id),
-      task: task ?? state.mission,
-      skills: options.skills,
-      claims: state.claims[agent.id] ?? [],
-      mentions,
-      attachments: [...(state.attachments ?? []), ...attachments],
-      crew: crewRoster(),
-      team: options.team,
-      hook: options.hookText,
-      overrides: middleware,
-    });
+  for (const { prompt } of workerDispatches(context)) {
     sessionIds.push(await driver.start(agent, cwd, prompt));
   }
 
@@ -683,6 +669,32 @@ function crewRoster() {
     enabled: agent.enabled !== false,
     claims: state.claims[agent.id] ?? [],
   }));
+}
+
+// Every first dispatch and every steer reads the same live state through this
+// one context builder. A caller may change the task or select an exclusive
+// output fence, but it cannot silently omit the board, goal, crew, or history.
+function promptContext(agent, task, {
+  mentions = null,
+  attachments = [],
+  exclusiveOutput = false,
+} = {}) {
+  return {
+    agent,
+    goal: getGoal(state.goals, agent.id),
+    task: task ?? state.mission,
+    skills: options.skills,
+    claims: state.claims[agent.id] ?? [],
+    steps: agent.flows ?? [],
+    board: state.board,
+    mentions,
+    attachments: [...(state.attachments ?? []), ...attachments],
+    crew: crewRoster(),
+    team: options.team,
+    hook: options.hookText,
+    overrides: middleware,
+    exclusiveOutput,
+  };
 }
 
 // What a step currently says: the override if there is one, otherwise the
@@ -961,29 +973,15 @@ const COMMANDS = {
     const goal = getGoal(state.goals, agentId);
     if (!goal?.objective) throw new Error(`${agentId} has no goal - set the mission first`);
     const cwd = options.isolate ? await worktrees.create(agentId) : options.repo;
-    const prompt = composeDispatch({
-      agent,
-      goal,
-      task: task ?? state.mission,
-      skills: options.skills,
-      claims: state.claims[agentId] ?? [],
-      // The agent's own closed steps, so the next one is planned against what
-      // actually happened rather than the task as it first read it.
-      steps: agent.flows ?? [],
-      board: state.board,
-      // A planning turn answers with the goals block only - no report block,
-      // because two fence instructions means the agent obeys one of them.
-      planning,
+    const context = promptContext(agent, task ?? state.mission, {
       mentions,
-      attachments: [...(state.attachments ?? []), ...attachments],
-      crew: crewRoster(),
-      team: options.team,
-      hook: options.hookText,
-      overrides: middleware,
+      attachments,
+      // A planning turn owns the goals fence. Do not add the report fence.
+      exclusiveOutput: planning,
     });
     let sessionId;
     try {
-      sessionId = await startWorkers(agent, cwd, task, mentions, attachments);
+      sessionId = await startWorkers(agent, cwd, context);
     } catch (error) {
       ingest(
         createBlockedEvent(agentId, {
@@ -1016,7 +1014,7 @@ const COMMANDS = {
     if (target === 'mission') return COMMANDS.setMission({ mission: text, attachments });
 
     // POLICY. One sentence that binds the whole fleet, forever. It is written
-    // into the standing instruction, which withHook() already appends to every
+    // into the standing instruction, which the prompt pipeline adds to every
     // dispatch AND every steer - so no model decides whether it applies, and
     // an agent started an hour from now is bound by it too.
     if (target === 'policy') {
@@ -1124,9 +1122,7 @@ const COMMANDS = {
     const sent = await eachSession(agent, (id) =>
       getDriver(agent.engine).steer(
         id,
-        withHook(
-          text, options.hookText, middleware, agent, agent.flows ?? [], state.board,
-        ),
+        composeDispatch(promptContext(agent, text)),
       ));
     // Only what the engine took is written to the floor.
     if (!sent.delivered) {
