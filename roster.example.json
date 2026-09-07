@@ -35,5 +35,11 @@
     "mesh": "assets/characters/pm.glb",
     "color": "#a33a4a",
     "move": "hex"
+  },
+  "reviewer": {
+    "name": "Capt. Marvel",
+    "mesh": "assets/characters/reviewer.glb",
+    "color": "#3a63c4",
+    "move": "binary"
   }
 }

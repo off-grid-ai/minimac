@@ -18,13 +18,14 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/+esm';
 import { clamp } from './layout.mjs';
 
 export const MOVE_KINDS = Object.freeze([
-  'lightning', 'arrow', 'repulsor', 'portal', 'beam', 'shield', 'smash', 'hex',
+  'lightning', 'arrow', 'repulsor', 'portal', 'beam', 'shield', 'smash', 'hex', 'binary',
 ]);
 
 const DESK_TOP = 0.38;
 const SEAT_Z = -0.66; // where the agent actually sits, relative to its desk spot
 const POOL = Object.freeze({
   lightning: 2, arrow: 3, repulsor: 3, portal: 3, beam: 2, shield: 3, smash: 3, hex: 3,
+  binary: 2,
 });
 const MARKERS = 8; // reduced motion: one still marker per agent that can fire at once
 
@@ -616,6 +617,129 @@ function makeHex(scene, colours) {
   };
 }
 
+// ------------------------------------------------------------------- binary
+// A review verdict. She goes binary: the light comes up around her, her
+// emblem burns onto the floor, and then one photon lance crosses the room and
+// lands on whoever wrote the code. Emerald when it passes, red when it does
+// not - the two answers a review has, told apart from the far side of the room
+// without reading a word.
+//
+// It is the only move that both LIGHTS ITS OWNER and TRAVELS. That is the
+// point: a review is something she does to herself first and to someone else
+// second.
+
+function makeBinary(scene, colours) {
+  const SPOKES = 8;
+  const IGNITE = 0.34;  // when she is fully lit
+  const FIRE = 0.62;    // when the lance has crossed the room
+
+  const group = new THREE.Group();
+
+  // The column of light she stands in. The cone is authored apex-up and open,
+  // so it is flipped to open out over her head.
+  const coronaMaterial = glow(colours.accent, 0.1);
+  const corona = new THREE.Mesh(GEO.cone, coronaMaterial);
+  corona.rotation.x = Math.PI;
+  corona.scale.set(0.34, 0.3, 0.34);
+  corona.position.y = 0.6;
+  group.add(corona);
+
+  // Her emblem: a star burning onto the floor under her.
+  const burstMaterial = glow(WHITE, 0.9);
+  const burst = new THREE.Group();
+  for (let i = 0; i < SPOKES; i += 1) {
+    const spoke = new THREE.Mesh(GEO.shaft, burstMaterial);
+    spoke.rotation.y = (i / SPOKES) * Math.PI * 2;
+    burst.add(spoke);
+  }
+  burst.position.y = 0.02;
+  group.add(burst);
+
+  const haloMaterial = glow(colours.accent, 0.8);
+  const halo = new THREE.Mesh(GEO.thinRing, haloMaterial);
+  halo.rotation.x = -Math.PI / 2;
+  halo.position.y = 0.03;
+  group.add(halo);
+
+  // The lance, and where it lands.
+  const lanceMaterial = glow(WHITE, 1);
+  const lance = new THREE.Mesh(GEO.bolt, lanceMaterial);
+  group.add(lance);
+
+  const hitMaterial = glow(colours.accent, 0.95);
+  const hit = new THREE.Mesh(GEO.thinRing, hitMaterial);
+  hit.rotation.x = -Math.PI / 2;
+  group.add(hit);
+
+  // Lights live on the scene root: one that appears and disappears changes the
+  // light count and forces every shader in the room to recompile.
+  const flare = new THREE.PointLight(WHITE, 0, 7, 2);
+  scene.add(flare);
+
+  const from = new THREE.Vector3();
+  const to = new THREE.Vector3();
+  const nose = new THREE.Vector3();
+
+  return {
+    group,
+    arm(move, spot, tone, ctx) {
+      // Centred on the seat, not the desk: the light belongs to her.
+      group.position.set(spot.x, 0, spot.z + SEAT_Z);
+      coronaMaterial.color.copy(tone);
+      haloMaterial.color.copy(tone);
+      hitMaterial.color.copy(tone);
+      burstMaterial.color.copy(tone).lerp(WHITE, 0.55);
+      lanceMaterial.color.copy(tone).lerp(WHITE, 0.45);
+      flare.color.copy(tone).lerp(WHITE, 0.4);
+      flare.position.set(spot.x, 0.9, spot.z + SEAT_Z);
+
+      // Everything below is in the rig's own space, so the lance is drawn in
+      // local coordinates and the group can sit wherever she does.
+      from.set(0, 0.55, 0);
+      const target = move.toAgentId ? ctx.spotOf(move.toAgentId) : null;
+      // No target named: fire forward into the room, so the shot still reads
+      // as a shot and never points at a desk that earned nothing.
+      if (target) to.set(target.x - spot.x, 0.42, target.z - (spot.z + SEAT_Z));
+      else to.set(0, 0.42, 2.4);
+      hit.position.copy(to).setY(0.04);
+    },
+    update(life, t) {
+      const p = 1 - life;
+
+      // Ignition: the column comes up, the emblem burns out from under her.
+      const lit = ease(clamp(p / IGNITE, 0, 1));
+      const cooling = clamp((p - FIRE) / (1 - FIRE), 0, 1);
+      corona.scale.set(0.34 * lit, 0.3 * lit, 0.34 * lit);
+      coronaMaterial.opacity = lit * (1 - cooling) * 0.16;
+      burst.scale.setScalar(0.2 + lit * 2.1);
+      burst.rotation.y = t * 0.6;
+      burstMaterial.opacity = lit * (1 - cooling * cooling) * 0.8;
+      halo.scale.setScalar(0.4 + lit * 1.9);
+      haloMaterial.opacity = lit * (1 - cooling) * 0.7;
+
+      // The blast: drawn out from her toward the desk being judged.
+      const reach = clamp((p - IGNITE) / (FIRE - IGNITE), 0, 1);
+      lance.visible = reach > 0 && cooling < 1;
+      if (lance.visible) {
+        nose.lerpVectors(from, to, ease(reach));
+        span(lance, from, nose, 0.07 + (1 - reach) * 0.05);
+        // Two hard flicker steps rather than a smooth fade: a blast is discrete.
+        lanceMaterial.opacity = (1 - cooling) * (Math.sin(t * 41) > -0.4 ? 1 : 0.45);
+      }
+
+      // The landing.
+      hit.visible = cooling > 0;
+      hit.scale.setScalar(0.3 + ease(cooling) * 2.3);
+      hitMaterial.opacity = (1 - cooling) * (1 - cooling) * 0.95;
+
+      flare.intensity = (lit * (1 - cooling)) * 11;
+    },
+    park() {
+      flare.intensity = 0;
+    },
+  };
+}
+
 // ------------------------------------------------------------ still marker
 // prefers-reduced-motion: one marker, held for exactly as long as the move
 // would have run. The event is still reported; only the animation is gone.
@@ -651,6 +775,7 @@ const BUILDERS = Object.freeze({
   shield: makeShield,
   smash: makeSmash,
   hex: makeHex,
+  binary: makeBinary,
 });
 
 // --------------------------------------------------------------- the stage

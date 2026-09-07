@@ -7,6 +7,16 @@
 import { activeMention, applyMention, parseMentions } from '../core/mentions.mjs';
 
 export const MISSION_TARGET = 'mission';
+// Speak once, three ways. MISSION replaces what the run is for. POLICY binds
+// every agent on every dispatch and every steer, forever, with no model in the
+// path. THOR is the judgement lane: say it once and he decides who needs it.
+export const POLICY_TARGET = 'policy';
+export const ROUTE_TARGET = 'thor';
+export const SPEAK_TARGETS = Object.freeze([
+  { id: MISSION_TARGET, label: 'MISSION', blurb: 'what this run is for' },
+  { id: POLICY_TARGET, label: 'POLICY', blurb: 'binds every agent, every message, forever' },
+  { id: ROUTE_TARGET, label: 'THOR', blurb: 'say it once, he decides who needs it' },
+]);
 
 export function createComposer({ dom, send, getAgents, getTarget, setTarget, onSend }) {
   if (!dom.input) return { setTarget() {}, focus() {} };
@@ -15,6 +25,7 @@ export function createComposer({ dom, send, getAgents, getTarget, setTarget, onS
   let highlighted = 0;
   let token = 0;
   let attachments = [];
+  let lastMission = '';
 
   function agentIds() {
     return getAgents().map((agent) => agent.id);
@@ -215,8 +226,15 @@ export function createComposer({ dom, send, getAgents, getTarget, setTarget, onS
     dom.targetChip.setAttribute('tabindex', '0');
     dom.targetChip.title = 'Click to address the mission instead';
     dom.targetChip.style.cursor = 'pointer';
+    // Clicking the chip cycles the three ways of speaking once: MISSION, then
+    // POLICY, then THOR. Standing at a desk, the first click steps back out.
     const toMission = () => {
-      setTarget?.(MISSION_TARGET);
+      const here = getTarget?.();
+      const index = SPEAK_TARGETS.findIndex((t) => t.id === here);
+      const next = index === -1
+        ? MISSION_TARGET
+        : SPEAK_TARGETS[(index + 1) % SPEAK_TARGETS.length].id;
+      setTarget?.(next);
       dom.input.focus();
     };
     dom.targetChip.addEventListener('click', toMission);
@@ -267,15 +285,39 @@ export function createComposer({ dom, send, getAgents, getTarget, setTarget, onS
   dom.input.addEventListener('blur', () => setTimeout(closeMenu, 120));
 
   return {
-    setTarget(target, agents) {
+    // Addressing the mission shows the mission that is already set, so it can
+    // be edited rather than retyped from memory. Never while you are typing:
+    // a redraw must not overwrite what is in your hands.
+    setTarget(target, agents, mission = '') {
       if (dom.targetChip) {
         const agent = agents.find((candidate) => candidate.id === target);
-        dom.targetChip.textContent = agent ? `→ ${agent.label ?? agent.name}` : 'MISSION';
+        const preset = SPEAK_TARGETS.find((t) => t.id === target);
+        dom.targetChip.textContent = agent
+          ? `→ ${agent.label ?? agent.name}`
+          : (preset?.label ?? 'MISSION');
+        dom.targetChip.title = preset?.blurb ?? '';
       }
-      if (dom.input) {
-        dom.input.placeholder = target === MISSION_TARGET
-          ? 'set the mission · @file /skill @agent'
-          : `steer ${target} · @file /skill @agent`;
+      if (!dom.input) return;
+      const toMission = target === MISSION_TARGET;
+      dom.input.placeholder = toMission
+        ? 'set the mission · @file /skill @agent'
+        : target === POLICY_TARGET
+          ? 'a rule every agent obeys, on every message, from now on'
+          : target === ROUTE_TARGET
+            ? 'say it once - Thor decides who needs to hear it'
+            : `steer ${target} · @file /skill @agent`;
+
+      const typing = document.activeElement === dom.input;
+      if (typing) return;
+      if (toMission) {
+        // Only when the box holds nothing of yours, or the last mission we put
+        // there ourselves - never clobber a draft.
+        if (!dom.input.value || dom.input.value === lastMission) {
+          dom.input.value = mission ?? '';
+          lastMission = mission ?? '';
+        }
+      } else if (dom.input.value && dom.input.value === lastMission) {
+        dom.input.value = ''; // that was the mission, not a steer for this agent
       }
     },
     focus() {
