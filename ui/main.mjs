@@ -3,6 +3,7 @@
 // room, the docked windows and the composer. No rules live here.
 
 import { EVENT_KINDS } from '../core/events.mjs';
+import { crosstalkDelivery } from '../core/coordination.mjs';
 import {
   agentPose,
   detectLoops,
@@ -184,18 +185,13 @@ function noticeHandouts(before, after) {
     goalsSeen = true;
     return; // the first snapshot is history, not news
   }
-  const boss = orchestratorId();
-  let handed = 0;
   for (const [agentId, goal] of Object.entries(after)) {
     const objective = goal?.objective ?? '';
     if (!objective || objective === (before?.[agentId]?.objective ?? '')) continue;
-    handed += 1;
-    if (agentId !== boss) addPing(boss, agentId);
     // The desk says what it was just told to do, in one line, for as long as
     // any other bubble would hold.
     shownBubble.set(agentId, { text: firstLine(objective), at: Date.now() });
   }
-  if (handed > 0) fireMove(boss, 'neutral');
 }
 
 // An event this page made up, so a client-side refusal can appear in the same
@@ -235,16 +231,17 @@ const MOVE_COOLDOWN_MS = 4000;
 const MOVE_LIFE_MS = 900;
 const lastMoveAt = new Map();
 
-// Thor giving somebody their orders is a thing that HAPPENS in the room: he
-// gets up, walks over, and says it. A ping is exactly that signal.
+// Every directed Crosstalk event uses the same domain projection. The scene
+// only owns animation state; it does not decide who spoke to whom.
 function noticeErrand(event) {
-  if (event.kind !== EVENT_KINDS.PING) return;
-  const message = event.payload?.text ?? event.payload?.reason ?? '';
+  const delivery = crosstalkDelivery(event);
+  if (!delivery) return;
   state.errands = enqueueErrand(state.errands, {
-    heroId: event.agentId,
-    toId: event.payload?.toAgentId ?? event.payload?.to,
-    message,
+    heroId: delivery.fromAgentId,
+    toId: delivery.toAgentId,
+    message: delivery.message,
   }, Date.now());
+  addPing(delivery.fromAgentId, delivery.toAgentId);
 }
 
 function queueMove(event) {

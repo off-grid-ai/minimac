@@ -52,14 +52,31 @@ export function createLeaseEvent(agentId, payload, ts = Date.now()) {
 }
 
 export function isCrosstalkEvent(event) {
-  if (event?.kind === EVENT_KINDS.ESCALATION) return true;
-  if (event?.kind === EVENT_KINDS.MESSAGE) {
-    // Operator messages are addressed to one selected Avenger. Structured
-    // escalations cover the other direction. Neither needs inferred prose.
-    return event.payload?.from === 'you' || Boolean(event.payload?.toAgentId);
+  return Boolean(crosstalkDelivery(event));
+}
+
+// Every directed hero-to-hero event has one animation projection. The scene
+// does not infer recipients from prose, and operator messages do not pretend
+// to be conversations between heroes.
+export function crosstalkDelivery(event) {
+  const payload = event?.payload ?? {};
+  if (event?.kind === EVENT_KINDS.ORDER) {
+    return delivery(event.agentId, payload.toAgentId, payload.text);
   }
-  return event?.kind === EVENT_KINDS.ORDER
-    && [ORDER_ACTION.STEER, ORDER_ACTION.GOAL].includes(event.payload?.action);
+  if (event?.kind === EVENT_KINDS.ESCALATION && payload.state === ESCALATION_STATE.OPEN) {
+    return delivery(payload.fromAgentId ?? event.agentId, payload.toAgentId, payload.why);
+  }
+  if (event?.kind === EVENT_KINDS.MESSAGE && payload.fromAgentId && payload.toAgentId) {
+    return delivery(payload.fromAgentId, payload.toAgentId, payload.text);
+  }
+  return null;
+}
+
+function delivery(fromAgentId, toAgentId, message) {
+  if (!fromAgentId || !toAgentId || fromAgentId === toAgentId || !String(message ?? '').trim()) {
+    return null;
+  }
+  return { fromAgentId, toAgentId, message: String(message).trim() };
 }
 
 export function isBoardActivityEvent(event) {

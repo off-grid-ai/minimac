@@ -6,6 +6,7 @@ import {
 } from '../core/board.mjs';
 import { createEvent, EVENT_KINDS } from '../core/events.mjs';
 import { ROLES } from '../core/roster.mjs';
+import { ORDER_ACTION } from '../core/coordination.mjs';
 
 // Application boundary for checkpoint writes. The HTTP server wires
 // storage and delivery into this service; it does not own these use cases.
@@ -52,7 +53,14 @@ export function createWorkBoard({
         + (owner ? ` → ${agents[owner].label ?? owner}` : ' (nobody yet)'),
       from: 'you',
     }));
-    if (owner) order(owner, `${result.item.id}: ${result.item.title}`);
+    if (owner) {
+      order(
+        owner,
+        `${result.item.id}: ${result.item.title}`,
+        ORDER_ACTION.ASSIGN,
+        result.item.id,
+      );
+    }
     return { ...result, board };
   }
 

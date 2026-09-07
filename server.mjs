@@ -496,7 +496,7 @@ async function harvestGoals(event) {
     if (!state.agents[agentId] || typeof objective !== 'string' || !objective.trim()) continue;
     state.goals = setGoal(state.goals, agentId, objective.trim(), null, 'active', 'derived');
     store.saveGoal(agentId, getGoal(state.goals, agentId));
-    orders(agentId, objective.trim());
+    orders(agentId, objective.trim(), ORDER_ACTION.GOAL);
     applied += 1;
   }
   if (named > 0) {
@@ -905,11 +905,11 @@ async function applyVerdict(verdict) {
     orders(verdict.agentId, verdict.text);
   } else if (verdict.action === VERDICT.GOAL) {
     await COMMANDS.setGoal({ agentId: verdict.agentId, objective: verdict.text });
-    orders(verdict.agentId, verdict.text);
   } else if (verdict.action === VERDICT.BENCH) {
     await COMMANDS.setActive({ agentId: verdict.agentId, active: false });
   } else if (verdict.action === VERDICT.START) {
     await COMMANDS.setActive({ agentId: verdict.agentId, active: true });
+    orders(verdict.agentId, verdict.text || 'Start your next ready checkpoint', ORDER_ACTION.START);
   }
   ingest(createEvent('minimac', EVENT_KINDS.STATUS, {
     text: `${verdict.action} on ${who}: ${verdict.note || verdict.text}`,
@@ -1669,6 +1669,7 @@ const COMMANDS = {
         throw new Error(`${agent.label ?? agentId} did not receive the changed goal`);
       }
     }
+    orders(agentId, objective, ORDER_ACTION.GOAL);
     return { goal: getGoal(state.goals, agentId) };
   },
 
@@ -1702,7 +1703,12 @@ const COMMANDS = {
       if (result.error) throw new Error(result.error);
       state.board = result.board;
       store.saveItem(result.item);
-      orders(owner, `${result.item.id}: ${result.item.title}`);
+      orders(
+        owner,
+        `${result.item.id}: ${result.item.title}`,
+        ORDER_ACTION.ASSIGN,
+        result.item.id,
+      );
       return { item: result.item };
     }
     const result = workBoard.add({
@@ -1758,7 +1764,12 @@ const COMMANDS = {
     if (result.error) throw new Error(result.error);
     state.board = result.board;
     store.saveItem(result.item);
-    orders(owner, `${result.item.id}: ${result.item.title}`);
+    orders(
+      owner,
+      `${result.item.id}: ${result.item.title}`,
+      ORDER_ACTION.ASSIGN,
+      result.item.id,
+    );
     return { item: result.item };
   },
 
@@ -2291,6 +2302,8 @@ async function executeAgentTool(principal, name, args) {
     orders(
       args.agentId,
       checkpoint ? `Start ${checkpoint.title}` : 'Start your next ready checkpoint',
+      ORDER_ACTION.START,
+      checkpoint?.id ?? null,
     );
     return result;
   }
