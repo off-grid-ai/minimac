@@ -80,6 +80,9 @@ export function createWorkBoard({
     emit(createEvent(agentId, EVENT_KINDS.STATUS, {
       text: `${move.item} ${move.gate}: ${move.state}`,
       from: 'you',
+      checkpointId: move.item,
+      gate: move.gate,
+      gateState: move.state,
     }));
     return { ...result, item };
   }

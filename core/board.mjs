@@ -346,6 +346,29 @@ export function progress(board) {
   };
 }
 
+// A live checkpoint can exceed its own estimate. The lease supplies the only
+// valid start time; old messages and agent plans are not work lifecycle state.
+export function worstOverrun(board, agentId, now = Date.now(), factor = 2) {
+  const overruns = itemsOf(board)
+    .filter((item) => !isClosed(item) && !item.paused)
+    .filter((item) => item.lease?.state === 'running' && item.lease.agentId === agentId)
+    .filter((item) => Number.isFinite(item.lease.startedAt))
+    .filter((item) => Number.isFinite(item.estimateMs) && item.estimateMs > 0)
+    .map((item) => {
+      const actualMs = Math.max(0, now - item.lease.startedAt);
+      return {
+        checkpointId: item.id,
+        title: item.title,
+        estimateMs: item.estimateMs,
+        actualMs,
+        burnRatio: actualMs / item.estimateMs,
+      };
+    })
+    .filter((item) => item.burnRatio > factor)
+    .sort((a, b) => b.burnRatio - a.burnRatio);
+  return overruns[0] ?? null;
+}
+
 // ------------------------------------------------------------- for a prompt
 
 // Checkpoints as an agent should read them: what is mine, what is waiting on me,

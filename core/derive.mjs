@@ -5,6 +5,7 @@
 // from a recorded run.
 
 import { EVENT_KINDS, CLAIM_GRADES } from './events.mjs';
+import { worstOverrun } from './board.mjs';
 
 export const POSE = Object.freeze({
   TYPING: 'typing',
@@ -142,27 +143,18 @@ function diffPoints(events) {
     .map((event) => ({ ts: event.ts, value: event.payload.lines }));
 }
 
-// Anything that counts as ground gained other than a bigger diff. A plan is
-// re-declared in full on every update, so a step that was already finished is
-// not news - only the moment the count of finished steps goes UP is progress.
+// Anything that counts as ground gained other than a bigger diff. Checkpoint
+// gate transitions are the canonical progress record.
 function progressPoints(events) {
-  const points = [];
-  let done = 0;
-  for (const event of events) {
-    if (event.kind === EVENT_KINDS.PING && event.payload?.kind === 'verified') {
-      points.push(event.ts);
-      continue;
-    }
-    if (event.kind !== EVENT_KINDS.PLAN) continue;
-    const finished = (event.payload?.steps ?? []).filter(isDoneStep).length;
-    if (finished > done) points.push(event.ts);
-    done = Math.max(done, finished);
-  }
-  return points;
-}
-
-function isDoneStep(step) {
-  return step?.status === 'completed' || step?.status === 'verified';
+  return events
+    .filter((event) => (
+      event.kind === EVENT_KINDS.PING && event.payload?.kind === 'verified'
+    ) || (
+      event.kind === EVENT_KINDS.STATUS
+      && event.payload?.checkpointId
+      && event.payload?.gateState === 'pass'
+    ))
+    .map((event) => event.ts);
 }
 
 function valueAt(points, ts) {
@@ -178,115 +170,11 @@ function countBetween(timestamps, from, to) {
   return timestamps.filter((ts) => ts > from && ts <= to).length;
 }
 
-// ------------------------------------------------------------------ timing
-
-// The agent's own estimate is a claim like any other. This is the measurement
-// that grades it: when a step actually started and ended, taken from the event
-// stream, never from what the agent said about itself.
-export function stepTimings(events, now = Date.now()) {
-  const plans = events.filter((event) => event.kind === EVENT_KINDS.PLAN);
-  if (plans.length === 0) return [];
-
-  const timings = [];
-  for (const event of plans) {
-    const steps = event.payload?.steps ?? [];
-    for (const [index, step] of steps.entries()) {
-      let timing = matchTiming(timings, step, index);
-      if (!timing) {
-        timing = createStepTiming(step, index);
-        timings.push(timing);
-      }
-      timing.status = step?.status ?? timing.status;
-      if (timing.startedAt === null && isStartedStep(step)) timing.startedAt = event.ts;
-      if (timing.completedAt === null && isDoneStep(step)) {
-        timing.startedAt ??= event.ts;
-        timing.completedAt = event.ts;
-      }
-    }
-  }
-
-  // A verified ping is the tester's word that a step landed; it closes a step
-  // the plan itself never marked done.
-  for (const event of events) {
-    if (event.kind !== EVENT_KINDS.PING || event.payload?.kind !== 'verified') continue;
-    const timing = matchByLabel(timings, { step: event.payload.step });
-    if (!timing || timing.completedAt !== null) continue;
-    timing.startedAt ??= event.ts;
-    timing.completedAt = event.ts;
-  }
-
-  // A plan is a complete snapshot. Use its current membership and order, but
-  // attach the event-derived clock accumulated across every earlier snapshot.
-  // This keeps new steps visible without bringing removed steps back.
-  const latest = plans.at(-1).payload?.steps ?? [];
-  return latest.map((step, index) => {
-    const timing = matchTiming(timings, step, index) ?? createStepTiming(step, index);
-    const startedAt = timing.startedAt;
-    const endedAt = timing.completedAt ?? (startedAt === null ? null : now);
-    const actualMs = startedAt === null ? null : Math.max(0, endedAt - startedAt);
-    return {
-      ...timing,
-      actualMs,
-      running: startedAt !== null && timing.completedAt === null,
-      measured: startedAt !== null,
-      burnRatio:
-        timing.estimateMs > 0 && actualMs !== null ? actualMs / timing.estimateMs : null,
-    };
-  });
-}
-
-function createStepTiming(step, index) {
-  return {
-    id: step?.id ?? null,
-    index,
-    step: stepLabel(step),
-    estimateMs: Number.isFinite(step?.estimateMs) ? step.estimateMs : null,
-    startedAt: null,
-    completedAt: null,
-    status: step?.status ?? 'pending',
-  };
-}
-
-function stepLabel(step) {
-  return step?.user_visible_result ?? step?.step ?? '';
-}
-
-function matchByLabel(timings, step) {
-  const label = stepLabel(step);
-  return label ? timings.find((timing) => timing.step === label) ?? null : null;
-}
-
-function matchTiming(timings, step, index) {
-  if (step?.id) {
-    return timings.find((timing) => timing.id === step.id) ?? null;
-  }
-  return matchByLabel(timings, step) ?? timings[index] ?? null;
-}
-
-function isStartedStep(step) {
-  return step?.status !== undefined && step.status !== 'pending';
-}
-
-// Kept for the flow panel, which grades one declared step at a time. The
-// measured equivalent is stepTimings().burnRatio.
+// The Flow panel receives checkpoint projections, so this ratio grades the
+// canonical checkpoint estimate against its lease-derived elapsed time.
 export function burnRatio(step) {
   if (!step?.estimateMs || step.estimateMs <= 0) return null;
   return (step.actualMs ?? 0) / step.estimateMs;
-}
-
-// An estimate is only an estimate if it came BEFORE the work. One that first
-// appears on a step already running is a number written to match reality.
-export function lateEstimate(step, seenAt = null) {
-  if (!step?.estimateMs || !seenAt?.startedAt || !seenAt?.estimateFirstSeenAt) return false;
-  return seenAt.estimateFirstSeenAt > seenAt.startedAt;
-}
-
-// The worst measured overrun, or null when nothing is over its estimate.
-export function worstOverrun(events, now = Date.now(), factor = 2) {
-  const over = stepTimings(events, now)
-    .filter((timing) => timing.burnRatio !== null && timing.burnRatio > factor)
-    .sort((a, b) => b.burnRatio - a.burnRatio);
-  return over[0] ?? null;
 }
 
 // ----------------------------------------------------------------- silence
@@ -399,7 +287,7 @@ export function agentPose(agent, events, now = Date.now()) {
 
 // One place that decides what deserves your attention, so the queue stays
 // short and every card is actionable.
-export function pendingDecisions(agent, events, now = Date.now()) {
+export function pendingDecisions(agent, events, now = Date.now(), board = null) {
   const decisions = [];
   // A stopped agent needs no decision. Loops, overruns and silence are read
   // from history, so without this a card outlives the thing it described and
@@ -416,12 +304,13 @@ export function pendingDecisions(agent, events, now = Date.now()) {
     });
   }
 
-  const overrun = worstOverrun(events, now);
+  const overrun = worstOverrun(board, agent.id, now);
   if (overrun) {
     decisions.push({
       agentId: agent.id,
+      checkpointId: overrun.checkpointId,
       kind: 'overrun',
-      detail: `${overrun.step} at ${overrun.burnRatio.toFixed(1)}x estimate (${seconds(overrun.actualMs)}s of ${seconds(overrun.estimateMs)}s, measured)`,
+      detail: `${overrun.checkpointId} · ${overrun.title} at ${overrun.burnRatio.toFixed(1)}x estimate (${seconds(overrun.actualMs)}s of ${seconds(overrun.estimateMs)}s, active lease)`,
       actions: ['steer', 'split', 'kill'],
     });
   }

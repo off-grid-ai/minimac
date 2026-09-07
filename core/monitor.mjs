@@ -21,7 +21,8 @@ import { pendingDecisions } from './derive.mjs';
 // minutes would wake the orchestrator several hundred times.
 export function cardKey(card) {
   const base = `${card.agentId}:${card.kind}`;
-  return card.approval?.id ? `${base}:${card.approval.id}` : base;
+  if (card.approval?.id) return `${base}:${card.approval.id}`;
+  return card.checkpointId ? `${base}:${card.checkpointId}` : base;
 }
 
 // A card owns the time its condition first became visible. Keep that time on
@@ -68,7 +69,7 @@ export function prayerOf(events = []) {
 //
 // `agents` is the list in display order. `eventsByAgent` is a plain object of
 // agentId -> that agent's events, oldest first.
-export function deriveCards(agents = [], eventsByAgent = {}, now = Date.now()) {
+export function deriveCards(agents = [], eventsByAgent = {}, board = null, now = Date.now()) {
   const cards = [];
   for (const agent of agents) {
     if (agent.enabled === false) continue; // off the mission, not worth reporting
@@ -76,7 +77,7 @@ export function deriveCards(agents = [], eventsByAgent = {}, now = Date.now()) {
     const approval = pendingApproval(events);
     const name = agent.label ?? agent.name;
 
-    const derived = pendingDecisions(agent, events, now).map((decision) => ({
+    const derived = pendingDecisions(agent, events, now, board).map((decision) => ({
       ...decision,
       agentName: name,
       approval: decision.kind === 'blocked' ? approval : null,

@@ -385,7 +385,7 @@ function deriveLocalCards(now) {
   return orderedAgents().filter((agent) => agent.enabled !== false).flatMap((agent) => {
     const events = state.eventsByAgent[agent.id] ?? [];
     const approval = pendingApproval(events);
-    const cards = pendingDecisions(agent, events, now).map((decision) => ({
+    const cards = pendingDecisions(agent, events, now, { items: state.board }).map((decision) => ({
       ...decision,
       agentName: agent.label ?? agent.name,
       // An engine parked on a permission request is not just "blocked": it is

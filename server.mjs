@@ -226,12 +226,6 @@ if (adopted) {
     const restored = projectWorkers({ ...agent, workers: saved, blockedReason: null });
     state.agents = patchAgent(state.agents, agent.id, projectWorkers(restored, ensureWorkers(restored)));
   }
-  const adoptedAt = Date.now();
-  state.cards = stampCards(
-    state.cards,
-    deriveCards(Object.values(state.agents), indexByAgent(state.events), adoptedAt),
-    adoptedAt,
-  );
   // The checkpoints belong to the run, so rejoining a run rejoins its work.
   // Older `continue` runs opened a new record without copying the checkpoint
   // rows. Their first status event still records the source run, which lets a
@@ -249,6 +243,12 @@ if (adopted) {
     }
   }
   state.board = { items: adoptedItems };
+  const adoptedAt = Date.now();
+  state.cards = stampCards(
+    state.cards,
+    deriveCards(Object.values(state.agents), indexByAgent(state.events), state.board, adoptedAt),
+    adoptedAt,
+  );
 }
 const worktrees = createWorktrees({ repo: options.repo, root: join(ROOT, 'worktrees') });
 const repoIndex = createRepoIndex();
@@ -798,6 +798,7 @@ function refreshCards() {
   const derived = deriveCards(
     Object.values(state.agents),
     indexByAgent(state.events),
+    state.board,
     now,
   );
   const liveKeys = new Set(derived.map(cardKey));
