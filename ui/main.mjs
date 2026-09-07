@@ -92,6 +92,9 @@ let scene = null;
 let composer = null;
 let strip = null;
 const sound = createSound();
+// Feed rows are rebuilt whenever a live event arrives. Keep disclosure state
+// outside those short-lived DOM nodes so the reader's choices survive updates.
+const expandedFeedRows = new Set();
 
 // ------------------------------------------------------------------ server
 
@@ -1352,7 +1355,7 @@ function renderFeed() {
       // to each other, or that plus whatever changes what happens next.
       if (!passesPreset(event, state.feedPreset)) continue;
       const entry = feedEntry(agent, event);
-      if (entry) lines.push({ ...entry, ts: event.ts });
+      if (entry) lines.push({ ...entry, ts: event.ts, key: feedEventKey(agentId, event) });
     }
   }
   lines.sort((a, b) => a.ts - b.ts);
@@ -1373,6 +1376,33 @@ function renderFeed() {
   feedBody.replaceChildren(...rows);
   // Only follow the tail if the reader was already at it.
   if (atBottom) feedBody.scrollTop = feedBody.scrollHeight;
+}
+
+function feedEventKey(agentId, event) {
+  const payload = event.payload ?? {};
+  return JSON.stringify([
+    agentId,
+    event.ts,
+    event.kind,
+    payload.toolUseId ?? payload.sessionId ?? '',
+    payload.action ?? '',
+    payload.target ?? '',
+    payload.reason ?? '',
+    payload.text ?? '',
+  ]);
+}
+
+function rememberFeedRow(key, open) {
+  if (open) {
+    expandedFeedRows.add(key);
+    // This state is only a reading aid. Bound it independently of the event
+    // history so a long mission cannot grow it without limit.
+    while (expandedFeedRows.size > 400) {
+      expandedFeedRows.delete(expandedFeedRows.values().next().value);
+    }
+  } else {
+    expandedFeedRows.delete(key);
+  }
 }
 
 // Codex sends prose as deltas and can finish with the full message. Join only
@@ -1480,17 +1510,32 @@ function feedRow(entry) {
 
   const body = document.createElement('div');
   body.className = 'md';
-  body.innerHTML = renderMarkdown(entry.text);
   if (entry.tone === 'alert') body.style.color = 'var(--danger,#f87171)';
   // The full command is one click away rather than filling the feed.
   if (entry.full && entry.full.length > entry.text.length) {
     body.title = entry.full;
-    body.style.cursor = 'zoom-in';
-    body.onclick = () => {
-      const open = body.dataset.open !== '1';
+    body.role = 'button';
+    body.tabIndex = 0;
+    const draw = () => {
+      const open = expandedFeedRows.has(entry.key);
       body.innerHTML = renderMarkdown(open ? entry.full : entry.text);
       body.dataset.open = open ? '1' : '0';
+      body.setAttribute('aria-expanded', String(open));
+      body.style.cursor = open ? 'zoom-out' : 'zoom-in';
     };
+    const toggle = () => {
+      rememberFeedRow(entry.key, !expandedFeedRows.has(entry.key));
+      draw();
+    };
+    body.onclick = toggle;
+    body.onkeydown = (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggle();
+    };
+    draw();
+  } else {
+    body.innerHTML = renderMarkdown(entry.text);
   }
   row.append(body);
   return row;
