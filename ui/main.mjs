@@ -1617,6 +1617,32 @@ function feedEntry(agent, event) {
       tone: '',
     };
   }
+  if (event.kind === EVENT_KINDS.ORDER) {
+    const to = state.agents[payload.toAgentId]?.label ?? payload.toAgentId ?? 'Avenger';
+    return {
+      at,
+      who,
+      text: `${payload.action.toUpperCase()} -> ${to}${payload.checkpointId ? ` · ${payload.checkpointId}` : ''}\n${payload.text}`,
+      tone: 'tool',
+    };
+  }
+  if (event.kind === EVENT_KINDS.ESCALATION) {
+    const stateLabel = payload.state === 'resolved' ? 'RESOLVED' : String(payload.needs ?? 'decision').toUpperCase();
+    const details = [payload.checkpointId, payload.why, payload.receipt ? `<- ${payload.receipt}` : null]
+      .filter(Boolean).join('\n');
+    return { at, who, text: `${stateLabel}\n${details}`, tone: payload.state === 'open' ? 'alert' : '' };
+  }
+  if (event.kind === EVENT_KINDS.LEASE) {
+    return {
+      at,
+      who: '',
+      text: `${payload.checkpointId ?? payload.workerId} ${payload.state}`,
+      tone: payload.state === 'expired' ? 'alert' : 'tool',
+    };
+  }
+  if (event.kind === EVENT_KINDS.FLOW) {
+    return { at, who: '', text: `FLOW ${payload.action}\n${payload.outcome ?? payload.id ?? ''}`, tone: '' };
+  }
   if (event.kind === EVENT_KINDS.TOOL) {
     const target = String(payload.target ?? '');
     const short = payload.action === 'run' ? summariseCommand(target) : target.replace(/\s+/g, ' ').trim();

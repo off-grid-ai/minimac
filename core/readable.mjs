@@ -4,6 +4,7 @@
 // does this event say", and it is the same wherever it is shown.
 
 import { EVENT_KINDS } from './events.mjs';
+import { isBoardActivityEvent, isCrosstalkEvent } from './coordination.mjs';
 
 // A shell command is not a sentence. Say what was run in a few words; the exact
 // command stays available wherever the surface can afford it.
@@ -177,21 +178,12 @@ export function isPreset(id) {
   return id === 'board' || FEED_PRESETS.some((preset) => preset.id === id);
 }
 
-// A hero addressing another hero, either way round.
-function isCrosstalk(event) {
-  if (event?.kind === 'ping') return Boolean(event.payload?.to || event.payload?.toAgentId);
-  // Something you typed at an agent, or an agent answering you, is also two
-  // parties talking - it just happens that one of them is Mac.
-  return event?.payload?.from === 'you';
-}
-
 // Things that change what happens next: an order, a ruling, a permission
 // request, a block, a finished turn, or a claim with a command behind it.
-const SIGNAL_KINDS = new Set(['ping', 'blocked', 'approval', 'result', 'prayer', 'claim', 'plan']);
-
-// A line about the work itself: an item handed out, or a gate moved. Both are
-// written as status lines by the server, so they are recognised by shape.
-const BOARD_LINE = /^(w\d+[ :]|gate refused:)/;
+const SIGNAL_KINDS = new Set([
+  'ping', 'blocked', 'approval', 'result', 'prayer', 'claim', 'plan',
+  'order', 'escalation', 'lease', 'flow',
+]);
 
 export function passesPreset(event, preset = 'all') {
   if (preset === 'all' || !isPreset(preset)) return true;
@@ -204,10 +196,10 @@ export function passesPreset(event, preset = 'all') {
 
   // Only the work moving.
   if (preset === 'board' || preset === 'checkpoints') {
-    return event?.kind === 'status' && BOARD_LINE.test(String(event.payload?.text ?? ''));
+    return isBoardActivityEvent(event);
   }
 
-  if (isCrosstalk(event)) return true;
+  if (isCrosstalkEvent(event)) return true;
   if (preset === 'crosstalk') return false;
   if (!SIGNAL_KINDS.has(event?.kind)) return false;
   if (event.kind === 'claim') return Boolean(event.payload?.receipt);

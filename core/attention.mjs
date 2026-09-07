@@ -29,6 +29,8 @@ export function cueFor(event) {
     case EVENT_KINDS.MESSAGE:
       // Your own steer is not news to you.
       return payload.from === 'you' ? null : CUES.MESSAGE;
+    case EVENT_KINDS.ESCALATION:
+      return payload.state === 'open' ? CUES.MESSAGE : null;
     case EVENT_KINDS.RESULT:
       return payload.isError ? CUES.BLOCKED : CUES.VERIFIED;
     default:

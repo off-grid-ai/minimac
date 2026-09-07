@@ -61,6 +61,8 @@ import { createUploads } from './adapters/uploads.mjs';
 import { createGithubChecksPort } from './adapters/github-checks.mjs';
 import { createCiMonitor } from './application/ci-monitor.mjs';
 import { createWorkBoard } from './application/work-board.mjs';
+import { createFleetCoordination } from './application/fleet-coordination.mjs';
+import { ORDER_ACTION } from './core/coordination.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
 import {
   deriveCards,
@@ -517,10 +519,20 @@ function harvestReport(event) {
     const need = ['decision', 'unblock', 'conflict'].includes(plea.needs)
       ? plea.needs
       : 'decision';
-    void tellThor(
-      event.agentId,
-      `${event.agentId} needs ${need}: ${String(plea.why).trim()}`,
-    ).catch(() => {});
+    const worker = event.payload?.workerId
+      ? ensureWorkers(state.agents[event.agentId]).find(
+        (candidate) => candidate.id === event.payload.workerId,
+      )
+      : null;
+    void coordination.escalate({
+      fromAgentId: event.agentId,
+      fromWorkerId: event.payload?.workerId ?? null,
+      checkpointId: plea.checkpointId ?? worker?.checkpointId ?? null,
+      needs: need,
+      why: String(plea.why).trim(),
+      involvedAgentId: plea.agent ?? null,
+      receipt: plea.receipt ?? '',
+    }).catch(() => {});
   }
 
   // A worker can ask to stand down, but one worker must not stop every session
@@ -691,16 +703,20 @@ function ingest(rawIncoming) {
 // table: the floor walks him over and has him say it. Every outbound act of
 // his goes through here, so a goal, an assignment and a ruling all look the
 // same on the floor.
-function orders(toAgentId, text) {
+let coordination = null;
+
+function orders(toAgentId, text, action = ORDER_ACTION.STEER, checkpointId = null) {
   const boss = Object.values(state.agents).find((a) => a.role === ROLES.ORCHESTRATOR);
   if (!boss || !state.agents[toAgentId] || toAgentId === boss.id) return;
   if (!String(text ?? '').trim()) return;
-  ingest(createEvent(boss.id, EVENT_KINDS.PING, {
-    to: toAgentId,
+  coordination?.order({
+    fromAgentId: boss.id,
     toAgentId,
-    kind: 'orders',
+    action,
+    checkpointId,
     text: String(text).trim(),
-  }));
+    revision: checkpointId ?? String(text).trim(),
+  });
 }
 
 const workBoard = createWorkBoard({
@@ -1884,6 +1900,19 @@ const COMMANDS = {
   },
 };
 
+coordination = createFleetCoordination({
+  getEvents: () => state.events,
+  emit: ingest,
+  orchestratorId: () => Object.values(state.agents)
+    .find((agent) => agent.role === ROLES.ORCHESTRATOR)?.id ?? null,
+  deliver: async (agentId, text) => {
+    const agent = state.agents[agentId];
+    if (!agent) throw new Error(`unknown agent: ${agentId}`);
+    if (agent.sessionId) return COMMANDS.steer({ agentId, text });
+    return COMMANDS.setActive({ agentId, active: true, task: text });
+  },
+});
+
 const ciOwner = Object.values(state.agents).find((agent) => agent.role === ROLES.CODER)?.id ?? null;
 const ciWatcher = createCiMonitor({
   checks: createGithubChecksPort({ repo: options.repo }),
@@ -2194,15 +2223,17 @@ async function executeAgentTool(principal, name, args) {
     };
   }
   if (name === AGENT_TOOL.ESCALATE) {
-    const who = caller.label ?? caller.name ?? callerId;
-    const brief = [
-      `${who} needs ${args.needs}: ${String(args.why).trim()}`,
-      args.agent && `Avenger involved: ${args.agent}`,
-      args.receipt && `Receipt: ${args.receipt}`,
-    ].filter(Boolean).join('\n');
-    const sent = await tellThor(callerId, brief);
-    if (!sent) throw new Error('no Thor on the floor');
-    return { escalated: true, to: 'thor' };
+    const worker = ensureWorkers(caller).find((candidate) => candidate.id === workerId);
+    const escalation = await coordination.escalate({
+      fromAgentId: callerId,
+      fromWorkerId: workerId,
+      checkpointId: args.checkpointId ?? worker?.checkpointId ?? null,
+      needs: args.needs,
+      why: args.why,
+      involvedAgentId: args.agent ?? null,
+      receipt: args.receipt ?? '',
+    });
+    return { escalated: true, to: escalation.toAgentId, id: escalation.id };
   }
   if (name === AGENT_TOOL.ASSEMBLE) {
     const result = await harvestGoals({

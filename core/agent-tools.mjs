@@ -62,6 +62,7 @@ const TOOLS = Object.freeze({
       needs: { type: 'string', enum: ['decision', 'unblock', 'conflict'] },
       agent: { type: 'string', description: 'The Avenger involved, if another Avenger is needed.' },
       receipt: { type: 'string', description: 'The command or observed result that supports the request.' },
+      checkpointId: { type: 'string', description: 'The checkpoint that needs the decision. The current worker checkpoint is used when omitted.' },
     }, ['why', 'needs']),
   },
   [AGENT_TOOL.ASSEMBLE]: {
