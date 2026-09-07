@@ -44,6 +44,20 @@ CREATE TABLE IF NOT EXISTS claims (
   pattern  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS items (
+  run_id      INTEGER NOT NULL REFERENCES runs(id),
+  id          TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (run_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  name       TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS middleware (
   name       TEXT PRIMARY KEY,
   text       TEXT NOT NULL,
@@ -122,6 +136,23 @@ export function createStore({ file }) {
     'SELECT id, started_at, ended_at, mission, repo FROM runs ORDER BY id DESC LIMIT ?',
   );
   const selectGoals = db.prepare('SELECT * FROM goals WHERE run_id = ?');
+  const upsertSetting = db.prepare(
+    `INSERT INTO settings (name, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  );
+  const selectSetting = db.prepare('SELECT value FROM settings WHERE name = ?');
+  const upsertItem = db.prepare(
+    `INSERT INTO items (run_id, id, payload, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(run_id, id) DO UPDATE SET payload = excluded.payload,
+       updated_at = excluded.updated_at`,
+  );
+  const selectItems = db.prepare('SELECT payload FROM items WHERE run_id = ? ORDER BY rowid');
+  // The run this repo was last working on. A restart is not a new piece of
+  // work, so the server rejoins it rather than opening an empty one beside it.
+  const selectLiveRun = db.prepare(
+    `SELECT id, started_at, ended_at, mission, repo FROM runs
+     WHERE ended_at IS NULL AND repo = ? ORDER BY id DESC LIMIT 1`,
+  );
 
   let runId = null;
 
@@ -130,6 +161,15 @@ export function createStore({ file }) {
       const result = insertRun.run(Date.now(), mission ?? '', repo ?? '');
       runId = Number(result.lastInsertRowid);
       return runId;
+    },
+
+    // Rejoin the newest unfinished run for this repo, so a restart keeps the
+    // mission, the goals and the run's identity instead of starting blind.
+    adoptRun(repo) {
+      const run = selectLiveRun.get(repo ?? '');
+      if (!run) return null;
+      runId = Number(run.id);
+      return run;
     },
 
     finishRun() {
@@ -175,6 +215,21 @@ export function createStore({ file }) {
 
     // Middleware overrides outlive a run: they are how this fleet is told to
     // work, not part of any one mission.
+    // How far the orchestrator is trusted with the room's decision cards.
+    // A setting, not a run detail: it outlives runs and restarts.
+    // The board belongs to the run: reopening a run reopens its work, and a
+    // restart mid-mission does not lose who owned what.
+    saveItem(item) {
+      if (runId === null || !item?.id) return;
+      upsertItem.run(runId, item.id, JSON.stringify(item), Date.now());
+    },
+
+    itemsFor(targetRunId) {
+      return selectItems.all(targetRunId ?? runId)
+        .map((row) => { try { return JSON.parse(row.payload); } catch { return null; } })
+        .filter(Boolean);
+    },
+
     saveMiddleware(name, text) {
       if (text === null || text === undefined) deleteMiddleware.run(name);
       else upsertMiddleware.run(name, text, Date.now());
