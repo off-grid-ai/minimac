@@ -94,9 +94,6 @@ CREATE TABLE IF NOT EXISTS worker_sessions (
 CREATE INDEX IF NOT EXISTS worker_sessions_run_agent
   ON worker_sessions(run_id, agent_id, worker_id);
 
-CREATE UNIQUE INDEX IF NOT EXISTS worker_sessions_run_session
-  ON worker_sessions(run_id, session_id);
-
 CREATE TABLE IF NOT EXISTS engines (
   run_id   INTEGER NOT NULL REFERENCES runs(id),
   agent_id TEXT NOT NULL,
@@ -121,6 +118,16 @@ export function createStore({ file }) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
+  // Old builds could assign one conversation to several worker rows. Keep the
+  // newest owner, then make that ownership rule permanent in SQLite.
+  db.exec(`
+    DELETE FROM worker_sessions
+    WHERE rowid NOT IN (
+      SELECT MAX(rowid) FROM worker_sessions GROUP BY run_id, session_id
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS worker_sessions_run_session
+      ON worker_sessions(run_id, session_id);
+  `);
 
   const insertRun = db.prepare('INSERT INTO runs (started_at, mission, repo) VALUES (?, ?, ?)');
   const endRun = db.prepare('UPDATE runs SET ended_at = ? WHERE id = ?');
