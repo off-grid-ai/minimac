@@ -445,6 +445,21 @@ export function dispatchPipeline(extraSteps = []) {
 
     defineStep('prior-steps', ({ steps }) => priorSteps(steps)),
 
+    defineStep('engine-handoff', ({ handoff }) => {
+      if (!handoff?.transcript) return null;
+      const history = handoff.transcript.replaceAll('</engine-handoff>', '&lt;/engine-handoff&gt;');
+      return [
+        '# Prior engine handoff',
+        '',
+        `This session moved from ${handoff.from_engine} to ${handoff.to_engine}.`,
+        'Use this history for context only. The current goal, checkpoints, and task in this prompt control the work.',
+        '',
+        '<engine-handoff>',
+        history,
+        '</engine-handoff>',
+      ].join('\n');
+    }),
+
     defineStep('plan-three', (context) => (
       PLANS_THRICE.has(context.agent?.role)
         ? overridden(context, 'plan-three', planThreeRules())

@@ -258,7 +258,59 @@ for (const engine of Object.values(ENGINES)) {
 
 const subscribers = new Set();
 const WORKER_LIMIT_MS = 480_000;
+const HANDOFF_LIMIT = 16_000;
 const workerTimers = new Map();
+
+function boundedHandoff(text) {
+  const transcript = String(text ?? '').trim();
+  return transcript.length > HANDOFF_LIMIT
+    ? `[earlier history omitted]\n${transcript.slice(-HANDOFF_LIMIT)}`
+    : transcript;
+}
+
+function eventTranscript(agentId) {
+  const lines = [];
+  for (const event of eventsFor(state.events, agentId)) {
+    const payload = event.payload ?? {};
+    if (event.kind === EVENT_KINDS.MESSAGE && payload.text) {
+      lines.push(`${payload.from === 'you' ? 'USER' : 'ASSISTANT'}\n${payload.text}`);
+    } else if (event.kind === EVENT_KINDS.TOOL) {
+      lines.push(`TOOL\n${payload.action ?? 'tool'} ${payload.target ?? ''} ${payload.phase ?? ''}`.trim());
+    } else if (event.kind === EVENT_KINDS.CLAIM && payload.text) {
+      lines.push(`CLAIM\n${payload.text}${payload.receipt ? `\nreceipt: ${payload.receipt}` : ''}`);
+    } else if (event.kind === EVENT_KINDS.RESULT && payload.report) {
+      lines.push(`RESULT\n${JSON.stringify(payload.report)}`);
+    } else if (event.kind === EVENT_KINDS.BLOCKED && payload.reason) {
+      lines.push(`BLOCKED\n${payload.reason}`);
+    } else if (event.kind === EVENT_KINDS.STATUS && payload.text) {
+      lines.push(`STATUS\n${payload.text}`);
+    }
+  }
+  return boundedHandoff(lines.join('\n\n'));
+}
+
+async function captureEngineHandoff(agentId, fromEngine, toEngine, sessionId) {
+  if (fromEngine === toEngine) return null;
+  let transcript = '';
+  const driver = getDriver(fromEngine);
+  if (sessionId && typeof driver.history === 'function') {
+    try {
+      transcript = await driver.history(sessionId, options.repo);
+    } catch {
+      transcript = '';
+    }
+  }
+  transcript = boundedHandoff(transcript || eventTranscript(agentId));
+  if (!transcript) return null;
+  const handoff = {
+    fromEngine,
+    toEngine,
+    sourceSessionId: sessionId,
+    transcript,
+  };
+  store.saveHandoff(agentId, handoff);
+  return handoff;
+}
 
 // A restart does not guess. Ask each engine about the saved handle without
 // starting work. A live thread stays on; a resumable idle thread stays off
@@ -268,11 +320,11 @@ async function reconcileAdoptedSessions() {
     const agent = state.agents[row.agent_id];
     if (!agent) continue;
     if (row.engine !== agent.engine) {
+      await captureEngineHandoff(agent.id, row.engine, agent.engine, row.session_id);
       state.agents = patchAgent(state.agents, agent.id, {
         sessionId: null,
         sessionIds: [],
         resumeSessionId: null,
-        enabled: false,
         status: 'idle',
       });
       continue;
@@ -286,14 +338,13 @@ async function reconcileAdoptedSessions() {
         sessionId: live ? result.sessionId ?? row.session_id : null,
         sessionIds: live ? [result.sessionId ?? row.session_id] : [],
         resumeSessionId: result?.resumable === false ? null : row.session_id,
-        enabled: live,
+        enabled: live ? true : agent.enabled,
         status: live ? 'running' : (result?.state ?? 'idle'),
       });
     } catch {
       state.agents = patchAgent(state.agents, agent.id, {
         sessionId: null,
         sessionIds: [],
-        enabled: false,
         status: 'idle',
       });
     }
@@ -804,7 +855,11 @@ function applyToAgent(agents, event) {
       next.resumeSessionId = ended ?? next.resumeSessionId ?? null;
       if (next.sessionIds.length === 0) {
         next.workItemIds = [];
-        next.enabled = false;
+        // A stopped process leaves the mission. An idle process only finished
+        // its current turn and keeps its mission membership.
+        if (event.payload.state === 'stopped' && agent.role !== ROLES.ORCHESTRATOR) {
+          next.enabled = false;
+        }
       } else {
         next.status = 'running';
       }
@@ -991,6 +1046,7 @@ function promptContext(agent, task, {
     team: options.team,
     hook: options.hookText,
     overrides: middleware,
+    handoff: store.handoffFor(agent.id),
     exclusiveOutput,
   };
 }
@@ -1206,7 +1262,15 @@ const COMMANDS = {
       const driver = getDriver(agent.engine);
       try {
         if (!previousSession) throw new Error('no session recorded');
-        if (previousSession.engine !== agent.engine) throw new Error('session belongs to another engine');
+        if (previousSession.engine !== agent.engine) {
+          await captureEngineHandoff(
+            agent.id,
+            previousSession.engine,
+            agent.engine,
+            previousSession.session_id,
+          );
+          throw new Error('session belongs to another engine');
+        }
         if (typeof driver.resume !== 'function') throw new Error('engine cannot resume');
         const sessionId = await driver.resume(
           agent,
@@ -1351,6 +1415,7 @@ const COMMANDS = {
       resumeSessionId: null,
     });
     store.saveSession(agentId, sessionId, agent.engine);
+    store.clearHandoff(agentId);
     boundWorker(agentId, sessionId);
     return { sessionId, workers: state.agents[agentId].sessionIds?.length ?? 1 };
   },
@@ -1668,6 +1733,10 @@ const COMMANDS = {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
     if (!active) {
+      if (agent.role === ROLES.ORCHESTRATOR && store.runId !== null && state.mission) {
+        state.agents = patchAgent(state.agents, agentId, { enabled: true });
+        return { agentId, active: isActive(state.agents[agentId]), required: 'mission' };
+      }
       if (agent.sessionId) await interruptAgent(agentId);
       state.agents = patchAgent(state.agents, agentId, { enabled: false });
       return { agentId, active: false };
@@ -1687,7 +1756,9 @@ const COMMANDS = {
         exclusiveOutput,
       });
     } catch (error) {
-      state.agents = patchAgent(state.agents, agentId, { enabled: false });
+      state.agents = patchAgent(state.agents, agentId, {
+        enabled: agent.role === ROLES.ORCHESTRATOR && Boolean(state.mission),
+      });
       publish({ type: 'state', state: snapshot() });
       throw error;
     }
@@ -1697,10 +1768,13 @@ const COMMANDS = {
     const current = state.agents[agentId];
     if (!current) throw new Error(`unknown agent: ${agentId}`);
     if (current.engine === engine) return { engine };
+    ensureRun();
+    const sourceSessionId = current.sessionId ?? current.resumeSessionId ?? null;
+    await captureEngineHandoff(agentId, current.engine, engine, sourceSessionId);
     if (current.sessionId || current.sessionIds?.length) await interruptAgent(agentId);
     state.agents = assignEngine(state.agents, agentId, engine);
     state.agents = patchAgent(state.agents, agentId, {
-      enabled: false,
+      enabled: current.enabled,
       status: 'idle',
       sessionId: null,
       sessionIds: [],

@@ -15,6 +15,10 @@
 //   - approvals arrive as server->client REQUESTS with an id. They must be
 //     answered or the engine waits forever. That wait is the BLOCKED state.
 
+import { readFile, readdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import {
   APPROVAL_KINDS,
   BLOCKED_REASONS,
@@ -52,6 +56,8 @@ const ELICITATION = Object.freeze({
   decline: 'decline',
   cancel: 'cancel',
 });
+
+const HISTORY_LIMIT = 16_000;
 
 function isAccept(decision) {
   return decision === 'accept' || decision === 'acceptForSession';
@@ -432,6 +438,19 @@ export function createCodexDriver({
   // ------------------------------------------------------------------ port
 
   return {
+    async history(sessionId) {
+      try {
+        await connect();
+        const result = await request('thread/read', { threadId: sessionId, includeTurns: true });
+        const transcript = transcriptOf(result?.thread?.turns ?? []);
+        if (transcript) return transcript;
+      } catch {
+        // Old threads can outlive the app-server index. Their rollout JSONL is
+        // still the durable record, so an engine change must not lose it.
+      }
+      return localTranscript(sessionId);
+    },
+
     async reconcile(agent, cwd, sessionId) {
       await connect();
       // Register first so any status notification emitted during resume has a
@@ -556,6 +575,67 @@ export function createCodexDriver({
     const server = mcpServer?.(agent);
     return server ? { mcp_servers: { minimac: server } } : null;
   }
+}
+
+function transcriptOf(turns) {
+  const lines = [];
+  for (const turn of turns) {
+    for (const item of turn.items ?? []) {
+      if (item.type === 'userMessage') {
+        const text = (item.content ?? []).map(userInputText).filter(Boolean).join('\n');
+        if (text) lines.push(`USER\n${text}`);
+      } else if (item.type === 'agentMessage' && item.text) {
+        lines.push(`ASSISTANT\n${item.text}`);
+      } else if (item.type === 'commandExecution') {
+        const result = [
+          `status=${item.status}`,
+          item.exitCode === null || item.exitCode === undefined ? null : `exit=${item.exitCode}`,
+          item.aggregatedOutput?.slice(-1200),
+        ].filter(Boolean).join('\n');
+        lines.push(`COMMAND\n${item.command}${result ? `\n${result}` : ''}`);
+      } else if (item.type === 'mcpToolCall') {
+        lines.push(`TOOL\n${item.server}.${item.tool} status=${item.status}`);
+      } else if (item.type === 'fileChange') {
+        lines.push(`FILES\n${(item.changes ?? []).map((change) => change.path).filter(Boolean).join('\n')}`);
+      }
+    }
+  }
+  return boundedHistory(lines.join('\n\n'));
+}
+
+function userInputText(input) {
+  if (input?.type === 'text') return input.text ?? '';
+  if (input?.type === 'localImage') return `[image: ${input.path ?? 'local image'}]`;
+  if (input?.type === 'image') return '[image]';
+  return '';
+}
+
+async function localTranscript(sessionId) {
+  const root = join(homedir(), '.codex', 'sessions');
+  const entries = await readdir(root, { recursive: true });
+  const relative = entries.find((entry) => entry.endsWith(`${sessionId}.jsonl`));
+  if (!relative) return '';
+  const raw = await readFile(join(root, relative), 'utf8');
+  const lines = [];
+  for (const row of raw.split('\n')) {
+    if (!row.trim()) continue;
+    let record;
+    try { record = JSON.parse(row); } catch { continue; }
+    const item = record.type === 'response_item' ? record.payload : null;
+    if (item?.type !== 'message' || !['user', 'assistant'].includes(item.role)) continue;
+    const message = (item.content ?? [])
+      .map((part) => part?.text ?? '')
+      .filter(Boolean)
+      .join('\n');
+    if (message) lines.push(`${item.role === 'user' ? 'USER' : 'ASSISTANT'}\n${message}`);
+  }
+  return boundedHistory(lines.join('\n\n'));
+}
+
+function boundedHistory(transcript) {
+  return transcript.length > HISTORY_LIMIT
+    ? `[earlier history omitted]\n${transcript.slice(-HISTORY_LIMIT)}`
+    : transcript;
 }
 
 // ------------------------------------------------------------------ helpers

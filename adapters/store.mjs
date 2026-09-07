@@ -80,6 +80,17 @@ CREATE TABLE IF NOT EXISTS engines (
   engine   TEXT NOT NULL,
   PRIMARY KEY (run_id, agent_id)
 );
+
+CREATE TABLE IF NOT EXISTS engine_handoffs (
+  run_id            INTEGER NOT NULL REFERENCES runs(id),
+  agent_id          TEXT NOT NULL,
+  from_engine       TEXT NOT NULL,
+  to_engine         TEXT NOT NULL,
+  source_session_id TEXT,
+  transcript        TEXT NOT NULL,
+  created_at        INTEGER NOT NULL,
+  PRIMARY KEY (run_id, agent_id)
+);
 `;
 
 export function createStore({ file }) {
@@ -118,6 +129,23 @@ export function createStore({ file }) {
   );
   const selectSessions = db.prepare('SELECT * FROM sessions WHERE run_id = ?');
   const selectEngines = db.prepare('SELECT agent_id, engine FROM engines WHERE run_id = ?');
+  const upsertHandoff = db.prepare(
+    `INSERT INTO engine_handoffs
+       (run_id, agent_id, from_engine, to_engine, source_session_id, transcript, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(run_id, agent_id) DO UPDATE SET
+       from_engine = excluded.from_engine,
+       to_engine = excluded.to_engine,
+       source_session_id = excluded.source_session_id,
+       transcript = excluded.transcript,
+       created_at = excluded.created_at`,
+  );
+  const selectHandoff = db.prepare(
+    'SELECT * FROM engine_handoffs WHERE run_id = ? AND agent_id = ?',
+  );
+  const deleteHandoff = db.prepare(
+    'DELETE FROM engine_handoffs WHERE run_id = ? AND agent_id = ?',
+  );
   const upsertMiddleware = db.prepare(
     `INSERT INTO middleware (name, text, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(name) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`,
@@ -250,6 +278,28 @@ export function createStore({ file }) {
 
     enginesFor(targetRunId) {
       return selectEngines.all(targetRunId ?? runId);
+    },
+
+    saveHandoff(agentId, handoff) {
+      if (runId === null) return;
+      upsertHandoff.run(
+        runId,
+        agentId,
+        handoff.fromEngine,
+        handoff.toEngine,
+        handoff.sourceSessionId ?? null,
+        handoff.transcript,
+        Date.now(),
+      );
+    },
+
+    handoffFor(agentId) {
+      if (runId === null) return null;
+      return selectHandoff.get(runId, agentId) ?? null;
+    },
+
+    clearHandoff(agentId) {
+      if (runId !== null) deleteHandoff.run(runId, agentId);
     },
 
     saveClaims(agentId, patterns) {

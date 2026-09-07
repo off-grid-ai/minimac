@@ -15,6 +15,9 @@
  *   resume(agent, cwd, sessionId, prompt) -> Promise<sessionId>
  *     Continue an existing conversation rather than opening a new one. Falls
  *     back to start() when the engine cannot reach that session any more.
+ *   history(sessionId, cwd) -> Promise<string>
+ *     Export a bounded, plain-text transcript for an engine migration. The
+ *     server owns how that transcript is stored and passed to another engine.
  *   approve(sessionId, approvalId, decision) -> Promise<void>
  *     Answer an approval the engine is parked on. Engines that have no protocol
  *     for it fall back to steering, so callers must check before using it.

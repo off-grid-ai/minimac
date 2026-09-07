@@ -16,6 +16,9 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
   APPROVAL_KINDS,
   BLOCKED_REASONS,
@@ -49,6 +52,8 @@ const PLAN_STATUS = Object.freeze({
   in_progress: 'running',
   completed: 'coded',
 });
+
+const HISTORY_LIMIT = 16_000;
 
 // Claude states a permission problem in prose. This is the one place that
 // reads it, so "blocked" means the same thing whichever tool tripped.
@@ -358,6 +363,14 @@ export function createClaudeDriver({
   }
 
   return {
+    async history(sessionId, cwd = null) {
+      const projectCwd = sessions.get(sessionId)?.cwd ?? cwd;
+      if (!projectCwd) return '';
+      const project = projectCwd.replace(/[^a-zA-Z0-9]/g, '-');
+      const file = join(homedir(), '.claude', 'projects', project, `${sessionId}.jsonl`);
+      return claudeTranscript(await readFile(file, 'utf8'));
+    },
+
     // A new MINIMAC process cannot attach to the old child's pipes. The
     // conversation can be resumed, but it is not live now.
     async reconcile(agent, cwd, sessionId) {
@@ -475,4 +488,28 @@ function parseReport(result) {
   } catch {
     return { text: result };
   }
+}
+
+function claudeTranscript(raw) {
+  const lines = [];
+  for (const row of raw.split('\n')) {
+    if (!row.trim()) continue;
+    let record;
+    try { record = JSON.parse(row); } catch { continue; }
+    if (!['user', 'assistant'].includes(record.type)) continue;
+    const role = record.type === 'user' ? 'USER' : 'ASSISTANT';
+    const text = (record.message?.content ?? []).map((block) => {
+      if (block?.type === 'text') return block.text ?? '';
+      if (block?.type === 'tool_use') {
+        return `[tool ${block.name}] ${JSON.stringify(block.input ?? {}).slice(0, 1200)}`;
+      }
+      if (block?.type === 'tool_result') return `[tool result] ${resultText(block).slice(0, 1200)}`;
+      return '';
+    }).filter(Boolean).join('\n');
+    if (text) lines.push(`${role}\n${text}`);
+  }
+  const transcript = lines.join('\n\n');
+  return transcript.length > HISTORY_LIMIT
+    ? `[earlier history omitted]\n${transcript.slice(-HISTORY_LIMIT)}`
+    : transcript;
 }

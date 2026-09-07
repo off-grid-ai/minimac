@@ -167,13 +167,13 @@ function goalEditor(agent, handlers) {
 // list so it can be brought back, but it is never dispatched and never appears
 // on the floor.
 function enabledToggle(agent, handlers) {
-  const off = agent.active !== true;
+  const off = agent.enabled === false;
   const button = el('button', 'switch');
   button.type = 'button';
   button.role = 'switch';
   button.setAttribute('aria-checked', String(!off));
-  button.setAttribute('aria-label', `${nameOf(agent)} working`);
-  button.title = off ? `Start ${nameOf(agent)}` : `Stop ${nameOf(agent)}`;
+  button.setAttribute('aria-label', `${nameOf(agent)} on this mission`);
+  button.title = off ? `Add ${nameOf(agent)} to this mission` : `Bench ${nameOf(agent)}`;
   button.style.cssText = [
     'flex:none', 'box-sizing:border-box', 'position:relative',
     'width:26px', 'height:14px', 'min-width:26px', 'padding:0', 'margin:0',
