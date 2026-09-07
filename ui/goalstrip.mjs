@@ -10,10 +10,15 @@
 // width, growing upward the way the attachment chips do, so it can never be
 // clipped by the top bar and never covers the floor.
 //
-// It holds no truth. The goal it shows arrives in render(); editing it goes
-// straight back out through the handlers it was built with.
+// Standing at a desk shows that agent's whole standing: the goal they are
+// working to, the flow contract they accepted, and the claims they have made
+// with the command behind each one. Those used to be global tabs you had to go
+// and find; a tab you have to go find is a failure of the room.
+//
+// It holds no truth. Everything it shows arrives in render(); editing the goal
+// goes straight back out through the handlers it was built with.
 
-export function createGoalStrip({ handlers, console: consoleEl }) {
+export function createGoalStrip({ handlers, console: consoleEl, renderFlows, renderEvidence }) {
   style();
 
   const root = document.createElement('div');
@@ -45,7 +50,20 @@ export function createGoalStrip({ handlers, console: consoleEl }) {
   close.setAttribute('aria-label', 'back to the whole room');
   close.onclick = () => handlers.close();
 
-  root.append(who, goal, power, close);
+  // The goal line, then the desk itself. The head row is what you steer with;
+  // the body is what you are steering.
+  const head = document.createElement('div');
+  head.className = 'goalstrip-head';
+  head.append(who, goal, power, close);
+
+  const desk = document.createElement('div');
+  desk.className = 'goalstrip-desk';
+
+  const flowPane = section('flow', 'steps, and time against their own estimate');
+  const evidencePane = section('evidence', 'what they have proved');
+  desk.append(flowPane.root, evidencePane.root);
+
+  root.append(head, desk);
   (consoleEl?.parentElement ?? document.body).insertBefore(root, consoleEl ?? null);
 
   let agentId = null;
@@ -87,6 +105,14 @@ export function createGoalStrip({ handlers, console: consoleEl }) {
     root.style.left = `${box.left}px`;
     root.style.width = `${box.width}px`;
     root.style.bottom = `${Math.max(0, window.innerHeight - box.top)}px`;
+    // How much of the room this desk is standing in front of. The scene frames
+    // the hero inside what is LEFT, so opening a desk never puts the panel on
+    // top of the person it is about.
+    const own = root.getBoundingClientRect();
+    document.documentElement.style.setProperty(
+      '--desk-h',
+      `${Math.round(Math.max(0, window.innerHeight - own.top))}px`,
+    );
     // The field wraps at the console's width, so it can only be measured once
     // that width is set. Measuring first gives a column an inch wide and a box
     // ten lines tall.
@@ -111,6 +137,7 @@ export function createGoalStrip({ handlers, console: consoleEl }) {
     close() {
       agentId = null;
       root.hidden = true;
+      document.documentElement.style.setProperty('--desk-h', '0px');
     },
 
     render(agent) {
@@ -136,7 +163,51 @@ export function createGoalStrip({ handlers, console: consoleEl }) {
         saved = objective;
         goal.value = objective;
       }
+      // The desk itself: their contract and their receipts, rendered by the
+      // same functions the panels use, so there is one way to draw a flow and
+      // one way to draw a claim.
+      const flows = agent.flows ?? [];
+      flowPane.setCount(flows.length);
+      renderFlows?.(flowPane.body, { ...agent, flows });
+
+      const claims = agent.claims ?? [];
+      evidencePane.setCount(claims.length);
+      renderEvidence?.(evidencePane.body, claims);
+
       follow(); // places the strip and measures the field at its real width
+    },
+  };
+}
+
+// One titled pane of the desk. The count is on the title so an empty flow or
+// an unproved claim list is visible without opening anything.
+function section(name, blurb) {
+  const root = document.createElement('section');
+  root.className = `goalstrip-pane goalstrip-${name}`;
+
+  const title = document.createElement('div');
+  title.className = 'goalstrip-title';
+  const label = document.createElement('span');
+  label.textContent = name;
+  const count = document.createElement('span');
+  count.className = 'goalstrip-count';
+  title.append(label, count);
+
+  const hint = document.createElement('span');
+  hint.className = 'goalstrip-blurb';
+  hint.textContent = blurb;
+  title.append(hint);
+
+  const body = document.createElement('div');
+  body.className = 'goalstrip-body';
+
+  root.append(title, body);
+  return {
+    root,
+    body,
+    setCount(n) {
+      count.textContent = String(n);
+      root.dataset.empty = n ? '' : 'yes';
     },
   };
 }
@@ -151,8 +222,13 @@ function style() {
       position: fixed;
       z-index: 49;
       display: flex;
-      align-items: flex-start;
-      gap: calc(var(--step) * 2);
+      flex-direction: column;
+      /* It grows upward from the console and must stop at the crew bar. Without
+         a ceiling a tall desk ran off both ends of the screen. */
+      max-height: calc(100vh - var(--topbar-h) - var(--crew-h) - 120px);
+      min-height: 0;
+      overflow: hidden;
+      gap: calc(var(--step) * 1.5);
       padding: calc(var(--step) * 2) calc(var(--step) * 2.5);
       background: var(--glass);
       backdrop-filter: blur(10px) saturate(1.1);
@@ -160,6 +236,55 @@ function style() {
       border-bottom: 0;
       font-family: var(--mono);
       animation: hud-in 160ms cubic-bezier(0.2, 0.7, 0.3, 1);
+    }
+
+    .goalstrip-head {
+      display: flex;
+      align-items: flex-start;
+      gap: calc(var(--step) * 2);
+    }
+
+    /* Two columns while there is room for two, one when there is not. */
+    .goalstrip-desk {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: calc(var(--step) * 2);
+      min-height: 0;
+      overflow: hidden;
+    }
+    .goalstrip-pane {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      border-top: 1px solid var(--line);
+      padding-top: calc(var(--step) * 1.5);
+    }
+    .goalstrip-title {
+      display: flex;
+      align-items: baseline;
+      gap: calc(var(--step));
+      color: var(--muted);
+      font-size: 9px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    .goalstrip-count {
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+    .goalstrip-pane[data-empty="yes"] .goalstrip-count { color: var(--faint); }
+    .goalstrip-blurb {
+      margin-left: auto;
+      color: var(--faint);
+      letter-spacing: 0.04em;
+      text-transform: none;
+    }
+    .goalstrip-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding-top: calc(var(--step));
     }
 
     .goalstrip-who {

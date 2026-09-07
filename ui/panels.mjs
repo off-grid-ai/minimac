@@ -11,6 +11,8 @@
 // what it will hold instead of showing an empty box.
 
 import { burnRatio } from '../core/derive.mjs';
+import { GATES, rollup, remaining } from '../core/flows.mjs';
+import { nextGate, isDone, unmetDeps, stateOf } from '../core/board.mjs';
 import { ENGINES } from '../core/roster.mjs';
 
 const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
@@ -80,7 +82,9 @@ function agentRow(agent, handlers) {
     statusChip(agent),
   );
 
-  row.append(ident, engineToggle(agent, handlers), goalEditor(agent, handlers));
+  row.append(
+    ident, crewSize(agent, handlers), engineToggle(agent, handlers), goalEditor(agent, handlers),
+  );
   return row;
 }
 
@@ -92,9 +96,16 @@ function statusChip(agent) {
 }
 
 function goalEditor(agent, handlers) {
-  const cell = el('div', 'goal');
+  const cell = el('div', `goal${agent.goal?.source === 'derived' ? ' is-default' : ''}`);
 
-  const label = el('div', 'goal-label', 'GOAL');
+  // A goal Thor has not written yet is a role template, not a plan for THIS
+  // mission. Showing it plain made six identical blurbs read as decisions
+  // somebody had made about the work.
+  const derived = agent.goal?.source === 'derived';
+  const label = el('div', 'goal-label', derived ? 'GOAL · default' : 'GOAL');
+  if (derived) {
+    label.title = 'a role default - Thor has not set this agent\'s goal for this mission yet';
+  }
   const box = document.createElement('textarea');
   box.className = 'goal-input';
   box.rows = 2;
@@ -162,6 +173,35 @@ function enabledToggle(agent, handlers) {
   return button;
 }
 
+// How many of this hero are working. Three PRs to review is three Capt.
+// Marvels, each on its own slice - the server has spawned several workers to a
+// seat since the beginning and there has never been a way to ask for it.
+function crewSize(agent, handlers) {
+  const group = el('div', 'copies');
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', `how many ${nameOf(agent)}`);
+  const count = Math.max(1, agent.instances ?? 1);
+
+  const step = (delta, label, enabled) => {
+    const button = el('button', '', label);
+    button.type = 'button';
+    button.disabled = !enabled;
+    button.title = delta > 0 ? `one more ${nameOf(agent)}` : `one fewer ${nameOf(agent)}`;
+    button.onclick = (event) => {
+      event.stopPropagation();
+      handlers.setInstances(agent.id, count + delta);
+    };
+    return button;
+  };
+
+  const readout = el('span', 'copies-count', `\u00d7${count}`);
+  readout.title = count > 1
+    ? `${count} workers share this seat, each on its own slice`
+    : 'one worker on this seat';
+  group.append(step(-1, '\u2212', count > 1), readout, step(1, '+', count < 4));
+  return group;
+}
+
 function engineToggle(agent, handlers) {
   const group = el('div', 'engine');
   group.setAttribute('role', 'group');
@@ -182,18 +222,212 @@ function engineToggle(agent, handlers) {
 
 // ---------------------------------------------------------- flow contract
 
+// Zoomed out is the group; zoomed in is one step. Same row shape at every
+// altitude, so a repo reads exactly like the step inside it and you can scan a
+// column of gates straight down a multi-repo mission.
+//
+// Which nodes are open is per-agent and lives here, not in the view model: it
+// is how you are LOOKING, not something true about the work.
+const opened = new Map();
+
+// How far in you are standing. Zooming out is not "collapse everything" - it is
+// a question about altitude: the whole mission, one repo, one feature in it, or
+// the steps themselves.
+export const ZOOM = Object.freeze([
+  { id: 'group', label: 'group', depth: 0, blurb: 'the whole mission, one row' },
+  { id: 'repo', label: 'repo', depth: 1, blurb: 'one row per repository' },
+  { id: 'feature', label: 'feature', depth: 2, blurb: 'the areas inside each repo' },
+  { id: 'step', label: 'step', depth: 9, blurb: 'every step, all the way down' },
+]);
+
+const zoomOf = new Map(); // agentId -> zoom id
+
+function isOpen(agentId, path, depth) {
+  const key = `${agentId}|${path}`;
+  if (opened.has(key)) return opened.get(key);
+  const zoom = ZOOM.find((z) => z.id === (zoomOf.get(agentId) ?? 'repo')) ?? ZOOM[1];
+  return depth < zoom.depth;
+}
+
+// The board, as one shared tree. Seven private self-reports could never answer
+// "which repo is the hold-up"; one list with owners and gate chains can.
+export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
+  const items = board ?? [];
+  if (items.length === 0) {
+    root.replaceChildren(emptyBoard());
+    return;
+  }
+  const nameOfId = (id) => agents.find((a) => a.id === id)?.name ?? id;
+  const frag = document.createDocumentFragment();
+
+  const head = el('div', 'flow-left');
+  head.append(
+    el('span', 'flow-left-label', 'board'),
+    el('span', 'flow-left-value',
+      `${velocity?.done ?? 0} of ${velocity?.items ?? items.length} items done`),
+    el('span', 'flow-left-pct',
+      velocity?.percent === null || velocity?.percent === undefined
+        ? '' : `${velocity.percent}% of gates passed`),
+  );
+  frag.append(head);
+
+  // Grouped by where the work is, so a multi-repo mission reads per repo.
+  const byScope = new Map();
+  for (const item of items) {
+    const scope = item.scope || 'unscoped';
+    if (!byScope.has(scope)) byScope.set(scope, []);
+    byScope.get(scope).push(item);
+  }
+
+  for (const [scope, group] of byScope) {
+    const label = el('div', 'board-scope', scope);
+    frag.append(label);
+    for (const item of group) {
+      frag.append(boardRow(item, items, nameOfId, handlers));
+    }
+  }
+  root.replaceChildren(frag);
+}
+
+function boardRow(item, all, nameOfId, handlers) {
+  const state = stateOf({ items: all }, item);
+  const row = el('div', `board-item is-${state}`);
+
+  const top = el('div', 'board-head');
+  top.append(
+    el('span', 'board-id', item.id),
+    el('span', 'board-title', item.title),
+    el('span', 'board-owner', item.owner ? nameOfId(item.owner) : 'nobody'),
+  );
+  row.append(top);
+
+  const gates = el('span', 'gates');
+  for (const gate of GATES) {
+    if (!(gate in (item.gates ?? {}))) continue;
+    const chip = el('span', `gate is-${item.gates[gate]}`, gate);
+    chip.title = `${gate}: ${item.gates[gate]}`;
+    gates.append(chip);
+  }
+  const foot = el('div', 'board-foot');
+  foot.append(gates);
+
+  const waiting = unmetDeps({ items: all }, item);
+  const next = nextGate(item);
+  foot.append(el('span', 'board-next',
+    isDone(item) ? 'done'
+      : waiting.length ? `waiting on ${waiting.join(', ')}`
+        : next ? `next: ${next}` : ''));
+  row.append(foot);
+
+  if (!item.owner && handlers.focus) {
+    row.title = 'nobody owns this yet';
+  }
+  return row;
+}
+
+function emptyBoard() {
+  const card = el('div', 'decision hollow');
+  const block = teach(
+    'no work on the board yet',
+    'The board is the shared truth: one item per piece of work, with an owner, '
+      + 'a gate chain walked in order, and the command behind each gate. Press '
+      + 'ASSEMBLE and Thor splits the mission into items and hands them out.',
+  );
+  card.append(block);
+  return card;
+}
+
 export function renderFlows(root, agent) {
   if (!agent?.flows?.length) {
     root.replaceChildren(emptyFlows(agent));
     return;
   }
-  root.replaceChildren(...agent.flows.map(flowRow));
+  const redraw = () => renderFlows(root, agent);
+  const tree = rollup(agent.flows);
+  const left = remaining(agent.flows);
+  const frag = document.createDocumentFragment();
+  frag.append(zoomBar(agent, redraw), leftLine(left));
+  const top = tree.children.length ? tree.children : [tree];
+  for (const child of top) frag.append(...scopeRows(agent, child, 0, redraw));
+  root.replaceChildren(frag);
 }
 
+// Zoom out to the mission, in to the steps. Changing it forgets every row you
+// opened by hand - you asked for an altitude, not for your clicks preserved.
+function zoomBar(agent, redraw) {
+  const bar = el('div', 'zoom');
+  const current = zoomOf.get(agent.id) ?? 'repo';
+  for (const level of ZOOM) {
+    const button = el('button', 'zoom-step', level.label);
+    button.type = 'button';
+    button.title = level.blurb;
+    button.setAttribute('aria-pressed', String(level.id === current));
+    button.onclick = () => {
+      zoomOf.set(agent.id, level.id);
+      for (const key of [...opened.keys()]) {
+        if (key.startsWith(`${agent.id}|`)) opened.delete(key);
+      }
+      redraw();
+    };
+    bar.append(button);
+  }
+  return bar;
+}
+
+// "3 of 8 left · 62% done" - his question is never how long alone.
+function leftLine(left) {
+  const line = el('div', 'flow-left');
+  line.append(
+    el('span', 'flow-left-label', 'left'),
+    el('span', 'flow-left-value', `${left.steps} of ${left.total} steps`),
+    el('span', 'flow-left-pct', left.percentDone === null ? '' : `${left.percentDone}% done`),
+  );
+  return line;
+}
+
+function scopeRows(agent, node, depth, redraw) {
+  const rows = [];
+  // A leaf is not automatically open. Treating it as open made the altitude
+  // buttons do nothing whenever a mission had no scopes: every step showed at
+  // every level, so pressing GROUP changed nothing on screen.
+  const open = isOpen(agent.id, node.path, depth);
+
+  const row = el('div', `flow-scope${open ? ' is-open' : ''}`);
+  row.style.paddingLeft = `${depth * 14}px`;
+
+  const head = el('button', 'flow-scope-head');
+  head.type = 'button';
+  head.append(
+    el('span', 'flow-caret', open ? '▾' : '▸'),
+    el('span', 'flow-scope-name', node.name || 'all'),
+    el('span', 'flow-scope-count', open ? '' : `${node.totals.steps} steps`),
+    gateStrip(node.gates),
+    el('span', 'flow-scope-pct', node.percentDone === null ? '' : `${node.percentDone}%`),
+  );
+  head.onclick = () => {
+    opened.set(`${agent.id}|${node.path}`, !open);
+    redraw();
+  };
+  row.append(head);
+  rows.push(row);
+
+  if (!open) return rows;
+  for (const child of node.children) rows.push(...scopeRows(agent, child, depth + 1, redraw));
+  for (const step of node.steps) {
+    const stepRow = flowRow(step);
+    stepRow.style.paddingLeft = `${(depth + 1) * 14}px`;
+    rows.push(stepRow);
+  }
+  return rows;
+}
+
+// Six letters, one per gate, in the order work passes through them. Colour is
+// the whole message: you read a column of these down a multi-repo mission and
+// the red one is the hold-up.
+// One step: what a person will see, how far it has got, and its time.
 function flowRow(step) {
   const status = LADDER.includes(step.status) ? step.status : 'coded';
   const row = el('div', `flow${status === 'verified' ? ' is-verified' : ''}`);
-
   const head = el('div', 'flow-head');
   head.append(el('div', 'flow-result', step.user_visible_result ?? step.step), ladder(status));
   row.append(head, burn(step));
@@ -211,25 +445,51 @@ function ladder(status) {
   return wrap;
 }
 
-// Actual against estimate. Under budget the bar simply fills; over budget it
-// inverts and states the raw multiplier, because "a bit late" and "3.1x late"
-// are different facts.
+function gateStrip(gates) {
+  const strip = el('span', 'gates');
+  for (const gate of GATES) {
+    const state = gates?.[gate] ?? 'pending';
+    const pip = el('span', `gate is-${state}`);
+    pip.textContent = gate;
+    pip.title = `${gate}: ${state}`;
+    strip.append(pip);
+  }
+  return strip;
+}
+
+// Is this step running late?
+//
+// The agent says in its own report how long a step will take. The room times
+// how long it actually takes. One line, three parts: what it is, the two
+// durations, and how far past the promise it is.
+//
+// The segmented bar is gone. It looked like a progress bar, it was not one,
+// and a row of blocks cannot say "13m against a promised 5m" - which is the
+// only fact here worth having.
+function mins(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}`;
+}
+
 function burn(step) {
   const ratio = burnRatio(step);
   const over = ratio !== null && ratio > 1;
   const wrap = el('div', `burn${ratio === null ? ' none' : ''}${over ? ' over' : ''}`);
 
-  const bar = el('div', 'bar');
-  const fill = el('span');
-  fill.style.transform = `scaleX(${Math.min(ratio ?? 0, 1)})`;
-  bar.append(fill);
-
-  const text = el('div', 'ratio', ratio === null ? '—' : `${ratio.toFixed(1)}×`);
-  wrap.append(bar, text);
-  wrap.setAttribute(
-    'aria-label',
-    ratio === null ? 'no estimate given' : `${ratio.toFixed(1)} times the estimate`,
-  );
+  wrap.append(el('span', 'burn-label', 'time'));
+  if (ratio === null) {
+    wrap.append(el('span', 'burn-value', 'no estimate given'));
+  } else {
+    wrap.append(
+      el('span', 'burn-value', `${mins(step.actualMs ?? 0)} of ${mins(step.estimateMs)}`),
+      el('span', 'burn-pct', ratio > 3 ? `${ratio.toFixed(1)}x over` : `${Math.round(ratio * 100)}%`),
+    );
+    wrap.title = over ? 'this step is running late' : 'still inside its estimate';
+  }
+  wrap.setAttribute('aria-label', `time ${wrap.textContent}`);
   return wrap;
 }
 
@@ -256,7 +516,7 @@ function emptyFlows(agent) {
   block.append(head('the status ladder'), list(LADDER_MEANING));
   block.append(head('the bar'), list([
     ['under', 'how much of the estimate this step has spent'],
-    ['over', 'the bar inverts and states the raw multiple, e.g. 3.1×'],
+    ['over', 'the bar turns red and says how far past the estimate it is'],
   ]));
   return block;
 }
@@ -344,6 +604,27 @@ function observationCard(decision, handlers) {
   const header = el('div', 'head');
   header.append(el('span', 'who', nameOf(decision)), el('span', 'kind', kind));
   card.append(header, el('div', 'detail', decision.detail));
+
+  // A prayer is a QUESTION, not an observation. It does not get the same
+  // "tell them what to do instead" line as a loop or an overrun, because a
+  // one-shot answer is not how you settle a question - it opens a thread you
+  // can go back and forth in until you say it is settled.
+  if (decision.kind === 'prayer') {
+    const answer = el('button', 'act answer', 'ANSWER');
+    answer.type = 'button';
+    answer.title = 'open the conversation with them';
+    answer.onclick = () => handlers.act('answer', decision);
+    const row = el('div', 'actions answers');
+    row.append(answer);
+    const ignore = el('button', 'act', 'KILL');
+    ignore.type = 'button';
+    ignore.onclick = (event) =>
+      handlers.act('kill', decision, event.currentTarget.getBoundingClientRect());
+    row.append(ignore);
+    card.append(row);
+    return card;
+  }
+
   card.append(actionRow(decision, handlers));
   if (decision.actions.includes('steer')) card.append(steerRow(decision, handlers));
   return card;
@@ -474,7 +755,7 @@ function continueButton(run, handlers) {
   // does not the agent restarts on the same goal.
   button.title = resumable
     ? 'Pick these conversations up where they stopped'
-    : 'No saved conversations for this run - the agents will restart on the same goals';
+    : 'No saved conversations for this mission - the agents will restart on the same goals';
   if (!resumable) button.style.opacity = '0.7';
   button.onclick = (event) => {
     event.stopPropagation();
@@ -487,7 +768,7 @@ function runAgainButton(run, handlers) {
   const button = el('button', 'act run-again', 'RUN AGAIN');
   button.type = 'button';
   button.style.flex = 'none';
-  button.title = 'Start a new run with this mission and these goals';
+  button.title = 'Start this mission again from nothing, on the same goals';
   button.onclick = (event) => {
     event.stopPropagation();
     handlers.resumeRun(run.id);
@@ -504,8 +785,8 @@ export function renderRuns(root, runs, handlers) {
   if (!runs.length) {
     rows.push(
       teach(
-        'no earlier runs',
-        'Every run is kept whole - the mission, the fleet and every event - so a ' +
+        'no earlier missions',
+        'Every mission is kept whole - the fleet, the board and every event - so a ' +
           'morning that went wrong can be opened again and read back.',
       ),
     );
@@ -516,9 +797,9 @@ export function renderRuns(root, runs, handlers) {
 }
 
 function newRunRow(handlers) {
-  const row = el('button', 'run new', '+ NEW RUN');
+  const row = el('button', 'run new', '+ NEW MISSION');
   row.type = 'button';
-  row.setAttribute('aria-label', 'Start a new run');
+  row.setAttribute('aria-label', 'Start a new mission');
   row.onclick = () => handlers.newRun();
   return row;
 }

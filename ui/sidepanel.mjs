@@ -47,6 +47,7 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
   // Each window element becomes a tab body. Its own title bar goes away - the
   // tab strip already says what you are looking at.
   const tabButtons = new Map();
+  const badges = new Map();
   for (const [name, entry] of Object.entries(entries)) {
     if (!entry?.el) continue;
     entry.el.classList.add('sidepanel-body');
@@ -58,6 +59,13 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
     tab.type = 'button';
     tab.className = 'sidepanel-tab';
     tab.textContent = labels[name] ?? name.toUpperCase();
+    // A tab can carry a count. Only the queue does today, and it is the one
+    // number worth seeing without opening anything.
+    const badge = document.createElement('i');
+    badge.className = 'sidepanel-count';
+    badge.hidden = true;
+    tab.append(badge);
+    badges.set(name, badge);
     tab.setAttribute('role', 'tab');
     tab.onclick = () => show(name);
     tabs.append(tab);
@@ -114,6 +122,14 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
   });
 
   return {
+    // How many things are waiting behind a tab. Zero hides it entirely - a
+    // badge showing 0 is noise pretending to be information.
+    setCount(name, count) {
+      const badge = badges.get(name);
+      if (!badge) return;
+      badge.textContent = String(count);
+      badge.hidden = !count;
+    },
     open: show,
     close: hide,
     toggle(name) {
@@ -168,6 +184,11 @@ function style() {
       font: inherit; font-size: 10px; letter-spacing: .12em; padding: 3px 8px; cursor: pointer;
     }
     .sidepanel-tab:hover { color: var(--text, #e8e8e8); }
+    .sidepanel-count {
+      display: inline-block; margin-left: 5px; padding: 0 4px;
+      font-style: normal; font-size: 9px; line-height: 14px;
+      background: var(--danger, #f87171); color: #fff;
+    }
     .sidepanel-tab[aria-selected="true"] {
       color: var(--accent, #34d399); border-color: var(--accent, #34d399);
     }
