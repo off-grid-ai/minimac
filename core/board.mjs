@@ -110,8 +110,12 @@ export function isDone(item) {
   return nextGate(item) === null;
 }
 
+function isRetired(item) {
+  return [ITEM_STATE.SUPERSEDED, ITEM_STATE.CANCELLED].includes(item?.disposition);
+}
+
 export function isClosed(item) {
-  return isDone(item) || ['superseded', 'cancelled'].includes(item?.disposition);
+  return isDone(item) || isRetired(item);
 }
 
 // Which items this one is still waiting on. An id that is not in checkpoints is
@@ -120,7 +124,7 @@ export function isClosed(item) {
 export function unmetDeps(board, item) {
   return (item?.blockedBy ?? [])
     .map((id) => findItem(board, id))
-    .filter((dep) => dep && !isDone(dep))
+    .filter((dep) => dep && !isClosed(dep))
     .map((dep) => dep.id);
 }
 
@@ -323,8 +327,7 @@ export function progress(board) {
   let total = 0;
   let passed = 0;
   let failed = 0;
-  for (const item of itemsOf(board).filter((candidate) => candidate.disposition !== 'superseded'
-    && candidate.disposition !== 'cancelled')) {
+  for (const item of itemsOf(board).filter((candidate) => !isRetired(candidate))) {
     for (const state of Object.values(item.gates ?? {})) {
       total += 1;
       if (state === GATE_STATE.PASS) passed += 1;
@@ -337,10 +340,8 @@ export function progress(board) {
     passed,
     failed,
     percent: total > 0 ? Math.round((passed / total) * 100) : null,
-    items: items.filter((item) => item.disposition !== 'superseded'
-      && item.disposition !== 'cancelled').length,
-    done: items.filter((item) => !['superseded', 'cancelled'].includes(item.disposition)
-      && isDone(item)).length,
+    items: items.filter((item) => !isRetired(item)).length,
+    done: items.filter((item) => !isRetired(item) && isDone(item)).length,
     unowned: unowned(board).length,
   };
 }
