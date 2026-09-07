@@ -304,14 +304,15 @@ export function createStore({ file }) {
     },
 
     saveWorkerSession(worker) {
-      if (runId === null || !worker?.id || !worker?.sessionId) return;
+      const sessionId = worker?.sessionId ?? worker?.resumeSessionId;
+      if (runId === null || !worker?.id || !sessionId) return;
       const now = Date.now();
       upsertWorkerSession.run(
         runId,
         worker.id,
         worker.agentId,
         worker.checkpointId ?? null,
-        worker.sessionId,
+        sessionId,
         worker.engine,
         worker.state ?? 'idle',
         worker.startedAt ?? now,

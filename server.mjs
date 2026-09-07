@@ -25,6 +25,16 @@ import {
   ROLES,
   isActive,
 } from './core/roster.mjs';
+import {
+  WORKER_STATE,
+  ensureWorkers,
+  freeWorkers,
+  hydrateWorker,
+  patchWorker,
+  projectWorkers,
+  workerForCheckpoint,
+  workerForSession,
+} from './core/workers.mjs';
 import { setGoal, getGoal, clearGoal, deriveGoals } from './core/goals.mjs';
 import { claimFiles, releaseClaim } from './core/claims.mjs';
 import {
@@ -170,7 +180,7 @@ if (adopted) {
     state.agents = assignEngine(state.agents, row.agent_id, row.engine);
   }
   for (const agent of Object.values(state.agents)) applySavedRuntime(agent.id);
-  adoptedSessions = store.sessionsFor(adopted.id);
+  adoptedSessions = store.workerSessionsFor(adopted.id);
   if (!state.mission && adopted.mission) state.mission = adopted.mission;
   // The mission only arrives here, so the derive at boot ran against an empty
   // one and gave every worker nothing. Derive again now that we know what the
@@ -201,13 +211,11 @@ if (adopted) {
   // Start from a safe projection, then reconcile saved handles with each
   // engine after its transport is ready. Idle conversations remain resumable.
   for (const agent of Object.values(state.agents)) {
-    state.agents = patchAgent(state.agents, agent.id, {
-      status: 'idle', sessionId: null, sessionIds: [], workItemIds: [],
-      resumeSessionId: adoptedSessions.find((row) =>
-        row.agent_id === agent.id && row.engine === agent.engine,
-      )?.session_id ?? null,
-      blockedReason: null,
-    });
+    const saved = adoptedSessions
+      .filter((row) => row.agent_id === agent.id)
+      .map(hydrateWorker);
+    const restored = projectWorkers({ ...agent, workers: saved, blockedReason: null });
+    state.agents = patchAgent(state.agents, agent.id, projectWorkers(restored, ensureWorkers(restored)));
   }
   const adoptedAt = Date.now();
   state.cards = stampCards(
@@ -339,34 +347,36 @@ async function reconcileAdoptedSessions() {
   for (const row of adoptedSessions) {
     const agent = state.agents[row.agent_id];
     if (!agent) continue;
+    const workerId = row.worker_id ?? `${agent.id}:1`;
     if (row.engine !== agent.engine) {
       await captureEngineHandoff(agent.id, row.engine, agent.engine, row.session_id);
-      state.agents = patchAgent(state.agents, agent.id, {
+      state.agents = patchAgent(state.agents, agent.id, patchWorker(agent, workerId, {
         sessionId: null,
-        sessionIds: [],
         resumeSessionId: null,
-        status: 'idle',
-      });
+        state: WORKER_STATE.IDLE,
+      }));
       continue;
     }
     const driver = getDriver(agent.engine);
     if (typeof driver.reconcile !== 'function') continue;
     try {
-      const result = await driver.reconcile(agent, options.repo, row.session_id);
+      const result = await driver.reconcile({ ...agent, workerId }, options.repo, row.session_id);
       const live = result?.live === true;
-      state.agents = patchAgent(state.agents, agent.id, {
+      const next = patchWorker(state.agents[agent.id], workerId, {
         sessionId: live ? result.sessionId ?? row.session_id : null,
-        sessionIds: live ? [result.sessionId ?? row.session_id] : [],
         resumeSessionId: result?.resumable === false ? null : row.session_id,
-        enabled: live ? true : agent.enabled,
-        status: live ? 'running' : (result?.state ?? 'idle'),
+        state: live ? WORKER_STATE.RUNNING : (result?.state ?? WORKER_STATE.IDLE),
       });
-    } catch {
       state.agents = patchAgent(state.agents, agent.id, {
-        sessionId: null,
-        sessionIds: [],
-        status: 'idle',
+        ...next,
+        enabled: live ? true : agent.enabled,
       });
+      store.saveWorkerSession(workerForSession(state.agents[agent.id], row.session_id));
+    } catch {
+      state.agents = patchAgent(state.agents, agent.id, patchWorker(agent, workerId, {
+        sessionId: null,
+        state: WORKER_STATE.IDLE,
+      }));
     }
   }
 }
@@ -511,12 +521,14 @@ function updateFlows(agentId, updates) {
 }
 
 function updateCheckpoint(agentId, move) {
+  const manager = state.agents[agentId]?.role === ROLES.ORCHESTRATOR;
   const result = advanceGate(state.board, {
     id: move?.item,
     gate: move?.gate,
     state: move?.state,
     receipt: move?.receipt ?? '',
     by: agentId,
+    canManage: manager,
   });
   if (result.error) {
     ingest(createEvent(agentId, EVENT_KINDS.STATUS, {
@@ -584,7 +596,12 @@ function harvestReport(event) {
     if (!text) continue;
     ingest(createEvent(event.agentId, EVENT_KINDS.CLAIM, { ...claim, text }));
   }
-  const assignedIds = state.agents[event.agentId]?.workItemIds ?? [];
+  const reportingWorker = event.payload?.workerId
+    ? ensureWorkers(state.agents[event.agentId]).find((worker) => worker.id === event.payload.workerId)
+    : null;
+  const assignedIds = reportingWorker?.checkpointId
+    ? [reportingWorker.checkpointId]
+    : state.agents[event.agentId]?.workItemIds ?? [];
   const assignedDone = assignedIds.length === 0 || assignedIds.every((id) => {
     const item = findItem(state.board, id);
     return item && isDone(item);
@@ -606,12 +623,15 @@ function harvestReport(event) {
       text: `stood down: ${why}`,
       from: 'you',
     }));
-    COMMANDS.setActive({ agentId: event.agentId, active: false })
+    const stop = reportingWorker
+      ? interruptWorker(event.agentId, reportingWorker.id)
+      : COMMANDS.setActive({ agentId: event.agentId, active: false });
+    stop
       .then(async () => {
         publish({ type: 'state', state: snapshot() });
         await tellThor(
           event.agentId,
-          `${event.agentId} finished its assigned checkpoints. `
+          `${reportingWorker?.id ?? event.agentId} finished its assigned checkpoint. `
             + 'Review the checkpoints. Assign and start the next ready eight-minute work unit, or leave the seat benched.',
         );
       })
@@ -635,7 +655,8 @@ const wire = new Map();
 function partition(event) {
   if (event.kind !== EVENT_KINDS.MESSAGE) return { event, raw: null };
 
-  const held = wire.get(event.agentId) ?? { buffer: '', shown: 0 };
+  const wireKey = event.payload?.workerId ?? event.payload?.sessionId ?? event.agentId;
+  const held = wire.get(wireKey) ?? { buffer: '', shown: 0 };
   const buffer = held.buffer + String(event.payload?.text ?? '');
   const { prose, open } = splitFenced(buffer, FENCES, false, true);
 
@@ -645,24 +666,43 @@ function partition(event) {
   const delta = prose.slice(held.shown);
 
   if (open) {
-    wire.set(event.agentId, { buffer, shown: prose.length });
+    wire.set(wireKey, { buffer, shown: prose.length });
   } else {
-    wire.set(event.agentId, { buffer: '', shown: 0 });
+    wire.set(wireKey, { buffer: '', shown: 0 });
   }
 
   if (!delta || isMachineNoise(delta)) return { event: null, raw };
   return { event: { ...event, payload: { ...event.payload, text: delta } }, raw };
 }
 
-function ingest(incoming) {
+function identifyWorker(event) {
+  if (!event?.agentId || event.payload?.workerId) return event;
+  const sessionId = event.payload?.sessionId;
+  const worker = sessionId && workerForSession(state.agents[event.agentId], sessionId);
+  return worker
+    ? { ...event, payload: { ...event.payload, workerId: worker.id, checkpointId: worker.checkpointId } }
+    : event;
+}
+
+function persistEventWorker(event) {
+  const workerId = event.payload?.workerId;
+  if (!workerId) return;
+  const worker = ensureWorkers(state.agents[event.agentId]).find((candidate) => candidate.id === workerId);
+  if (worker) store.saveWorkerSession(worker);
+}
+
+function ingest(rawIncoming) {
+  const incoming = identifyWorker(rawIncoming);
   if (incoming.kind === EVENT_KINDS.STATUS && incoming.payload?.state === 'stopped') {
-    clearWorkerTimer(incoming.agentId);
+    const worker = workerForSession(state.agents[incoming.agentId], incoming.payload?.sessionId);
+    if (worker) clearWorkerTimer(worker.id);
   }
   // A result carries its text in its own envelope and is never split, so it
   // goes straight to the parsers.
   if (incoming.kind === EVENT_KINDS.RESULT) {
     state.events = appendEvent(state.events, incoming);
     state.agents = applyToAgent(state.agents, incoming);
+    persistEventWorker(incoming);
     store.record(incoming);
     publish({ type: 'event', event: incoming, agent: publicAgent(state.agents[incoming.agentId]) });
     harvestBlocks(incoming);
@@ -679,6 +719,7 @@ function ingest(incoming) {
   if (raw !== null) event.payload = { ...event.payload, raw };
   state.events = appendEvent(state.events, event);
   state.agents = applyToAgent(state.agents, event);
+  persistEventWorker(event);
   store.record(event);
   publish({ type: 'event', event, agent: publicAgent(state.agents[event.agentId]) });
   if (raw !== null) harvestBlocks({ ...event, payload: { ...event.payload, text: raw } });
@@ -888,6 +929,35 @@ function applyToAgent(agents, event) {
   const agent = agents[event.agentId];
   if (!agent) return agents;
   const next = { ...agent, lastEventTs: event.ts };
+  const workerId = event.payload?.workerId;
+
+  if (workerId) {
+    let projected = next;
+    if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
+      const ended = event.payload.state === WORKER_STATE.IDLE
+        || event.payload.state === WORKER_STATE.STOPPED;
+      projected = patchWorker(next, workerId, {
+        state: event.payload.state,
+        sessionId: ended ? null : event.payload.sessionId,
+        resumeSessionId: ended
+          ? event.payload.sessionId ?? workerForSession(next, event.payload.sessionId)?.resumeSessionId
+          : null,
+        leaseStartedAt: ended ? null : workerForSession(next, event.payload.sessionId)?.leaseStartedAt,
+        leaseExpiresAt: ended ? null : workerForSession(next, event.payload.sessionId)?.leaseExpiresAt,
+      });
+    }
+    if (event.kind === EVENT_KINDS.BLOCKED) {
+      projected = patchWorker(projected, workerId, { state: WORKER_STATE.BLOCKED });
+      projected.blockedReason = event.payload.reason ?? null;
+    }
+    if (event.kind === EVENT_KINDS.PLAN) {
+      projected.flows = mergeFlows(agent.flows, event.payload.steps ?? []);
+    }
+    if (event.kind === EVENT_KINDS.DIFF) {
+      projected.diffLines = event.payload.lines ?? agent.diffLines;
+    }
+    return { ...agents, [event.agentId]: projected };
+  }
 
   if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
     next.status = event.payload.state;
@@ -946,29 +1016,70 @@ function mergeFlows(existing, incoming) {
 // desk while the work runs in parallel behind it.
 async function startWorkers(agent, cwd, context) {
   const driver = getDriver(agent.engine);
-  const sessionIds = [];
+  const available = freeWorkers(agent);
+  const started = [];
 
   for (const [index, { prompt }] of workerDispatches(context).entries()) {
-    const canResume = index === 0
-      && agent.resumeSessionId
+    const worker = available[index];
+    if (!worker) break;
+    const resumableId = worker.resumeSessionId;
+    const canResume = resumableId
+      && (!worker.engine || worker.engine === agent.engine)
       && typeof driver.resume === 'function';
+    const workerAgent = { ...agent, workerId: worker.id };
+    let sessionId;
     if (!canResume) {
-      sessionIds.push(await driver.start(agent, cwd, prompt));
-      continue;
+      sessionId = await driver.start(workerAgent, cwd, prompt);
+    } else {
+      try {
+        sessionId = await driver.resume(workerAgent, cwd, resumableId, prompt);
+      } catch {
+        // A saved handle can disappear. Clear only this worker's handle, then
+        // start its replacement without changing another worker at the seat.
+        state.agents = patchAgent(
+          state.agents,
+          agent.id,
+          patchWorker(state.agents[agent.id], worker.id, { resumeSessionId: null }),
+        );
+        sessionId = await driver.start(workerAgent, cwd, prompt);
+      }
     }
-    try {
-      sessionIds.push(await driver.resume(agent, cwd, agent.resumeSessionId, prompt));
-    } catch {
-      // A saved handle can disappear, or it can belong to the engine that was
-      // selected before this one. Clear it once, then create the session the
-      // user asked to start. A failed fresh start still reaches the caller.
-      state.agents = patchAgent(state.agents, agent.id, { resumeSessionId: null });
-      sessionIds.push(await driver.start(agent, cwd, prompt));
+    const now = Date.now();
+    const checkpointId = context.workItems?.[index]?.id ?? null;
+    const nextWorker = {
+      ...worker,
+      sessionId,
+      resumeSessionId: null,
+      checkpointId,
+      engine: agent.engine,
+      state: WORKER_STATE.RUNNING,
+      startedAt: worker.startedAt ?? now,
+      leaseStartedAt: checkpointId ? now : null,
+      leaseExpiresAt: checkpointId ? now + WORKER_LIMIT_MS : null,
+    };
+    state.agents = patchAgent(
+      state.agents,
+      agent.id,
+      patchWorker(state.agents[agent.id], worker.id, nextWorker),
+    );
+    if (checkpointId) {
+      const leased = reviseItem(state.board, checkpointId, {
+        lease: {
+          workerId: worker.id,
+          startedAt: now,
+          expiresAt: now + WORKER_LIMIT_MS,
+          state: WORKER_STATE.RUNNING,
+        },
+      });
+      if (!leased.error) {
+        state.board = leased.board;
+        store.saveItem(leased.item);
+      }
     }
+    store.saveWorkerSession(nextWorker);
+    started.push(nextWorker);
   }
-
-  state.agents = patchAgent(state.agents, agent.id, { sessionIds });
-  return sessionIds[0];
+  return started;
 }
 
 // A steer reaches every worker behind the seat, not just the first. It returns
@@ -977,7 +1088,7 @@ async function startWorkers(agent, cwd, context) {
 // it away - a claim with no receipt, which is the one thing this tool exists
 // to stop.
 async function eachSession(agent, action) {
-  const ids = agent.sessionIds?.length ? agent.sessionIds : [agent.sessionId].filter(Boolean);
+  const ids = ensureWorkers(agent).map((worker) => worker.sessionId).filter(Boolean);
   let delivered = 0;
   const failures = [];
   for (const id of ids) {
@@ -1010,8 +1121,10 @@ function crewRoster() {
 }
 
 function readyWork(agentId) {
+  const active = new Set(state.agents[agentId]?.workItemIds ?? []);
   return itemsFor(state.board, agentId).filter((candidate) =>
-    canWork(state.board, candidate, agentId)
+    !active.has(candidate.id)
+      && canWork(state.board, candidate, agentId)
       && candidate.plan
       && candidate.outcome
       && candidate.verify
@@ -1039,30 +1152,34 @@ async function tellThor(from, text) {
   return COMMANDS.say({ target: boss.id, text, from });
 }
 
-function clearWorkerTimer(agentId) {
-  const timer = workerTimers.get(agentId);
+function clearWorkerTimer(workerId) {
+  const timer = workerTimers.get(workerId);
   if (timer) clearTimeout(timer);
-  workerTimers.delete(agentId);
+  workerTimers.delete(workerId);
 }
 
-function boundWorker(agentId, sessionId) {
-  clearWorkerTimer(agentId);
+function boundWorker(agentId, workerId, sessionId) {
+  clearWorkerTimer(workerId);
   const agent = state.agents[agentId];
   if (!agent || agent.role === ROLES.ORCHESTRATOR) return;
-  workerTimers.set(agentId, setTimeout(() => {
+  workerTimers.set(workerId, setTimeout(() => {
     const current = state.agents[agentId];
-    if (current?.sessionId !== sessionId) return;
+    const worker = current && workerForSession(current, sessionId);
+    if (worker?.id !== workerId || worker.sessionId !== sessionId) return;
     ingest(createEvent(agentId, EVENT_KINDS.STATUS, {
-      text: 'eight-minute work-unit limit reached; benched',
+      text: `${worker.checkpointId ?? worker.id} reached its eight-minute work-unit limit`,
       from: 'minimac',
+      workerId,
+      sessionId,
     }));
-    void COMMANDS.setActive({ agentId, active: false })
+    void expireWorker(agentId, workerId)
       .then(async () => {
         publish({ type: 'state', state: snapshot() });
         await tellThor(
           agentId,
-          `${agentId} reached the eight-minute limit and was benched. `
-            + 'Review the checkpoints and replace or split the work unit before starting a worker.',
+          `${worker.checkpointId ?? worker.id} reached the eight-minute limit. `
+            + 'Its worker stopped and its conversation is resumable. '
+            + 'Review, replace, or split this checkpoint before starting it again.',
         );
       })
       .catch(() => {});
@@ -1243,9 +1360,11 @@ const COMMANDS = {
   async stopRun() {
     const stopped = [];
     for (const agent of Object.values(state.agents)) {
-      if (!agent.sessionId) continue;
-      await getDriver(agent.engine).interrupt(agent.sessionId).catch(() => {});
-      state.agents = patchAgent(state.agents, agent.id, { status: 'stopped', sessionId: null });
+      if (!ensureWorkers(agent).some((worker) => worker.sessionId)) continue;
+      await interruptAgent(agent.id).catch(() => {});
+      state.agents = patchAgent(state.agents, agent.id, projectWorkers({
+        ...state.agents[agent.id], enabled: false,
+      }));
       stopped.push(agent.id);
     }
     ingest(
@@ -1272,9 +1391,7 @@ const COMMANDS = {
     // memory; where it does not, that agent starts fresh on the same goal and
     // the feed says which ones lost their thread. A dead button is never the
     // right answer.
-    const sessions = new Map(
-      store.sessionsFor(Number(runId)).map((row) => [row.agent_id, row]),
-    );
+    const savedWorkers = store.workerSessionsFor(Number(runId));
 
     // Continuing opens a NEW run record carrying the old mission, so the fleet
     // has one current run and the history stays honest about what happened when.
@@ -1303,32 +1420,22 @@ const COMMANDS = {
     const restarted = [];
 
     for (const agent of Object.values(state.agents)) {
-      const previousSession = sessions.get(agent.id);
-      const driver = getDriver(agent.engine);
+      const rows = savedWorkers.filter((row) => row.agent_id === agent.id);
+      if (rows.length === 0) continue;
+      const workers = rows.map(hydrateWorker);
+      state.agents = patchAgent(state.agents, agent.id, projectWorkers({
+        ...agent, enabled: true, workers,
+      }, workers));
+      const activeRows = rows.filter((row) => ['running', 'blocked'].includes(row.state));
+      if (activeRows.length === 0) continue;
+      const checkpointIds = activeRows.map((row) => row.checkpoint_id).filter(Boolean);
       try {
-        if (!previousSession) throw new Error('no session recorded');
-        if (previousSession.engine !== agent.engine) {
-          await captureEngineHandoff(
-            agent.id,
-            previousSession.engine,
-            agent.engine,
-            previousSession.session_id,
-          );
-          throw new Error('session belongs to another engine');
-        }
-        if (typeof driver.resume !== 'function') throw new Error('engine cannot resume');
-        const sessionId = await driver.resume(
-          agent,
-          options.repo,
-          previousSession.session_id,
-          composeDispatch(promptContext(agent, prompt)),
-        );
-        state.agents = patchAgent(state.agents, agent.id, { sessionId, status: 'running' });
-        store.saveSession(agent.id, sessionId, agent.engine);
-        resumed.push(agent.id);
+        await COMMANDS.start({ agentId: agent.id, task: prompt, checkpointIds });
+        resumed.push(...activeRows.map((row) => row.worker_id));
       } catch {
-        await COMMANDS.start({ agentId: agent.id }).catch(() => {});
-        restarted.push(agent.id);
+        // The stored conversation remains available through resumeSessionId.
+        // Do not replace it with a fresh thread when recovery is not possible.
+        restarted.push(...activeRows.map((row) => row.worker_id));
       }
     }
 
@@ -1377,9 +1484,7 @@ const COMMANDS = {
     const selectedEngines = Object.fromEntries(
       Object.values(state.agents).map((agent) => [agent.id, agent.engine]),
     );
-    for (const agent of Object.values(state.agents)) {
-      if (agent.sessionId) await getDriver(agent.engine).interrupt(agent.sessionId).catch(() => {});
-    }
+    for (const agent of Object.values(state.agents)) await interruptAgent(agent.id).catch(() => {});
     store.finishRun();
     state.agents = forceEngine(createRoster(DEFAULT_ROSTER, options.rosterOverrides), options.engine);
     for (const [agentId, engine] of Object.entries(selectedEngines)) {
@@ -1441,9 +1546,10 @@ const COMMANDS = {
       exclusiveOutput,
     });
     context.tasks = tasks;
-    let sessionId;
+    context.workItems = assignedItems;
+    let startedWorkers;
     try {
-      sessionId = await startWorkers(agent, cwd, context);
+      startedWorkers = await startWorkers(agent, cwd, context);
     } catch (error) {
       ingest(
         createBlockedEvent(agentId, {
@@ -1454,16 +1560,20 @@ const COMMANDS = {
       throw error;
     }
     // Re-read: events arriving during the await already changed this agent.
+    if (!startedWorkers.length) throw new Error(`${agentId} has no free worker slot`);
     state.agents = patchAgent(state.agents, agentId, {
-      sessionId,
-      status: 'running',
-      workItemIds: assignedItems.map((item) => item.id),
-      resumeSessionId: null,
+      ...projectWorkers(state.agents[agentId]),
+      enabled: true,
     });
-    store.saveSession(agentId, sessionId, agent.engine);
     store.clearHandoff(agentId);
-    boundWorker(agentId, sessionId);
-    return { sessionId, workers: state.agents[agentId].sessionIds?.length ?? 1 };
+    for (const worker of startedWorkers) {
+      if (worker.checkpointId) boundWorker(agentId, worker.id, worker.sessionId);
+    }
+    return {
+      sessionId: startedWorkers[0].sessionId,
+      workerIds: startedWorkers.map((worker) => worker.id),
+      workers: startedWorkers.length,
+    };
   },
 
   // The composer's single verb. One line of text, whatever it names, ends up
@@ -1679,7 +1789,8 @@ const COMMANDS = {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
     const count = Math.min(4, Math.max(1, Number(instances) || 1));
-    state.agents = patchAgent(state.agents, agentId, { instances: count });
+    const resized = { ...agent, instances: count };
+    state.agents = patchAgent(state.agents, agentId, projectWorkers(resized, ensureWorkers(resized)));
     return { agentId, instances: count };
   },
 
@@ -1733,7 +1844,9 @@ const COMMANDS = {
     }
     const item = findItem(state.board, id);
     if (!item) throw new Error(`no item ${id}`);
-    if (item.owner && item.owner !== owner) await interruptCheckpoint(item.owner, id);
+    if (item.owner && item.owner !== owner) {
+      await interruptCheckpoint(item.owner, id, { clearCheckpoint: true });
+    }
     const result = reviseItem(state.board, id, { owner });
     if (result.error) throw new Error(result.error);
     state.board = result.board;
@@ -1752,8 +1865,8 @@ const COMMANDS = {
     if ((state.agents[item.owner]?.workItemIds ?? []).includes(id)) {
       return { item, alreadyRunning: true };
     }
-    if (state.agents[item.owner]?.sessionId) {
-      throw new Error(`${state.agents[item.owner].label ?? item.owner} is already working`);
+    if (freeWorkers(state.agents[item.owner]).length === 0) {
+      throw new Error(`${state.agents[item.owner].label ?? item.owner} has no free worker`);
     }
     if (item.paused) {
       const resumed = setCheckpointPaused(state.board, id, false);
@@ -1784,7 +1897,9 @@ const COMMANDS = {
         return { agentId, active: isActive(state.agents[agentId]), required: 'mission' };
       }
       if (agent.sessionId) await interruptAgent(agentId);
-      state.agents = patchAgent(state.agents, agentId, { enabled: false });
+      state.agents = patchAgent(state.agents, agentId, projectWorkers({
+        ...state.agents[agentId], enabled: false,
+      }));
       return { agentId, active: false };
     }
     if (agent.sessionId) {
@@ -1820,15 +1935,21 @@ const COMMANDS = {
     if (current.sessionId || current.sessionIds?.length) await interruptAgent(agentId);
     state.agents = assignEngine(state.agents, agentId, engine);
     applySavedRuntime(agentId);
-    state.agents = patchAgent(state.agents, agentId, {
-      enabled: current.enabled,
-      status: 'idle',
+    const resetWorkers = ensureWorkers(state.agents[agentId]).map((worker) => ({
+      ...worker,
+      engine,
+      state: WORKER_STATE.IDLE,
       sessionId: null,
-      sessionIds: [],
       resumeSessionId: null,
-      workItemIds: [],
+      checkpointId: null,
+      leaseStartedAt: null,
+      leaseExpiresAt: null,
+    }));
+    state.agents = patchAgent(state.agents, agentId, projectWorkers({
+      ...state.agents[agentId],
+      enabled: current.enabled,
       blockedReason: null,
-    });
+    }, resetWorkers));
     store.saveEngine(agentId, engine);
     return { engine };
   },
@@ -1870,43 +1991,70 @@ const COMMANDS = {
 // End a live engine session without deciding mission membership. This is an
 // internal lifecycle step used by the one public active/bench transition and
 // by Thor's isolated assemble turn. It is not a command clients can call.
-async function interruptCheckpoint(agentId, itemId) {
+async function interruptWorker(agentId, workerId, { state = WORKER_STATE.IDLE, clearCheckpoint = false } = {}) {
   const agent = state.agents[agentId];
   if (!agent) return false;
-  const workIds = agent.workItemIds ?? [];
-  const index = workIds.indexOf(itemId);
-  if (index < 0) return false;
-  const sessionIds = agent.sessionIds?.length
-    ? agent.sessionIds
-    : [agent.sessionId].filter(Boolean);
-  const sessionId = sessionIds[index] ?? (workIds.length === 1 ? agent.sessionId : null);
+  const worker = ensureWorkers(agent).find((candidate) => candidate.id === workerId);
+  const sessionId = worker?.sessionId;
   if (!sessionId) return false;
   await getDriver(agent.engine).interrupt(sessionId);
-  const remainingSessions = sessionIds.filter((_, at) => at !== index);
-  const remainingWork = workIds.filter((_, at) => at !== index);
-  if (remainingSessions.length === 0) clearWorkerTimer(agentId);
-  state.agents = patchAgent(state.agents, agentId, {
-    sessionId: remainingSessions[0] ?? null,
-    sessionIds: remainingSessions,
-    workItemIds: remainingWork,
-    status: remainingSessions.length ? 'running' : 'stopped',
+  clearWorkerTimer(workerId);
+  const next = patchWorker(state.agents[agentId], workerId, {
+    state,
+    sessionId: null,
     resumeSessionId: sessionId,
+    checkpointId: clearCheckpoint ? null : worker.checkpointId,
+    leaseStartedAt: null,
+    leaseExpiresAt: null,
   });
+  state.agents = patchAgent(state.agents, agentId, next);
+  if (worker.checkpointId) {
+    const leased = reviseItem(state.board, worker.checkpointId, {
+      lease: {
+        ...(findItem(state.board, worker.checkpointId)?.lease ?? {}),
+        workerId,
+        state,
+        endedAt: Date.now(),
+      },
+    });
+    if (!leased.error) {
+      state.board = leased.board;
+      store.saveItem(leased.item);
+    }
+  }
+  store.saveWorkerSession(ensureWorkers(next).find((candidate) => candidate.id === workerId));
   refreshCards();
   return true;
+}
+
+async function expireWorker(agentId, workerId) {
+  const agent = state.agents[agentId];
+  const worker = agent && ensureWorkers(agent).find((candidate) => candidate.id === workerId);
+  if (!worker?.sessionId) return false;
+  const stopped = await interruptWorker(agentId, workerId, { state: WORKER_STATE.EXPIRED });
+  if (worker.checkpointId) {
+    const paused = setCheckpointPaused(state.board, worker.checkpointId, true);
+    if (!paused.error) {
+      state.board = paused.board;
+      store.saveItem(paused.item);
+    }
+  }
+  return stopped;
+}
+
+async function interruptCheckpoint(agentId, itemId, options = {}) {
+  const agent = state.agents[agentId];
+  const worker = agent && workerForCheckpoint(agent, itemId);
+  return worker ? interruptWorker(agentId, worker.id, options) : false;
 }
 
 async function interruptAgent(agentId) {
   const agent = state.agents[agentId];
   if (!agent) throw new Error(`no agent ${agentId}`);
-  clearWorkerTimer(agentId);
   answerPrayer(agentId, 'stopped by Mac');
-  const had = agent.sessionIds?.length || (agent.sessionId ? 1 : 0);
-  if (had) await eachSession(agent, (id) => getDriver(agent.engine).interrupt(id));
-  state.agents = patchAgent(state.agents, agentId, {
-    status: 'stopped', sessionId: null, sessionIds: [], workItemIds: [],
-    resumeSessionId: agent.sessionId ?? agent.resumeSessionId ?? null,
-  });
+  const live = ensureWorkers(agent).filter((worker) => worker.sessionId);
+  for (const worker of live) await interruptWorker(agentId, worker.id);
+  state.agents = patchAgent(state.agents, agentId, projectWorkers(state.agents[agentId]));
   refreshCards();
 }
 
@@ -2134,7 +2282,8 @@ async function executeAgentTool(callerId, name, args) {
     }
   }
   if (name === AGENT_TOOL.START) {
-    const result = await COMMANDS.setActive({ agentId: args.agentId, active: true });
+    state.agents = patchAgent(state.agents, args.agentId, { enabled: true });
+    const result = await COMMANDS.start({ agentId: args.agentId });
     const started = state.agents[args.agentId];
     const checkpoint = findItem(state.board, started?.workItemIds?.[0]);
     orders(

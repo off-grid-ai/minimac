@@ -89,7 +89,8 @@ export function createClaudeDriver({
     } catch {
       return;
     }
-    const at = (kind, payload) => emit(createEvent(agentId, kind, { ...payload, sessionId }));
+    const workerId = sessions.get(sessionId)?.agent?.workerId ?? null;
+    const at = (kind, payload) => emit(createEvent(agentId, kind, { ...payload, sessionId, workerId }));
 
     if (message.type === 'assistant') {
       for (const block of message.message?.content ?? []) {
@@ -104,7 +105,7 @@ export function createClaudeDriver({
     // a loop from progress.
     if (message.type === 'user') {
       for (const block of message.message?.content ?? []) {
-        if (block.type === 'tool_result') normalizeToolResult(agentId, at, block);
+        if (block.type === 'tool_result') normalizeToolResult(agentId, at, block, sessionId, workerId);
       }
       return;
     }
@@ -143,7 +144,7 @@ export function createClaudeDriver({
     });
   }
 
-  function normalizeToolResult(agentId, at, block) {
+  function normalizeToolResult(agentId, at, block, sessionId, workerId) {
     const text = resultText(block);
     const call = callsById.get(block.tool_use_id) ?? { action: 'tool', target: block.tool_use_id ?? '' };
     callsById.delete(block.tool_use_id);
@@ -172,6 +173,8 @@ export function createClaudeDriver({
           category: BLOCKED_REASONS.APPROVAL,
           reason: text.split('\n')[0].slice(0, 200),
           approvalId: block.tool_use_id ?? null,
+          sessionId,
+          workerId,
         }),
       );
     }
@@ -212,6 +215,8 @@ export function createClaudeDriver({
         createBlockedEvent(agentId, {
           category: BLOCKED_REASONS.ERROR,
           reason: String(message.result ?? message.subtype ?? 'run failed').slice(0, 200),
+          sessionId,
+          workerId: session?.agent?.workerId ?? null,
         }),
       );
       return;
@@ -222,6 +227,8 @@ export function createClaudeDriver({
           category: BLOCKED_REASONS.APPROVAL,
           reason: `${message.permission_denials.length} tool call(s) denied - approve or narrow the task`,
           approvalId: message.permission_denials[0]?.tool_use_id ?? null,
+          sessionId,
+          workerId: session?.agent?.workerId ?? null,
         }),
       );
     }
@@ -305,6 +312,8 @@ export function createClaudeDriver({
         createBlockedEvent(agent.id, {
           category: BLOCKED_REASONS.ERROR,
           reason: `cannot launch ${bin}: ${error.message}`,
+          sessionId,
+          workerId: agent.workerId ?? null,
         }),
       );
     });
@@ -319,6 +328,8 @@ export function createClaudeDriver({
           createBlockedEvent(agent.id, {
             category: BLOCKED_REASONS.ERROR,
             reason: session.stderr.trim().split('\n').slice(-3).join(' ').slice(0, 300),
+            sessionId,
+            workerId: agent.workerId ?? null,
           }),
         );
       }
@@ -328,6 +339,7 @@ export function createClaudeDriver({
         state: code === 0 ? 'idle' : 'stopped',
         code,
         sessionId,
+        workerId: agent.workerId ?? null,
       }));
     });
 

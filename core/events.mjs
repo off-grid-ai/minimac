@@ -134,6 +134,8 @@ export function createBlockedEvent(agentId, blocked, ts = Date.now()) {
       category: blocked.category ?? BLOCKED_REASONS.INPUT,
       reason: blocked.reason ?? 'waiting on you',
       approvalId: blocked.approvalId ?? null,
+      sessionId: blocked.sessionId ?? null,
+      workerId: blocked.workerId ?? null,
       since: ts,
     },
     ts,

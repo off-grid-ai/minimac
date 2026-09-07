@@ -70,6 +70,7 @@ export function createItem({
     gates,
     blockedBy: [...blockedBy],
     paused: false,
+    lease: null,
     evidence: [],
     estimateMs,
     createdAt: now,
@@ -224,7 +225,7 @@ export function revise(board, id, change = {}) {
   for (const field of ['title', 'plan', 'outcome', 'verify', 'scope']) {
     if (change[field] !== undefined) next[field] = String(change[field]).trim();
   }
-  for (const field of ['owner', 'estimateMs']) {
+  for (const field of ['owner', 'estimateMs', 'lease']) {
     if (change[field] !== undefined) next[field] = change[field];
   }
   if (change.blockedBy !== undefined) next.blockedBy = [...change.blockedBy];
@@ -243,12 +244,16 @@ export function revise(board, id, change = {}) {
 // Move one gate. This is where the chain is ENFORCED: a gate cannot pass while
 // an earlier gate on the same item has not, and a pass needs a receipt. That
 // single rule is what stops an agent reporting a push over untested code.
-export function advance(board, { id, gate, state, receipt = '', by = null }, now = Date.now()) {
+export function advance(
+  board,
+  { id, gate, state, receipt = '', by = null, canManage = false },
+  now = Date.now(),
+) {
   const item = findItem(board, id);
   if (!item) return { board, error: `no item ${id}` };
   if (!(gate in (item.gates ?? {}))) return { board, error: `${id} has no ${gate} gate` };
   if (!Object.values(GATE_STATE).includes(state)) return { board, error: `${state} is not a gate state` };
-  if (item.owner && by && item.owner !== by) {
+  if (item.owner && by && item.owner !== by && !canManage) {
     return { board, error: `${id} belongs to ${item.owner}` };
   }
 
@@ -269,7 +274,7 @@ export function advance(board, { id, gate, state, receipt = '', by = null }, now
 
   const gates = { ...item.gates, [gate]: state };
   const evidence = receipt.trim()
-    ? [...item.evidence, { gate, state, receipt: receipt.trim(), at: now }]
+    ? [...item.evidence, { gate, state, receipt: receipt.trim(), by, at: now }]
     : item.evidence;
   const next = { ...item, gates, evidence };
   return {
@@ -325,6 +330,7 @@ export function boardBrief(board, agentId = null) {
       item.scope ? `      where: ${item.scope}` : null,
       `      owner: ${item.owner ?? 'UNASSIGNED'}`,
       item.paused ? '      paused by Mac' : null,
+      item.lease?.workerId ? `      worker: ${item.lease.workerId} [${item.lease.state}]` : null,
       gate ? `      next gate: ${gate}` : '      finished',
       blocked.length ? `      waiting on: ${blocked.join(', ')}` : null,
     ];

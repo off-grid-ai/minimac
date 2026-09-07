@@ -75,6 +75,7 @@ export function createCodexDriver({
   const handlers = new Set();
   const turnByThread = new Map();
   const agentByThread = new Map();
+  const workerByThread = new Map();
   const runtimeByThread = new Map();
   const approvalsByThread = new Map(); // threadId -> [{ id, method, event }]
 
@@ -100,7 +101,12 @@ export function createCodexDriver({
     clearTimeout(entry.timer);
     buffers.delete(threadId);
     if (entry.text.trim()) {
-      emit(createEvent(entry.agentId, EVENT_KINDS.MESSAGE, { text: entry.text, partial: !final }));
+      emit(createEvent(entry.agentId, EVENT_KINDS.MESSAGE, {
+        text: entry.text,
+        partial: !final,
+        sessionId: threadId,
+        workerId: workerByThread.get(threadId) ?? null,
+      }));
     }
   }
 
@@ -207,6 +213,8 @@ export function createCodexDriver({
         category: BLOCKED_REASONS.APPROVAL,
         reason: approval.summary,
         approvalId: String(id),
+        sessionId: threadId,
+        workerId: workerByThread.get(threadId) ?? null,
       }),
     );
   }
@@ -265,7 +273,9 @@ export function createCodexDriver({
       }),
     );
     if (decision === 'cancel' || decision === 'abort') return;
-    emit(createEvent(entry.agentId, EVENT_KINDS.STATUS, { state: 'running' }));
+    emit(createEvent(entry.agentId, EVENT_KINDS.STATUS, {
+      state: 'running', sessionId: entry.threadId, workerId: workerByThread.get(entry.threadId) ?? null,
+    }));
   }
 
   function takeApproval(threadId, approvalId) {
@@ -318,7 +328,8 @@ export function createCodexDriver({
     const threadId = params.threadId ?? params.conversationId;
     const agentId = agentByThread.get(threadId);
     if (!agentId) return undefined;
-    const at = (kind, payload) => emit(createEvent(agentId, kind, { ...payload, sessionId: threadId }));
+    const workerId = workerByThread.get(threadId) ?? null;
+    const at = (kind, payload) => emit(createEvent(agentId, kind, { ...payload, sessionId: threadId, workerId }));
 
     switch (method) {
       case 'turn/started':
@@ -381,6 +392,8 @@ export function createCodexDriver({
           createBlockedEvent(agentId, {
             category: BLOCKED_REASONS.ERROR,
             reason: params.message ?? 'codex reported an error',
+            sessionId: threadId,
+            workerId,
           }),
         );
         return undefined;
@@ -464,6 +477,7 @@ export function createCodexDriver({
       // Register first so any status notification emitted during resume has a
       // destination. This does not start a turn.
       agentByThread.set(sessionId, agent.id);
+      workerByThread.set(sessionId, agent.workerId ?? null);
       runtimeByThread.set(sessionId, { model: agent.model || null, effort: agent.effort || null });
       const result = await request('thread/resume', {
         threadId: sessionId,
@@ -473,6 +487,7 @@ export function createCodexDriver({
       const thread = result?.thread ?? {};
       const threadId = thread.id ?? sessionId;
       agentByThread.set(threadId, agent.id);
+      workerByThread.set(threadId, agent.workerId ?? null);
       runtimeByThread.set(threadId, { model: agent.model || null, effort: agent.effort || null });
       const state = threadState(thread.status);
       const activeTurn = [...(thread.turns ?? [])].reverse().find((turn) => {
@@ -497,6 +512,7 @@ export function createCodexDriver({
       const threadId = thread?.thread?.id;
       if (!threadId) throw new Error('thread/start returned no thread id');
       agentByThread.set(threadId, agent.id);
+      workerByThread.set(threadId, agent.workerId ?? null);
       runtimeByThread.set(threadId, { model: agent.model || null, effort: agent.effort || null });
 
       const turn = await request('turn/start', {
@@ -520,6 +536,7 @@ export function createCodexDriver({
       });
       const threadId = thread?.thread?.id ?? sessionId;
       agentByThread.set(threadId, agent.id);
+      workerByThread.set(threadId, agent.workerId ?? null);
       runtimeByThread.set(threadId, { model: agent.model || null, effort: agent.effort || null });
 
       const turn = await request('turn/start', {
