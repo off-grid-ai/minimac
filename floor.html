@@ -740,6 +740,29 @@
     padding: 6px 10px;
   }
 
+  .panel-compose-preview {
+    grid-area: input;
+  }
+
+  .panel-compose-preview,
+  .composer-preview {
+    width: 100%;
+    min-height: 34px;
+    max-height: 35vh;
+    overflow: auto;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font: 13px/1.4 var(--mono);
+    padding: 6px 10px;
+  }
+
+  .composer-preview-empty { color: var(--faint); }
+  .panel-compose-row textarea[hidden],
+  .panel-compose-preview[hidden],
+  #composerInput[hidden],
+  .composer-preview[hidden] { display: none; }
+
   .panel-compose-row textarea:focus {
     outline: none;
     border-color: var(--accent);
@@ -1550,6 +1573,8 @@
     transition: border-color 140ms ease-out, box-shadow 140ms ease-out;
   }
 
+  .composer-preview { grid-area: input; }
+
   #composerInput::placeholder { color: var(--faint); }
   #composerInput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 12px -4px var(--accent-glow); }
   #composerSend { grid-area: send; }
@@ -1910,6 +1935,7 @@
     <textarea id="composerInput" rows="1" autocomplete="off" spellcheck="false"
               aria-label="Command the fleet"
               placeholder="set the mission, or steer CODER · @file  /skill  @agent"></textarea>
+    <div id="composerPreview" class="composer-preview md" hidden role="region" aria-label="Message preview"></div>
     <button class="btn primary" id="composerSend" type="button">SEND</button>
 
     <div class="dock">
@@ -1919,6 +1945,8 @@
         decisions <span id="queueCount" aria-label="decisions waiting on you">0</span>
       </button>
       <button class="dock-btn" id="btnRuns" type="button" aria-pressed="false" aria-controls="winRuns">missions</button>
+      <button class="dock-btn mini" id="btnPreview" type="button" aria-pressed="false"
+              aria-controls="composerPreview">preview</button>
       <button class="dock-btn mini" id="btnAttach" type="button"
               aria-label="Attach a file" title="Attach a file — or just drop one on the window">+file</button>
     </div>

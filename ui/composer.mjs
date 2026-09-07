@@ -5,6 +5,7 @@
 // it means are decided by core/mentions.mjs and the server.
 
 import { activeMention, applyMention, parseMentions } from '../core/mentions.mjs';
+import { renderMarkdown } from './markdown.mjs';
 
 export const MISSION_TARGET = 'mission';
 // Speak once, three ways. MISSION replaces what the run is for. POLICY binds
@@ -38,7 +39,33 @@ export function createComposer({
   let historyIndex = null;
   let historyDraft = '';
   let historyTarget = null;
+  let previewing = false;
   const localHistory = new Map();
+
+  function renderPreview() {
+    if (!dom.preview) return;
+    const text = dom.input.value.trim();
+    if (text) {
+      dom.preview.innerHTML = renderMarkdown(text);
+      return;
+    }
+    const empty = document.createElement('span');
+    empty.className = 'composer-preview-empty';
+    empty.textContent = 'Nothing to preview';
+    dom.preview.replaceChildren(empty);
+  }
+
+  function setPreview(open) {
+    previewing = Boolean(open && dom.preview);
+    dom.input.hidden = previewing;
+    if (dom.preview) dom.preview.hidden = !previewing;
+    if (dom.previewToggle) {
+      dom.previewToggle.textContent = previewing ? 'EDIT' : 'PREVIEW';
+      dom.previewToggle.setAttribute('aria-pressed', String(previewing));
+    }
+    if (previewing) renderPreview();
+    else dom.input.focus();
+  }
 
   function agentIds() {
     return getAgents().map((agent) => agent.id);
@@ -101,9 +128,11 @@ export function createComposer({
       const sent = localHistory.get(target) ?? [];
       localHistory.set(target, [...sent, text]);
     }
-    onSend?.({ target, text, attachments, from: dom.input.getBoundingClientRect() });
+    const origin = previewing ? dom.preview : dom.input;
+    onSend?.({ target, text, attachments, from: origin.getBoundingClientRect() });
     send('say', { target, text, attachments });
     dom.input.value = '';
+    setPreview(false);
     historyIndex = null;
     historyDraft = '';
     autosize();
@@ -309,6 +338,7 @@ export function createComposer({
   }
 
   dom.send?.addEventListener('click', submit);
+  dom.previewToggle?.addEventListener('click', () => setPreview(!previewing));
   dom.file?.addEventListener('change', () => {
     attach([...dom.file.files]);
     dom.file.value = '';
@@ -387,9 +417,10 @@ export function createComposer({
       } else if (dom.input.value && dom.input.value === lastMission) {
         dom.input.value = ''; // that was the mission, not a steer for this agent
       }
+      if (previewing) renderPreview();
     },
     focus() {
-      dom.input.focus();
+      setPreview(false);
     },
     parse(text) {
       return parseMentions(text, { agentIds: agentIds() });

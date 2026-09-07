@@ -88,6 +88,7 @@ const palette = readPalette();
 let scene = null;
 let composer = null;
 let strip = null;
+let panelComposerCount = 0;
 const sound = createSound();
 // Feed rows are rebuilt whenever a live event arrives. Keep disclosure state
 // outside those short-lived DOM nodes so the reader's choices survive updates.
@@ -1689,6 +1690,12 @@ function mountPanelComposer(host, { getTarget, extraActions = [] }) {
   input.rows = 1;
   input.autocomplete = 'off';
   input.spellcheck = false;
+  const preview = document.createElement('div');
+  preview.className = 'panel-compose-preview md';
+  preview.id = `panelComposerPreview${++panelComposerCount}`;
+  preview.hidden = true;
+  preview.setAttribute('role', 'region');
+  preview.setAttribute('aria-label', 'Message preview');
   const sendButton = document.createElement('button');
   sendButton.className = 'btn primary';
   sendButton.type = 'button';
@@ -1701,17 +1708,23 @@ function mountPanelComposer(host, { getTarget, extraActions = [] }) {
   attach.className = 'dock-btn mini';
   attach.type = 'button';
   attach.textContent = '+FILE';
+  const previewToggle = document.createElement('button');
+  previewToggle.className = 'dock-btn mini';
+  previewToggle.type = 'button';
+  previewToggle.textContent = 'PREVIEW';
+  previewToggle.setAttribute('aria-pressed', 'false');
+  previewToggle.setAttribute('aria-controls', preview.id);
   const file = document.createElement('input');
   file.type = 'file';
   file.multiple = true;
   file.hidden = true;
   attach.onclick = () => file.click();
 
-  actions.append(attach, ...extraActions, file);
+  actions.append(attach, previewToggle, ...extraActions, file);
 
   // Keep the complete composer in one fixed row. A separate action row can be
   // pushed below the panel edge when the conversation is tall.
-  row.replaceChildren(actions, input, sendButton);
+  row.replaceChildren(actions, input, preview, sendButton);
 
   const menu = document.createElement('div');
   menu.className = 'panel-mention-menu';
@@ -1720,7 +1733,7 @@ function mountPanelComposer(host, { getTarget, extraActions = [] }) {
   host.append(attachments, row, menu);
 
   return createComposer({
-    dom: { input, send: sendButton, menu, attachments, file },
+    dom: { input, preview, previewToggle, send: sendButton, menu, attachments, file },
     send,
     getAgents: () => orderedAgents(),
     getTarget,
@@ -2162,6 +2175,8 @@ function boot() {
   composer = createComposer({
     dom: {
       input: dom.composerInput,
+      preview: dom.composerPreview,
+      previewToggle: dom.btnPreview,
       send: dom.composerSend,
       menu: dom.mentionMenu,
       targetChip: dom.composerTarget,
@@ -2260,8 +2275,8 @@ function pickDom() {
   const ids = [
     'floor', 'topbar', 'repoPath', 'queueCount', 'startAll', 'planAll', 'crewBar',
     'sceneZoom', 'sceneZoomOut', 'sceneZoomLevel', 'sceneZoomIn',
-    'composer', 'composerTarget', 'composerInput', 'composerSend', 'mentionMenu',
-    'attachments', 'fileInput', 'btnAttach',
+    'composer', 'composerTarget', 'composerInput', 'composerPreview', 'composerSend', 'mentionMenu',
+    'attachments', 'fileInput', 'btnAttach', 'btnPreview',
     'winDecisions', 'winDecisionsClose', 'queue', 'prayerHead', 'prayerChat',
     'bubbles', 'btnDecisions',
     'winCrew', 'winCrewClose', 'roster', 'roCrew', 'btnCrew',
