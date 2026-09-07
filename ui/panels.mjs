@@ -22,6 +22,9 @@ const LADDER = ['coded', 'wired', 'verified'];
 const FLOW_STATES = new Set(['pending', 'running', 'blocked', ...LADDER]);
 
 const LADDER_MEANING = [
+  ['pending', 'not started'],
+  ['running', 'happening now, nothing delivered yet'],
+  ['blocked', 'stopped, waiting on something'],
   ['coded', 'the change exists in the tree'],
   ['wired', 'it runs in the real app'],
   ['verified', 'someone watched it happen'],
