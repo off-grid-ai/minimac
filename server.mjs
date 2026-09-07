@@ -253,11 +253,15 @@ const agentsByToken = new Map();
 
 function mcpServerFor(agent) {
   const principalId = agent.workerId ?? agent.id;
-  const previous = agentTokens.get(principalId);
-  if (previous) agentsByToken.delete(previous);
-  const token = randomUUID();
-  agentTokens.set(principalId, token);
-  agentsByToken.set(token, { agentId: agent.id, workerId: agent.workerId ?? null });
+  let token = agentTokens.get(principalId);
+  // Driver setup can ask for the same configuration more than once while one
+  // engine process is alive. Reuse that principal until lifecycle teardown
+  // revokes it; rotating here strands the live MCP process on an invalid token.
+  if (!token || !agentsByToken.has(token)) {
+    token = randomUUID();
+    agentTokens.set(principalId, token);
+    agentsByToken.set(token, { agentId: agent.id, workerId: agent.workerId ?? null });
+  }
   return {
     command: process.execPath,
     args: [join(ROOT, 'adapters', 'fleet-mcp.mjs')],
