@@ -321,21 +321,25 @@ function eventTranscript(agentId) {
 
 async function captureEngineHandoff(agentId, fromEngine, toEngine, sessionId) {
   if (fromEngine === toEngine) return null;
-  let transcript = '';
+  const sessionIds = (Array.isArray(sessionId) ? sessionId : [sessionId]).filter(Boolean);
+  const transcripts = [];
   const driver = getDriver(fromEngine);
-  if (sessionId && typeof driver.history === 'function') {
-    try {
-      transcript = await driver.history(sessionId, options.repo);
-    } catch {
-      transcript = '';
+  if (typeof driver.history === 'function') {
+    for (const id of sessionIds) {
+      try {
+        const history = await driver.history(id, options.repo);
+        if (history) transcripts.push(`SESSION ${id}\n${history}`);
+      } catch {
+        // The durable MINIMAC event transcript remains the fallback.
+      }
     }
   }
-  transcript = boundedHandoff(transcript || eventTranscript(agentId));
+  const transcript = boundedHandoff(transcripts.join('\n\n') || eventTranscript(agentId));
   if (!transcript) return null;
   const handoff = {
     fromEngine,
     toEngine,
-    sourceSessionId: sessionId,
+    sourceSessionId: sessionIds.join(','),
     transcript,
   };
   store.saveHandoff(agentId, handoff);
@@ -1957,8 +1961,10 @@ const COMMANDS = {
     if (!current) throw new Error(`unknown agent: ${agentId}`);
     if (current.engine === engine) return { engine };
     ensureRun();
-    const sourceSessionId = current.sessionId ?? current.resumeSessionId ?? null;
-    await captureEngineHandoff(agentId, current.engine, engine, sourceSessionId);
+    const sourceSessionIds = ensureWorkers(current)
+      .map((worker) => worker.sessionId ?? worker.resumeSessionId)
+      .filter(Boolean);
+    await captureEngineHandoff(agentId, current.engine, engine, sourceSessionIds);
     if (current.sessionId || current.sessionIds?.length) await interruptAgent(agentId);
     state.agents = assignEngine(state.agents, agentId, engine);
     applySavedRuntime(agentId);
