@@ -1,6 +1,8 @@
 // The crew. Roles are data, not code - adding one is a row here, and the
 // engine behind any of them is switchable at any time from the floor.
 
+import { createWorker } from './workers.mjs';
+
 export const ENGINES = Object.freeze({ CODEX: 'codex', CLAUDE: 'claude', SIM: 'sim' });
 
 export const MODEL_OPTIONS = Object.freeze({
@@ -82,6 +84,7 @@ export function agentLabel(name, id) {
 
 export function createAgent(spec) {
   const runtime = defaultRuntime(spec.engine);
+  const instances = Math.max(1, Number(spec.instances) || 1);
   return {
     id: spec.id,
     name: spec.name,
@@ -98,10 +101,11 @@ export function createAgent(spec) {
     enabled: spec.enabled !== false,
     // One desk on the floor, this many real sessions behind it. Thor is told
     // the count and must split the work into disjoint, verifiable slices.
-    instances: Math.max(1, Number(spec.instances) || 1),
+    instances,
     color: spec.color ?? null,
     sessionId: null,
     sessionIds: [],
+    workers: Array.from({ length: instances }, (_, index) => createWorker(spec.id, index)),
     status: 'idle', // idle | running | blocked | stopped
     blockedReason: null,
     flows: [],
