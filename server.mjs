@@ -70,6 +70,7 @@ import {
 import {
   createBoard,
   addItem,
+  closeItem,
   revise as reviseItem,
   setPaused as setCheckpointPaused,
   moveItem as moveCheckpointItem,
@@ -492,6 +493,12 @@ function addBoardWork(spec, by) {
   if (result.error) return result;
   state.board = result.board;
   store.saveItem(result.item);
+  if (spec.replaces) {
+    const closed = closeItem(state.board, spec.replaces, 'superseded', result.item.id);
+    if (closed.error) return closed;
+    state.board = closed.board;
+    for (const item of state.board.items) store.saveItem(item);
+  }
   if (result.duplicate) return result;
   ingest(createEvent(by, EVENT_KINDS.STATUS, {
     text: `${result.item.id}: ${result.item.title}`
@@ -2316,6 +2323,13 @@ async function executeAgentTool(callerId, name, args) {
   }
   if (name === AGENT_TOOL.ASSIGN) {
     return COMMANDS.assignWork({ ...args, by: callerId });
+  }
+  if (name === AGENT_TOOL.CLOSE) {
+    const closed = closeItem(state.board, args.id, args.disposition);
+    if (closed.error) throw new Error(closed.error);
+    state.board = closed.board;
+    for (const item of state.board.items) store.saveItem(item);
+    return { id: args.id, state: args.disposition };
   }
   throw new Error(`unknown agent tool: ${name}`);
 }

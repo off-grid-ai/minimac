@@ -323,7 +323,8 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
   const workers = agents.filter((agent) => agent.role !== 'orchestrator');
   const activeIds = new Set(workers.flatMap((agent) =>
     agent.sessionId ? (agent.workItemIds ?? []) : []));
-  const ordered = items.filter((item) => !isDone(item)).sort(compareQueueOrder);
+  const ordered = items.filter((item) => !['superseded', 'cancelled'].includes(item.disposition)
+    && !isDone(item)).sort(compareQueueOrder);
   const running = ordered.filter((item) => activeIds.has(item.id));
   const pending = ordered.filter((item) => !activeIds.has(item.id));
   const done = items.filter(isDone);

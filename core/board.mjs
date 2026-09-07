@@ -26,6 +26,8 @@ export const ITEM_STATE = Object.freeze({
   BLOCKED: 'blocked',   // waiting on another item, or on Mac
   PAUSED: 'paused',     // held by Mac until resumed or force-started
   DONE: 'done',         // every gate passed
+  SUPERSEDED: 'superseded',
+  CANCELLED: 'cancelled',
 });
 
 let seq = 0;
@@ -71,6 +73,8 @@ export function createItem({
     blockedBy: [...blockedBy],
     paused: false,
     lease: null,
+    disposition: 'active',
+    replacedBy: null,
     evidence: [],
     estimateMs,
     createdAt: now,
@@ -106,6 +110,10 @@ export function isDone(item) {
   return nextGate(item) === null;
 }
 
+export function isClosed(item) {
+  return isDone(item) || ['superseded', 'cancelled'].includes(item?.disposition);
+}
+
 // Which items this one is still waiting on. An id that is not in checkpoints is
 // not a dependency - it is a typo, and silently blocking forever on a typo is
 // worse than ignoring it.
@@ -117,6 +125,8 @@ export function unmetDeps(board, item) {
 }
 
 export function stateOf(board, item) {
+  if (item?.disposition === 'superseded') return ITEM_STATE.SUPERSEDED;
+  if (item?.disposition === 'cancelled') return ITEM_STATE.CANCELLED;
   if (isDone(item)) return ITEM_STATE.DONE;
   if (item.paused) return ITEM_STATE.PAUSED;
   if (unmetDeps(board, item).length > 0) return ITEM_STATE.BLOCKED;
@@ -127,18 +137,18 @@ export function stateOf(board, item) {
 
 // Can this agent legitimately work on this item right now?
 export function canWork(board, item, agentId) {
-  if (!item || isDone(item)) return false;
+  if (!item || isClosed(item)) return false;
   if (item.paused) return false;
   if (item.owner && item.owner !== agentId) return false;
   return unmetDeps(board, item).length === 0;
 }
 
 export function itemsFor(board, agentId) {
-  return itemsOf(board).filter((item) => item.owner === agentId && !isDone(item));
+  return itemsOf(board).filter((item) => item.owner === agentId && !isClosed(item));
 }
 
 export function unowned(board) {
-  return itemsOf(board).filter((item) => !item.owner && !isDone(item));
+  return itemsOf(board).filter((item) => !item.owner && !isClosed(item));
 }
 
 // ------------------------------------------------------------------- writing
@@ -156,7 +166,7 @@ export function addItem(board, spec, now = Date.now()) {
   // The same open work, twice, is one piece of work. Engines re-send a block
   // and a re-assemble restates the plan; neither should double the checkpoints.
   const twin = itemsOf(board).find(
-    (item) => !isDone(item) && item.title === title && (item.owner ?? null) === (spec.owner ?? null),
+    (item) => !isClosed(item) && item.title === title && (item.owner ?? null) === (spec.owner ?? null),
   );
   if (twin) {
     const item = {
@@ -177,7 +187,7 @@ export function addItem(board, spec, now = Date.now()) {
 export function assign(board, id, owner) {
   const item = findItem(board, id);
   if (!item) return { board, error: `no item ${id}` };
-  if (isDone(item)) return { board, error: `${id} is already finished` };
+  if (isClosed(item)) return { board, error: `${id} is already closed` };
   return { board: replace(board, id, { owner: owner ?? null }), item: { ...item, owner } };
 }
 
@@ -190,7 +200,7 @@ export function compareQueueOrder(a, b) {
 export function setPaused(board, id, paused) {
   const item = findItem(board, id);
   if (!item) return { board, error: `no item ${id}` };
-  if (isDone(item)) return { board, error: `${id} is already finished` };
+  if (isClosed(item)) return { board, error: `${id} is already closed` };
   const next = { ...item, paused: Boolean(paused) };
   return { board: replace(board, id, next), item: next };
 }
@@ -201,7 +211,7 @@ export function moveItem(board, id, direction, fixedIds = []) {
   const items = itemsOf(board);
   const fixed = new Set(fixedIds);
   const open = items
-    .filter((item) => !isDone(item) && !fixed.has(item.id))
+    .filter((item) => !isClosed(item) && !fixed.has(item.id))
     .sort(compareQueueOrder);
   const from = open.findIndex((item) => item.id === id);
   if (from < 0) return { board, error: `no open item ${id}` };
@@ -220,7 +230,7 @@ export function moveItem(board, id, direction, fixedIds = []) {
 export function revise(board, id, change = {}) {
   const item = findItem(board, id);
   if (!item) return { board, error: `no item ${id}` };
-  if (isDone(item)) return { board, error: `${id} is already finished` };
+  if (isClosed(item)) return { board, error: `${id} is already closed` };
   const next = { ...item };
   for (const field of ['title', 'plan', 'outcome', 'verify', 'scope']) {
     if (change[field] !== undefined) next[field] = String(change[field]).trim();
@@ -241,6 +251,27 @@ export function revise(board, id, change = {}) {
   return { board: replace(board, id, next), item: next };
 }
 
+export function closeItem(board, id, disposition, replacedBy = null, now = Date.now()) {
+  const item = findItem(board, id);
+  if (!item) return { board, error: `no item ${id}` };
+  if (!['superseded', 'cancelled'].includes(disposition)) {
+    return { board, error: `unknown checkpoint disposition: ${disposition}` };
+  }
+  if (disposition === 'superseded' && !findItem(board, replacedBy)) {
+    return { board, error: `${id} needs a valid replacement checkpoint` };
+  }
+  const next = { ...item, disposition, replacedBy, closedAt: now, paused: false, lease: null };
+  const items = itemsOf(board).map((candidate) => {
+    if (candidate.id === id) return next;
+    if (!(candidate.blockedBy ?? []).includes(id)) return candidate;
+    const blockedBy = disposition === 'superseded'
+      ? [...new Set(candidate.blockedBy.map((dependency) => dependency === id ? replacedBy : dependency))]
+      : candidate.blockedBy.filter((dependency) => dependency !== id);
+    return { ...candidate, blockedBy };
+  });
+  return { board: { ...board, items }, item: next };
+}
+
 // Move one gate. This is where the chain is ENFORCED: a gate cannot pass while
 // an earlier gate on the same item has not, and a pass needs a receipt. That
 // single rule is what stops an agent reporting a push over untested code.
@@ -251,6 +282,7 @@ export function advance(
 ) {
   const item = findItem(board, id);
   if (!item) return { board, error: `no item ${id}` };
+  if (isClosed(item)) return { board, error: `${id} is already closed` };
   if (!(gate in (item.gates ?? {}))) return { board, error: `${id} has no ${gate} gate` };
   if (!Object.values(GATE_STATE).includes(state)) return { board, error: `${state} is not a gate state` };
   if (item.owner && by && item.owner !== by && !canManage) {
@@ -291,7 +323,8 @@ export function progress(board) {
   let total = 0;
   let passed = 0;
   let failed = 0;
-  for (const item of itemsOf(board)) {
+  for (const item of itemsOf(board).filter((candidate) => candidate.disposition !== 'superseded'
+    && candidate.disposition !== 'cancelled')) {
     for (const state of Object.values(item.gates ?? {})) {
       total += 1;
       if (state === GATE_STATE.PASS) passed += 1;
@@ -304,8 +337,10 @@ export function progress(board) {
     passed,
     failed,
     percent: total > 0 ? Math.round((passed / total) * 100) : null,
-    items: items.length,
-    done: items.filter(isDone).length,
+    items: items.filter((item) => item.disposition !== 'superseded'
+      && item.disposition !== 'cancelled').length,
+    done: items.filter((item) => !['superseded', 'cancelled'].includes(item.disposition)
+      && isDone(item)).length,
     unowned: unowned(board).length,
   };
 }
@@ -316,7 +351,7 @@ export function progress(board) {
 // and what everyone else is holding. Short on purpose - it rides on every
 // message, so checkpoints that cost a page will not be read twice.
 export function boardBrief(board, agentId = null) {
-  const items = itemsOf(board);
+  const items = itemsOf(board).filter((item) => !isClosed(item));
   if (items.length === 0) return null;
 
   const line = (item) => {

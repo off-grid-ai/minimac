@@ -21,6 +21,7 @@ export const AGENT_TOOL = Object.freeze({
   BENCH: 'bench_avenger',
   GOAL: 'set_avenger_goal',
   ASSIGN: 'create_checkpoint',
+  CLOSE: 'close_checkpoint',
 });
 
 const object = (properties, required = []) => ({
@@ -120,7 +121,16 @@ const TOOLS = Object.freeze({
       needs: { type: 'array', items: { type: 'string', enum: GATES } },
       blockedBy: { type: 'array', items: { type: 'string' } },
       estimateMs: { type: 'integer', minimum: 1, maximum: 480000 },
+      replaces: { type: 'string', description: 'Old checkpoint id this checkpoint supersedes.' },
     }, ['id', 'title', 'plan', 'outcome', 'verify', 'owner', 'needs', 'blockedBy', 'estimateMs']),
+  },
+  [AGENT_TOOL.CLOSE]: {
+    name: AGENT_TOOL.CLOSE,
+    description: 'Remove obsolete work from the active queue without deleting its history.',
+    inputSchema: object({
+      id: { type: 'string' },
+      disposition: { type: 'string', enum: ['cancelled'] },
+    }, ['id', 'disposition']),
   },
 });
 
@@ -140,6 +150,7 @@ const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.BENCH,
   AGENT_TOOL.GOAL,
   AGENT_TOOL.ASSIGN,
+  AGENT_TOOL.CLOSE,
 ]);
 
 export function toolsForRole(role) {
