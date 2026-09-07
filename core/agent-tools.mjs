@@ -6,13 +6,11 @@ import { ROLES } from './roster.mjs';
 import { GATES } from './flows.mjs';
 import {
   buildCheckpointUpdateSchema,
-  buildFlowStepSchema,
   buildOutputSchema,
 } from './dispatch.mjs';
 
 export const AGENT_TOOL = Object.freeze({
   REPORT: 'report_progress',
-  FLOW: 'update_flow',
   CHECKPOINT: 'update_checkpoint',
   INSPECT: 'inspect_avengers',
   ESCALATE: 'escalate_to_thor',
@@ -37,13 +35,8 @@ const object = (properties, required = []) => ({
 const TOOLS = Object.freeze({
   [AGENT_TOOL.REPORT]: {
     name: AGENT_TOOL.REPORT,
-    description: 'Report flows, evidence, and checkpoint gate results to MINIMAC. This replaces a minimac fenced report.',
+    description: 'Report evidence and checkpoint gate results to MINIMAC. Checkpoints are the only mission progress record.',
     inputSchema: buildOutputSchema(),
-  },
-  [AGENT_TOOL.FLOW]: {
-    name: AGENT_TOOL.FLOW,
-    description: 'Update one Flow step now. The Feed and Flows panel update from this call.',
-    inputSchema: buildFlowStepSchema(),
   },
   [AGENT_TOOL.CHECKPOINT]: {
     name: AGENT_TOOL.CHECKPOINT,
@@ -155,13 +148,11 @@ const TOOLS = Object.freeze({
 
 const WORKER_TOOLS = Object.freeze([
   AGENT_TOOL.REPORT,
-  AGENT_TOOL.FLOW,
   AGENT_TOOL.CHECKPOINT,
   AGENT_TOOL.ESCALATE,
 ]);
 const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.REPORT,
-  AGENT_TOOL.FLOW,
   AGENT_TOOL.CHECKPOINT,
   AGENT_TOOL.INSPECT,
   AGENT_TOOL.ASSEMBLE,

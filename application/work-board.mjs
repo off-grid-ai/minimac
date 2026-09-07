@@ -7,7 +7,7 @@ import {
 import { createEvent, EVENT_KINDS } from '../core/events.mjs';
 import { ROLES } from '../core/roster.mjs';
 
-// Application boundary for checkpoint and flow writes. The HTTP server wires
+// Application boundary for checkpoint writes. The HTTP server wires
 // storage and delivery into this service; it does not own these use cases.
 export function createWorkBoard({
   getBoard,
@@ -56,27 +56,6 @@ export function createWorkBoard({
     return { ...result, board };
   }
 
-  function updateFlows(agentId, updates) {
-    const agent = getAgents()[agentId];
-    if (!agent) return { error: `unknown agent: ${agentId}` };
-    const steps = [...(agent.flows ?? [])];
-    for (const step of updates ?? []) {
-      if (!step?.id || !step?.step) continue;
-      if (!String(step.user_visible_result ?? '').trim()) {
-        return { error: `${step.id} needs a stable user-visible result` };
-      }
-      const index = steps.findIndex((candidate) => candidate?.id === step.id);
-      if (index < 0) steps.push(step);
-      else steps[index] = { ...steps[index], ...step };
-    }
-    if (steps.length === 0) return { error: 'a flow update needs a step' };
-    emit(createEvent(agentId, EVENT_KINDS.PLAN, {
-      steps,
-      updated: (updates ?? []).map((step) => step?.id).filter(Boolean),
-    }));
-    return { steps };
-  }
-
   function updateCheckpoint(agentId, move, workerId = null) {
     const agent = getAgents()[agentId];
     const result = advance(getBoard(), {
@@ -105,5 +84,5 @@ export function createWorkBoard({
     return { ...result, item };
   }
 
-  return Object.freeze({ add, updateFlows, updateCheckpoint });
+  return Object.freeze({ add, updateCheckpoint });
 }

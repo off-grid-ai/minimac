@@ -15,7 +15,6 @@
 
 import { EVENT_KINDS } from './events.mjs';
 import { pendingDecisions } from './derive.mjs';
-import { PLANS_THRICE } from './dispatch.mjs';
 
 // A stable identity for a card. The same standing condition on the same agent
 // is ONE card for as long as it lasts - otherwise a loop that persists for two
@@ -65,78 +64,6 @@ export function prayerOf(events = []) {
 // The discipline cards. A rule nobody checks is decoration, so the room checks
 // these itself rather than trusting the agent to have obeyed.
 
-// A step that is running and never said how long it would take. It cannot be
-// late, which is exactly why it must not be allowed to stay silent.
-export function noEstimateCard(agent, name) {
-  const open = (agent.flows ?? []).find(
-    (step) => step?.status && step.status !== 'pending' && !step.estimateMs,
-  );
-  if (!open) return null;
-  return {
-    agentId: agent.id,
-    agentName: name,
-    kind: 'no-estimate',
-    detail: `"${open.step}" is running with no estimate, so nothing can tell you if it is late`,
-    actions: ['steer', 'kill'],
-    approval: null,
-  };
-}
-
-// A step that changed something without a plan behind it, or with a plan that
-// was never sharpened. Only for the roles that plan.
-export function unplannedCard(agent, name) {
-  if (!PLANS_THRICE.has(agent.role)) return null;
-  const started = (agent.flows ?? []).filter(
-    (step) => step?.status && step.status !== 'pending',
-  );
-
-  const unplanned = started.find((step) => !step.approach?.plan);
-  if (unplanned) {
-    return {
-      agentId: agent.id,
-      agentName: name,
-      kind: 'unplanned',
-      detail: `"${unplanned.step}" was acted on with no plan behind it`,
-      actions: ['steer', 'kill'],
-      approval: null,
-    };
-  }
-
-  // A plan nobody attacked is a first draft. Both passes have to have changed
-  // something, or the loop was recited rather than run.
-  const unsharpened = started.find(
-    (step) => !step.approach.sharpened?.trim() || !step.approach.cut?.trim(),
-  );
-  if (!unsharpened) return null;
-  return {
-    agentId: agent.id,
-    agentName: name,
-    kind: 'unplanned',
-    detail: `"${unsharpened.step}" acted on a first-draft plan - it was never sharpened or cut`,
-    actions: ['steer', 'kill'],
-    approval: null,
-  };
-}
-
-// A step planned as though nothing had happened before it. This is the drift
-// the chain exists to stop: planning at step six against the task as first read.
-export function brokenChainCard(agent, name) {
-  if (!PLANS_THRICE.has(agent.role)) return null;
-  const steps = agent.flows ?? [];
-  const index = steps.findIndex(
-    (step, i) => i > 0 && step?.approach?.plan && !(step.approach.inputs ?? []).length,
-  );
-  if (index === -1) return null;
-  return {
-    agentId: agent.id,
-    agentName: name,
-    kind: 'broken-chain',
-    detail: `"${steps[index].step}" was planned without reading what the earlier steps produced`,
-    actions: ['steer', 'kill'],
-    approval: null,
-  };
-}
-
 // Every card the room would raise, for every agent, right now.
 //
 // `agents` is the list in display order. `eventsByAgent` is a plain object of
@@ -167,11 +94,6 @@ export function deriveCards(agents = [], eventsByAgent = {}, now = Date.now()) {
       });
     }
 
-    for (const make of [noEstimateCard, unplannedCard, brokenChainCard]) {
-      const card = make(agent, name);
-      if (card) derived.push(card);
-    }
-
     const prayer = prayerOf(events);
     if (prayer?.why) {
       derived.unshift({
@@ -196,9 +118,6 @@ const RANK = Object.freeze({
   approval: 0,
   prayer: 1,
   blocked: 2,
-  'broken-chain': 3,
-  unplanned: 4,
-  'no-estimate': 5,
 });
 
 export function urgency(card) {

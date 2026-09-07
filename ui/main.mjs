@@ -9,7 +9,6 @@ import {
   eventsPerMin,
   gradeClaims,
   pendingDecisions,
-  stepTimings,
 } from '../core/derive.mjs';
 import {
   createQueue as createErrands,
@@ -365,28 +364,6 @@ function viewAgents(now) {
   });
 }
 
-// The agent's declared plan supplies the words; the event stream supplies the
-// clock. Taking actualMs from the agent's own payload would grade its estimate
-// against its own claim, which is the thing this tool exists to stop.
-function measuredFlows(agent) {
-  const events = state.eventsByAgent[agent.id] ?? [];
-  const measured = stepTimings(events);
-  if (measured.length === 0) return agent.flows ?? [];
-  return measured.map((timing, index) => {
-    const declared = timing.id
-      ? agent.flows?.find((step) => step?.id === timing.id) ?? {}
-      : agent.flows?.[index] ?? {};
-    return {
-      ...declared,
-      step: declared.step ?? timing.step,
-      user_visible_result: declared.user_visible_result ?? timing.step,
-      status: timing.status ?? declared.status,
-      estimateMs: declared.estimateMs ?? timing.estimateMs,
-      actualMs: timing.actualMs ?? 0,
-    };
-  });
-}
-
 function claimsFor(agentId) {
   const events = state.eventsByAgent[agentId] ?? [];
   const claims = events
@@ -590,7 +567,7 @@ function renderPanels() {
     dom.roCrew.textContent = `${running}/${agents.length} RUNNING`;
   }
   if (dom.flows && windows?.isOpen('flows')) {
-    const missionFlow = { id: 'mission', name: 'mission', flows: state.flows };
+    const missionFlow = { id: 'mission', name: 'mission', steps: state.flows };
     renderChanged('flows', dom.flows, state.flows, () => {
       renderFlows(dom.flows, missionFlow);
     });
@@ -731,7 +708,6 @@ function renderStrip(agents, queue = []) {
   if (!agent) return strip.close();
   strip.render({
     ...agent,
-    flows: measuredFlows(agent),
     decisions: queue.filter((decision) => decision.agentId === agent.id),
   });
 }
@@ -2281,9 +2257,6 @@ function boot() {
   strip = createGoalStrip({
     handlers,
     console: dom.composer,
-    // The desk draws a flow and a claim with the same functions the panels
-    // use. One way to draw each, wherever it appears.
-    renderFlows,
     renderDecisions: (root, items) => renderQueue(root, items, handlers),
   });
 

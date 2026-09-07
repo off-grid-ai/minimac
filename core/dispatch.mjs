@@ -14,15 +14,6 @@ export const PLANS_THRICE = Object.freeze(
   new Set([ROLES.CODER, ROLES.TESTER, ROLES.AUDITOR]),
 );
 
-export const STEP_STATUS = Object.freeze({
-  PENDING: 'pending',
-  RUNNING: 'running',
-  BLOCKED: 'blocked',
-  CODED: 'coded',
-  WIRED: 'wired',
-  VERIFIED: 'verified',
-});
-
 const ROLE_PROMPTS = Object.freeze({
   [ROLES.ORCHESTRATOR]:
     'You route work. You do not write production code. You assign tasks to workers, ' +
@@ -59,17 +50,13 @@ const ROLE_PROMPTS = Object.freeze({
     'and you do not revise them mid-run without saying so explicitly.',
 });
 
-// The one rule that ends "talk to me in user flows": it is the only valid
-// shape, so it cannot be forgotten.
+// A report can add evidence to the one canonical checkpoint model. It cannot
+// submit a second plan or progress model beside the board.
 export function buildOutputSchema() {
   return {
     type: 'object',
-    required: ['flows', 'claims', 'gates'],
+    required: ['claims', 'gates'],
     properties: {
-      flows: {
-        type: 'array',
-        items: buildFlowStepSchema(),
-      },
       gates: {
         type: 'array',
         description: 'Changes to shared checkpoints. This is the only writable gate state.',
@@ -107,49 +94,6 @@ export function buildOutputSchema() {
   };
 }
 
-export function buildFlowStepSchema() {
-  return {
-    type: 'object',
-    required: ['id', 'step', 'user_visible_result', 'status', 'estimateMs'],
-    additionalProperties: false,
-    properties: {
-      id: {
-        type: 'string',
-        description: 'Stable id for this flow step. Keep it unchanged in later reports.',
-      },
-      step: { type: 'string' },
-      user_visible_result: {
-        type: 'string',
-        description: 'What a person sees or can do. Never a file or a command.',
-      },
-      status: { type: 'string', enum: Object.values(STEP_STATUS) },
-      estimateMs: {
-        type: 'integer',
-        description: 'Agent time for this step, in ms, declared before it starts.',
-      },
-      scope: {
-        type: 'string',
-        description: 'Where this happens, as a path: "mobile", "shared/sync".',
-      },
-      approach: {
-        type: 'object',
-        description: 'One plan, sharpened twice. Coder, tester and auditor only.',
-        properties: {
-          plan: { type: 'string' },
-          sharpened: { type: 'string' },
-          cut: { type: 'string' },
-          inputs: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'The earlier steps this plan was built on.',
-          },
-        },
-      },
-      actualMs: { type: 'integer' },
-    },
-  };
-}
-
 export function buildCheckpointUpdateSchema() {
   return {
     type: 'object',
@@ -170,33 +114,21 @@ export function buildCheckpointUpdateSchema() {
 export const REPORT_FENCE = 'minimac';
 
 export function reportInstruction(role = null) {
-  const plans = role === null || PLANS_THRICE.has(role);
-  const approach = plans
-    ? ',\n     "approach": {"plan": "the plan you are acting on",\n'
-      + '                  "sharpened": "what pass 2 changed, and why",\n'
-      + '                  "cut": "what pass 3 removed, and why",\n'
-      + '                  "inputs": ["step 1", "step 2"]}'
-    : '';
   return [
     '# How you must report',
     '',
-    'Call update_flow as soon as a flow step starts or changes state. Call update_checkpoint '
-      + 'as soon as a checkpoint gate starts, passes, or fails. These calls update the Feed, '
-      + 'Flows, and Checkpoints while you work.',
+    'Call update_checkpoint as soon as a checkpoint gate starts, passes, or fails. '
+      + 'The checkpoint board is the only mission progress record. The Flow screen is '
+      + 'a read-only view of that board.',
     '',
     'Call the MINIMAC report_progress tool before your final answer. It records the same '
-      + 'flows, claims, and gates as one final snapshot for every engine.',
+      + 'claims and checkpoint gates as one final snapshot for every engine.',
     '',
     'Only if report_progress is unavailable, END YOUR REPLY with this fallback block and '
       + 'nothing after it:',
     '',
     '```' + REPORT_FENCE,
     '{',
-    '  "flows": [',
-    '    {"id": "f1", "step": "what you are doing",',
-    '     "user_visible_result": "what a person can see", "scope": "repo/area",',
-    '     "status": "pending|running|blocked|coded|wired|verified", "estimateMs": 300000' + approach + '}',
-    '  ],',
     '  "claims": [],',
     '  "gates": [',
     '    {"item": "w1", "gate": "test", "state": "pass|fail|running",',
@@ -206,29 +138,14 @@ export function reportInstruction(role = null) {
     '```',
     '',
     'Rules for that block:',
-    '- flows is your whole plan, restated every time, with each step\'s current status.',
-    '- id names one flow step. Keep the same id for that step in every later report.',
-    '- scope says WHERE the step happens, as a path: the repo, then the area inside it '
-      + '("mobile", "mobile/release", "shared/sync"). It is how the floor rolls your work '
-      + 'up per repo. Use the same scope string for every step in the same place.',
-    '- status says where the step is now. Use "pending" before work starts, "running" '
-      + 'while you work, and "blocked" when you cannot continue. Use "coded" when the '
-      + 'change exists, "wired" when it runs in the product, and "verified" only after '
-      + 'someone observed the result on the real surface.',
-    '- user_visible_result is what a PERSON sees. Never a file, command or count.',
-    '- estimateMs is AGENT time: how long YOU will take, not how long a person would. '
-      + 'Give it BEFORE the step starts. An estimate written after the fact is not an estimate.',
-    '- Every step carries an estimate. A step with no estimate cannot be late, which is '
-      + 'why one is never optional.',
     '- Every measured number you state goes in claims with the command that produced it. '
       + 'A time estimate is a forecast, not a measured claim.',
     '- If you have no command behind a number, set receipt to "" and say so.',
-    '- If your work no longer matches your goal, say so in a flow step rather than continuing.',
     `- gates are checkpoint moves. The fixed gates are: ${GATES.join(', ')}. Name the item id `
       + 'you own, the gate, and '
       + 'the command that proved it. A pass without a receipt is rejected, and a '
       + 'gate cannot pass before the ones before it.',
-    '- The top-level gates list is the ONLY gate state. Do not put gates inside a flow.',
+    '- The top-level gates list is the ONLY mission progress state.',
     '- Work only on items you own. If something needs doing on an item you do not '
       + 'own, escalate - never reach into it.',
     '- If you discover new work that the mission cannot finish without, escalate it to Thor. '

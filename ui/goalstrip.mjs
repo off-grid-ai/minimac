@@ -17,7 +17,7 @@
 // It holds no truth. Everything it shows arrives in render(); editing the goal
 // goes straight back out through the handlers it was built with.
 
-export function createGoalStrip({ handlers, console: consoleEl, renderFlows, renderDecisions }) {
+export function createGoalStrip({ handlers, console: consoleEl, renderDecisions }) {
   style();
 
   const root = document.createElement('div');
@@ -58,9 +58,8 @@ export function createGoalStrip({ handlers, console: consoleEl, renderFlows, ren
   const desk = document.createElement('div');
   desk.className = 'goalstrip-desk';
 
-  const flowPane = section('flow', 'steps, and time against their own estimate');
   const decisionPane = section('decisions', 'what needs you');
-  desk.append(flowPane.root, decisionPane.root);
+  desk.append(decisionPane.root);
 
   root.append(head, desk);
   (consoleEl?.parentElement ?? document.body).insertBefore(root, consoleEl ?? null);
@@ -182,12 +181,6 @@ export function createGoalStrip({ handlers, console: consoleEl, renderFlows, ren
         saved = objective;
         goal.value = objective;
       }
-      // The desk itself: their contract and their open decisions, rendered by
-      // the same functions as the full panels. Each fact has one visual owner.
-      const flows = agent.flows ?? [];
-      flowPane.setCount(flows.length);
-      renderFlows?.(flowPane.body, { ...agent, flows });
-
       paintDecisions(agent.decisions ?? []);
 
       follow(); // places the strip and measures the field at its real width

@@ -556,9 +556,6 @@ function harvestReport(event) {
     if (result.item.closedAt) completedWork.push(result.item);
   }
 
-  if (Array.isArray(report.flows) && report.flows.length > 0) {
-    workBoard.updateFlows(event.agentId, report.flows);
-  }
   for (const claim of report.claims ?? []) {
     const text = String(claim?.text ?? claim?.claim ?? '').trim();
     if (!text) continue;
@@ -1069,7 +1066,7 @@ function promptContext(agent, task, {
     task: task ?? state.mission,
     skills: options.skills,
     claims: state.claims[agent.id] ?? [],
-    steps: agent.flows ?? [],
+    steps: [],
     board: state.board,
     mentions,
     attachments: [...(state.attachments ?? []), ...attachments],
@@ -2193,11 +2190,6 @@ async function executeAgentTool(principal, name, args) {
       },
     });
     return { recorded: true };
-  }
-  if (name === AGENT_TOOL.FLOW) {
-    const result = workBoard.updateFlows(callerId, [args]);
-    if (result.error) throw new Error(result.error);
-    return { updated: args.id, status: args.status };
   }
   if (name === AGENT_TOOL.CHECKPOINT) {
     const result = workBoard.updateCheckpoint(callerId, args, workerId);

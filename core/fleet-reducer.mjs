@@ -1,19 +1,6 @@
 import { EVENT_KINDS } from './events.mjs';
 import { ensureWorkers, patchWorker, WORKER_STATE } from './workers.mjs';
 
-function mergeFlows(existing, incoming) {
-  return incoming.map((step, index) => {
-    const previous = step?.id
-      ? existing.find((candidate) => candidate?.id === step.id)
-      : existing[index];
-    return {
-      ...step,
-      estimateMs: previous?.estimateMs ?? step.estimateMs ?? null,
-      actualMs: step.actualMs ?? previous?.actualMs ?? 0,
-    };
-  });
-}
-
 export function applyFleetEvent(agents, event) {
   const agent = agents[event.agentId];
   if (!agent) return agents;
@@ -50,9 +37,6 @@ export function applyFleetEvent(agents, event) {
       projected = patchWorker(projected, workerId, { state: WORKER_STATE.BLOCKED });
       projected.blockedReason = event.payload.reason ?? null;
     }
-    if (event.kind === EVENT_KINDS.PLAN) {
-      projected.flows = mergeFlows(agent.flows, event.payload.steps ?? []);
-    }
     if (event.kind === EVENT_KINDS.DIFF) {
       projected.diffLines = event.payload.lines ?? agent.diffLines;
     }
@@ -61,9 +45,6 @@ export function applyFleetEvent(agents, event) {
 
   // Seat-level facts are valid without a worker. Runtime state is not: only a
   // worker event can change sessions or worker lifecycle.
-  if (event.kind === EVENT_KINDS.PLAN) {
-    next.flows = mergeFlows(agent.flows, event.payload.steps ?? []);
-  }
   if (event.kind === EVENT_KINDS.DIFF) next.diffLines = event.payload.lines ?? agent.diffLines;
   if (event.kind === EVENT_KINDS.BLOCKED) next.blockedReason = event.payload.reason ?? null;
   return { ...agents, [event.agentId]: next };

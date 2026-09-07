@@ -608,18 +608,18 @@ function emptyBoard() {
   return card;
 }
 
-export function renderFlows(root, agent) {
-  if (!agent?.flows?.length) {
-    root.replaceChildren(emptyFlows(agent));
+export function renderFlows(root, view) {
+  if (!view?.steps?.length) {
+    root.replaceChildren(emptyFlows(view));
     return;
   }
-  const redraw = () => renderFlows(root, agent);
-  const tree = rollup(agent.flows);
-  const left = remaining(agent.flows);
+  const redraw = () => renderFlows(root, view);
+  const tree = rollup(view.steps);
+  const left = remaining(view.steps);
   const frag = document.createDocumentFragment();
-  frag.append(zoomBar(agent, redraw), leftLine(left));
+  frag.append(zoomBar(view, redraw), leftLine(left));
   const top = tree.children.length ? tree.children : [tree];
-  for (const child of top) frag.append(...scopeRows(agent, child, 0, redraw));
+  for (const child of top) frag.append(...scopeRows(view, child, 0, redraw));
   root.replaceChildren(frag);
 }
 

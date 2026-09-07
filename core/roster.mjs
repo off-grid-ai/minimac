@@ -108,7 +108,6 @@ export function createAgent(spec) {
     workers: Array.from({ length: instances }, (_, index) => createWorker(spec.id, index)),
     status: 'idle', // idle | running | blocked | stopped
     blockedReason: null,
-    flows: [],
     claims: [],
     diffLines: 0,
     lastEventTs: null,

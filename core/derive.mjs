@@ -281,35 +281,6 @@ export function lateEstimate(step, seenAt = null) {
   return seenAt.estimateFirstSeenAt > seenAt.startedAt;
 }
 
-// One agent's whole promise against its whole reality. This is the number that
-// answers "should I look at this one?" without opening their desk.
-export function agentBurn(agent, now = Date.now()) {
-  let estimate = 0;
-  let actual = 0;
-  for (const step of agent?.flows ?? []) {
-    if (!step?.estimateMs || step.estimateMs <= 0) continue;
-    estimate += step.estimateMs;
-    actual += step.actualMs ?? 0;
-  }
-  if (estimate <= 0) return null;
-  return { estimateMs: estimate, actualMs: actual, ratio: actual / estimate };
-}
-
-// The same for the whole floor. Ten minutes of agent work should take ten
-// minutes - this is that promise as one number, and it belongs on screen.
-export function fleetBurn(agents = [], now = Date.now()) {
-  let estimate = 0;
-  let actual = 0;
-  for (const agent of agents) {
-    const burn = agentBurn(agent, now);
-    if (!burn) continue;
-    estimate += burn.estimateMs;
-    actual += burn.actualMs;
-  }
-  if (estimate <= 0) return null;
-  return { estimateMs: estimate, actualMs: actual, ratio: actual / estimate };
-}
-
 // The worst measured overrun, or null when nothing is over its estimate.
 export function worstOverrun(events, now = Date.now(), factor = 2) {
   const over = stepTimings(events, now)
