@@ -206,7 +206,7 @@ function style() {
 
     /* The panel takes real space: the room and the console live in what is
        left, rather than sliding underneath it. */
-    #floor { right: var(--panel-w) !important; width: auto !important; }
+    #floor { width: calc(100vw - var(--panel-w)) !important; }
     #composer {
       left: calc((100vw - var(--panel-w)) / 2) !important;
       width: min(920px, calc(100vw - var(--panel-w) - var(--gap, 12px) * 2)) !important;

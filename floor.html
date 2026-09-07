@@ -164,17 +164,16 @@
 
   #floor {
     position: fixed;
-    inset: 0;
+    left: 0;
     /* The crew bar takes real height, exactly as the panel takes real width.
        Floating it over the room clipped every bubble behind it. */
     top: calc(var(--topbar-h) + var(--crew-h));
-    height: auto;
+    height: calc(100vh - var(--topbar-h) - var(--crew-h));
     /* The panel COEXISTS with the room, it does not sit on top of it. The
        canvas gives up exactly the panel's width, so opening a panel never
        hides an agent - it makes the room narrower and the camera pulls back
        to keep the whole crew in frame. */
-    right: var(--panel-w, 0px);
-    width: auto;
+    width: calc(100vw - var(--panel-w, 0px));
     display: block;
     background: var(--floor-bg);
     image-rendering: pixelated;
