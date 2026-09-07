@@ -8,6 +8,7 @@ export const ROLES = Object.freeze({
   CODER: 'coder',
   TESTER: 'tester',
   AUDITOR: 'auditor',
+  REVIEWER: 'reviewer',
   UX: 'ux',
   PRODUCT: 'product',
 });
@@ -17,6 +18,7 @@ export const DEFAULT_ROSTER = Object.freeze([
   { id: 'coder', name: 'CODER', role: ROLES.CODER, engine: ENGINES.CODEX },
   { id: 'tester', name: 'TESTER', role: ROLES.TESTER, engine: ENGINES.CLAUDE },
   { id: 'auditor', name: 'AUDITOR', role: ROLES.AUDITOR, engine: ENGINES.CLAUDE },
+  { id: 'reviewer', name: 'REVIEWER', role: ROLES.REVIEWER, engine: ENGINES.CLAUDE },
   { id: 'ux', name: 'UX', role: ROLES.UX, engine: ENGINES.CODEX },
   { id: 'pm', name: 'PRODUCT', role: ROLES.PRODUCT, engine: ENGINES.CLAUDE },
 ]);

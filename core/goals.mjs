@@ -67,15 +67,26 @@ const ROLE_OBJECTIVES = Object.freeze({
   [ROLES.TESTER]:
     'Prove each accepted flow on the real surface. A verdict is a command and its '
     + 'exit code, never an opinion, and never the local state when the truth is remote.',
+  [ROLES.REVIEWER]:
+    'Take every change to a merge-ready pull request. Read the diff that will actually '
+    + 'land, leave comments that name a file and a line, and give one verdict: approve, or '
+    + 'request changes with the blocking reasons. Green checks before an approval, always.',
   [ROLES.AUDITOR]:
     'Check the work against the engineering contract. Every finding names a file '
     + 'and a line, or a command and its output. Nothing weakened to make something pass.',
+  // Kept only as the fallback for a fleet with no mission set. His real goal is
+  // the mission itself - see objectiveForRole.
   [ROLES.ORCHESTRATOR]:
     'Route the work and hold the gates: the contract before the code, the proof '
     + 'before done. Escalate to Mac before anything destructive or irreversible.',
 });
 
+// The orchestrator's goal IS the mission. He is the one agent whose goal you
+// set directly - the code even routes a goal on him to setMission - so
+// answering with a role blurb threw away the sentence you had just typed and
+// left him holding boilerplate that says nothing about this run.
 export function objectiveForRole(role, mission) {
+  if (role === ROLES.ORCHESTRATOR) return mission;
   return ROLE_OBJECTIVES[role] ?? mission;
 }
 

@@ -12,6 +12,7 @@ export const EVENT_KINDS = Object.freeze({
   BLOCKED: 'blocked',   // needs a human or another agent
   RESULT: 'result',     // final schema-validated report
   APPROVAL: 'approval', // permission request awaiting a decision
+  PRAYER: 'prayer',     // the agent asking for the room's attention itself
 });
 
 export const CLAIM_GRADES = Object.freeze({
