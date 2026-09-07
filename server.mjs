@@ -95,6 +95,8 @@ import {
 } from './core/governance.mjs';
 import { splitFenced, isMachineNoise } from './core/readable.mjs';
 import { AGENT_TOOL, roleCanUseTool } from './core/agent-tools.mjs';
+import { applyFleetEvent } from './core/fleet-reducer.mjs';
+import { activationPlan } from './core/crew.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const MIME = {
@@ -210,7 +212,7 @@ if (adopted) {
   // from the database - so the room could show a loop the server could not
   // see, and no card was ever raised for it.
   state.events = store.replayRun(adopted.id);
-  for (const event of state.events) state.agents = applyToAgent(state.agents, event);
+  for (const event of state.events) state.agents = applyFleetEvent(state.agents, event);
   // Start from a safe projection, then reconcile saved handles with each
   // engine after its transport is ready. Idle conversations remain resumable.
   for (const agent of Object.values(state.agents)) {
@@ -721,7 +723,7 @@ function ingest(rawIncoming) {
   // goes straight to the parsers.
   if (incoming.kind === EVENT_KINDS.RESULT) {
     state.events = appendEvent(state.events, incoming);
-    state.agents = applyToAgent(state.agents, incoming);
+    state.agents = applyFleetEvent(state.agents, incoming);
     persistEventWorker(incoming);
     store.record(incoming);
     publish({ type: 'event', event: incoming, agent: publicAgent(state.agents[incoming.agentId]) });
@@ -738,7 +740,7 @@ function ingest(rawIncoming) {
   }
   if (raw !== null) event.payload = { ...event.payload, raw };
   state.events = appendEvent(state.events, event);
-  state.agents = applyToAgent(state.agents, event);
+  state.agents = applyFleetEvent(state.agents, event);
   persistEventWorker(event);
   store.record(event);
   publish({ type: 'event', event, agent: publicAgent(state.agents[event.agentId]) });
@@ -943,97 +945,6 @@ async function applyVerdict(verdict) {
     from: 'you',
   }));
   publish({ type: 'state', state: snapshot() });
-}
-
-function applyToAgent(agents, event) {
-  const agent = agents[event.agentId];
-  if (!agent) return agents;
-  const next = { ...agent, lastEventTs: event.ts };
-  const workerId = event.payload?.workerId;
-
-  if (workerId) {
-    const worker = ensureWorkers(next).find((candidate) => candidate.id === workerId);
-    if (!worker) return agents;
-    const eventSessionId = event.payload?.sessionId;
-    const knownSessionId = worker?.sessionId ?? worker?.resumeSessionId;
-    if (knownSessionId && eventSessionId && knownSessionId !== eventSessionId) return agents;
-    let projected = next;
-    if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
-      const ended = event.payload.state === WORKER_STATE.IDLE
-        || event.payload.state === WORKER_STATE.STOPPED;
-      projected = patchWorker(next, workerId, {
-        state: event.payload.state,
-        sessionId: ended ? null : event.payload.sessionId,
-        resumeSessionId: ended
-          ? event.payload.sessionId ?? workerForSession(next, event.payload.sessionId)?.resumeSessionId
-          : null,
-        leaseStartedAt: ended ? null : workerForSession(next, event.payload.sessionId)?.leaseStartedAt,
-        leaseExpiresAt: ended ? null : workerForSession(next, event.payload.sessionId)?.leaseExpiresAt,
-      });
-    }
-    if (event.kind === EVENT_KINDS.BLOCKED) {
-      projected = patchWorker(projected, workerId, { state: WORKER_STATE.BLOCKED });
-      projected.blockedReason = event.payload.reason ?? null;
-    }
-    if (event.kind === EVENT_KINDS.PLAN) {
-      projected.flows = mergeFlows(agent.flows, event.payload.steps ?? []);
-    }
-    if (event.kind === EVENT_KINDS.DIFF) {
-      projected.diffLines = event.payload.lines ?? agent.diffLines;
-    }
-    return { ...agents, [event.agentId]: projected };
-  }
-
-  if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
-    next.status = event.payload.state;
-    if (event.payload.state === 'stopped' || event.payload.state === 'idle') {
-      const ended = event.payload.sessionId ?? next.sessionId;
-      next.sessionIds = ended
-        ? (next.sessionIds ?? []).filter((id) => id !== ended)
-        : [];
-      next.sessionId = next.sessionIds[0] ?? null;
-      next.resumeSessionId = ended ?? next.resumeSessionId ?? null;
-      if (next.sessionIds.length === 0) {
-        next.workItemIds = [];
-        // A stopped process leaves the mission. An idle process only finished
-        // its current turn and keeps its mission membership.
-        if (event.payload.state === 'stopped' && agent.role !== ROLES.ORCHESTRATOR) {
-          next.enabled = false;
-        }
-      } else {
-        next.status = 'running';
-      }
-    }
-  }
-  if (event.kind === EVENT_KINDS.PLAN) {
-    next.flows = mergeFlows(agent.flows, event.payload.steps ?? []);
-  }
-  if (event.kind === EVENT_KINDS.DIFF) {
-    next.diffLines = event.payload.lines ?? agent.diffLines;
-  }
-  if (event.kind === EVENT_KINDS.BLOCKED) {
-    next.status = 'blocked';
-    next.blockedReason = event.payload.reason ?? null;
-  }
-  return { ...agents, [event.agentId]: next };
-}
-
-// Estimates come from the first plan and are never silently rewritten, so a
-// later plan cannot quietly move the goalposts.
-function mergeFlows(existing, incoming) {
-  return incoming.map((step, index) => {
-    // A stable flow id keeps an estimate attached to the same promise when an
-    // agent inserts or reorders steps. Old engine-native plans may have no id,
-    // so their existing index remains the narrow compatibility fallback.
-    const previous = step?.id
-      ? existing.find((candidate) => candidate?.id === step.id)
-      : existing[index];
-    return {
-      ...step,
-      estimateMs: previous?.estimateMs ?? step.estimateMs ?? null,
-      actualMs: step.actualMs ?? previous?.actualMs ?? 0,
-    };
-  });
 }
 
 // One seat, one or more workers. Each gets its own session and its own slice
@@ -1268,31 +1179,20 @@ async function startCrew(note, assembled = true, desired = null) {
     }));
     return;
   }
-  const selected = Object.values(state.agents).filter((agent) =>
-    agent.role !== ROLES.ORCHESTRATOR
-    && (desired ? desired[agent.id] === true || Number(desired[agent.id]) > 0 : agent.enabled !== false));
-  const firstReadyOwner = state.board.items
-    .find((item) => item.owner && selected.some((agent) => agent.id === item.owner)
-      && canWork(state.board, item, item.owner))?.owner;
-  const starterId = firstReadyOwner ?? selected[0]?.id ?? null;
   const changes = [];
-  for (const agent of Object.values(state.agents)) {
-    if (agent.role === ROLES.ORCHESTRATOR) continue;
-    const active = desired
-      ? desired[agent.id] === true || Number(desired[agent.id]) > 0
-      : agent.enabled !== false;
-    const shouldRun = active && agent.id === starterId;
-    if (shouldRun && !isActive(agent)) {
+  for (const decision of activationPlan(state.agents, state.board, desired)) {
+    const agent = state.agents[decision.agentId];
+    if (decision.shouldRun && !decision.running) {
       changes.push(COMMANDS.setActive({ agentId: agent.id, active: true }));
-    } else if (active && isActive(agent) && !shouldRun) {
+    } else if (decision.member && decision.running && !decision.shouldRun) {
       changes.push(interruptAgent(agent.id).then(() => {
         state.agents = patchAgent(state.agents, agent.id, projectWorkers({
           ...state.agents[agent.id], enabled: true,
         }));
       }));
-    } else if (active && agent.enabled === false) {
+    } else if (decision.member && agent.enabled === false) {
       state.agents = patchAgent(state.agents, agent.id, { enabled: true });
-    } else if (!active && agent.enabled !== false) {
+    } else if (!decision.member && agent.enabled !== false) {
       changes.push(COMMANDS.setActive({ agentId: agent.id, active: false }));
     }
   }
