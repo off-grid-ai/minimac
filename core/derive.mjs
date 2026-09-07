@@ -10,6 +10,7 @@ export const POSE = Object.freeze({
   TYPING: 'typing',
   THINKING: 'thinking',
   PACING: 'pacing',
+  ERRAND: 'errand',   // out of the chair, carrying an order to another desk
   BLOCKED: 'blocked',
   IDLE: 'idle',
 });
@@ -248,6 +249,42 @@ export function burnRatio(step) {
   return (step.actualMs ?? 0) / step.estimateMs;
 }
 
+// An estimate is only an estimate if it came BEFORE the work. One that first
+// appears on a step already running is a number written to match reality.
+export function lateEstimate(step, seenAt = null) {
+  if (!step?.estimateMs || !seenAt?.startedAt || !seenAt?.estimateFirstSeenAt) return false;
+  return seenAt.estimateFirstSeenAt > seenAt.startedAt;
+}
+
+// One agent's whole promise against its whole reality. This is the number that
+// answers "should I look at this one?" without opening their desk.
+export function agentBurn(agent, now = Date.now()) {
+  let estimate = 0;
+  let actual = 0;
+  for (const step of agent?.flows ?? []) {
+    if (!step?.estimateMs || step.estimateMs <= 0) continue;
+    estimate += step.estimateMs;
+    actual += step.actualMs ?? 0;
+  }
+  if (estimate <= 0) return null;
+  return { estimateMs: estimate, actualMs: actual, ratio: actual / estimate };
+}
+
+// The same for the whole floor. Ten minutes of agent work should take ten
+// minutes - this is that promise as one number, and it belongs on screen.
+export function fleetBurn(agents = [], now = Date.now()) {
+  let estimate = 0;
+  let actual = 0;
+  for (const agent of agents) {
+    const burn = agentBurn(agent, now);
+    if (!burn) continue;
+    estimate += burn.estimateMs;
+    actual += burn.actualMs;
+  }
+  if (estimate <= 0) return null;
+  return { estimateMs: estimate, actualMs: actual, ratio: actual / estimate };
+}
+
 // The worst measured overrun, or null when nothing is over its estimate.
 export function worstOverrun(events, now = Date.now(), factor = 2) {
   const over = stepTimings(events, now)
@@ -348,8 +385,15 @@ export function gradeClaims(claims = []) {
 // Posture carries state, so the room is readable before a word is.
 export function agentPose(agent, events, now = Date.now()) {
   if (!agent || agent.status === 'stopped') return POSE.IDLE;
+  // Carrying an order outranks everything: it is the one thing in the room the
+  // operator asked for directly, and it is over in a few seconds.
+  if (agent.errand) return POSE.ERRAND;
   if (agent.status === 'blocked') return POSE.BLOCKED;
-  if (detectLoops(events).length > 0) return POSE.PACING;
+  // Only an agent that is actually WORKING can be looping. Reading a loop out
+  // of an idle agent's history left the room pacing with a red halo while the
+  // decision queue correctly said nothing needed you - the alarm and the card
+  // must never disagree, because the alarm is a claim about right now.
+  if (agent.status === 'running' && detectLoops(events).length > 0) return POSE.PACING;
 
   const quiet = silence(agent, events, now);
   if (quiet.state === SILENCE.HUNG) return POSE.IDLE;
@@ -387,11 +431,14 @@ export function pendingDecisions(agent, events, now = Date.now()) {
   }
 
   if (agent.status === 'blocked') {
+    // A blocked agent has no live turn, so steering it is prose into a void.
+    // RETRY is the action that can actually clear this: it dispatches the
+    // agent again, which re-opens the engine connection that failed.
     decisions.push({
       agentId: agent.id,
       kind: 'blocked',
       detail: agent.blockedReason ?? 'waiting on you',
-      actions: ['steer', 'kill'],
+      actions: ['retry', 'steer', 'kill'],
     });
   }
 
