@@ -1011,7 +1011,7 @@
      outcome, owner and current state. Technical details stay one click away. */
   .checkpoint-summary {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     border: 1px solid var(--line);
     background: var(--line);
     gap: 1px;
@@ -1074,17 +1074,31 @@
   .checkpoint-create-actions .btn { min-height: 44px; min-width: 88px; }
 
   .checkpoint-count {
+    min-width: 0;
+    border: 0;
+    border-radius: 0;
     background: var(--surface);
     color: var(--faint);
     padding: calc(var(--step) * 2);
+    font-family: var(--mono);
     font-size: 10px;
+    font-weight: 400;
+    text-align: left;
     text-transform: uppercase;
     letter-spacing: .1em;
     white-space: nowrap;
   }
 
   .checkpoint-count strong { color: var(--text); font-weight: 400; }
-  .checkpoint-count:first-child strong { color: var(--accent); }
+  .checkpoint-filter { cursor: pointer; }
+  .checkpoint-filter:hover { background: var(--nested); color: var(--text); }
+  .checkpoint-filter:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+  .checkpoint-filter[aria-pressed="true"] {
+    background: var(--nested);
+    box-shadow: inset 0 -2px 0 var(--accent);
+    color: var(--accent);
+  }
+  .checkpoint-filter[aria-pressed="true"] strong { color: var(--accent); }
   .checkpoint-section { margin-bottom: calc(var(--step) * 4); }
   .checkpoint-section-title {
     display: flex;
@@ -1113,6 +1127,7 @@
   }
 
   .checkpoint-row.is-running { border-left: 2px solid var(--accent); padding-left: calc(var(--step) * 2); }
+  .checkpoint-row.is-done .checkpoint-label { color: var(--muted); }
   .checkpoint-line {
     grid-area: line;
     display: grid;

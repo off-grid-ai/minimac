@@ -315,6 +315,7 @@ function isOpen(agentId, path, depth) {
 // Checkpoints, as one shared tree. Seven private self-reports could never answer
 // "which repo is the hold-up"; one list with owners and gate chains can.
 let addingCheckpoint = false;
+let checkpointFilter = 'all';
 
 export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
   const items = board ?? [];
@@ -326,7 +327,7 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
   const ordered = items.filter((item) => !isClosed(item)).sort(compareQueueOrder);
   const running = ordered.filter((item) => activeIds.has(item.id));
   const pending = ordered.filter((item) => !activeIds.has(item.id));
-  const done = items.filter(isDone);
+  const done = items.filter(isDone).sort(compareQueueOrder);
   const slots = workers
     .filter((agent) => agent.enabled !== false)
     .reduce((sum, agent) => sum + Math.max(1, agent.instances ?? 1), 0);
@@ -334,10 +335,13 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
     sum + (agent.sessionIds?.length || (agent.sessionId ? 1 : 0)), 0);
 
   const summary = el('div', 'checkpoint-summary');
+  summary.setAttribute('role', 'group');
+  summary.setAttribute('aria-label', 'Filter checkpoints');
   summary.append(
-    summaryCount(running.length, 'running'),
-    summaryCount(pending.length, 'pending'),
-    summaryCount(done.length, 'done'),
+    summaryFilter(running.length + pending.length + done.length, 'all', 'all', redraw),
+    summaryFilter(running.length, 'running', 'running', redraw),
+    summaryFilter(pending.length, 'pending', 'pending', redraw),
+    summaryFilter(done.length, 'done', 'done', redraw),
     summaryCount(Math.max(0, slots - inUse), 'free'),
   );
   const toolbar = el('div', 'checkpoint-toolbar');
@@ -358,8 +362,17 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
     return;
   }
 
-  frag.append(checkpointSection('running now', running, items, workers, activeIds, handlers));
-  frag.append(checkpointSection('pending', pending, items, workers, activeIds, handlers));
+  const sections = [
+    ['running', 'running now', running],
+    ['pending', 'pending', pending],
+    ['done', 'done', done],
+  ];
+  const visible = checkpointFilter === 'all'
+    ? sections.filter(([, , sectionItems]) => sectionItems.length > 0)
+    : sections.filter(([id]) => id === checkpointFilter);
+  for (const [, label, sectionItems] of visible) {
+    frag.append(checkpointSection(label, sectionItems, items, workers, activeIds, handlers));
+  }
   root.replaceChildren(frag);
 }
 
@@ -440,14 +453,31 @@ function summaryCount(value, label) {
   return count;
 }
 
+function summaryFilter(value, label, filter, redraw) {
+  const button = el('button', 'checkpoint-count checkpoint-filter');
+  button.type = 'button';
+  button.setAttribute('aria-pressed', String(checkpointFilter === filter));
+  button.setAttribute('aria-label', `Show ${label} checkpoints`);
+  button.append(el('strong', '', String(value)), document.createTextNode(` ${label}`));
+  button.onclick = () => {
+    checkpointFilter = filter;
+    redraw();
+  };
+  return button;
+}
+
 function checkpointSection(label, items, all, agents, activeIds, handlers) {
   const section = el('section', 'checkpoint-section');
   const heading = el('h3', 'checkpoint-section-title', label);
   heading.append(el('span', '', String(items.length)));
   section.append(heading);
   if (!items.length) {
-    section.append(el('p', 'checkpoint-empty', label === 'running now'
-      ? 'Nothing is running.' : 'Nothing is waiting.'));
+    const message = label === 'running now'
+      ? 'Nothing is running.'
+      : label === 'done'
+        ? 'Nothing is done.'
+        : 'Nothing is waiting.';
+    section.append(el('p', 'checkpoint-empty', message));
     return section;
   }
   items.forEach((item, index) => section.append(checkpointRow(
@@ -458,7 +488,8 @@ function checkpointSection(label, items, all, agents, activeIds, handlers) {
 }
 
 function checkpointRow(item, all, agents, running, handlers, movement) {
-  const row = el('article', `checkpoint-row${running ? ' is-running' : ''}`);
+  const done = isDone(item);
+  const row = el('article', `checkpoint-row${running ? ' is-running' : ''}${done ? ' is-done' : ''}`);
   const waiting = unmetDeps({ items: all }, item);
   const owner = agents.find((agent) => agent.id === item.owner);
   const ownerBusy = owner?.sessionId && !(owner.workItemIds ?? []).includes(item.id);
@@ -471,9 +502,14 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   );
   line.append(
     title,
-    el('span', 'checkpoint-state', checkpointStatus(item, running, waiting, owner)),
+    el('span', 'checkpoint-state', checkpointStatus(item, running, waiting, owner, done)),
   );
   row.append(line);
+
+  if (done) {
+    row.append(checkpointDetails(item));
+    return row;
+  }
 
   const controls = el('div', 'checkpoint-controls');
   if (!running) {
@@ -505,8 +541,9 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   return row;
 }
 
-function checkpointStatus(item, running, waiting, owner) {
+function checkpointStatus(item, running, waiting, owner, done = false) {
   const who = owner?.name ?? 'No owner';
+  if (done) return `${who} - done`;
   if (running) return `${who} - ${nextGate(item) ?? 'finishing'}`;
   if (item.paused) return `${who} - paused`;
   if (waiting.length) return `${who} - waiting`;
