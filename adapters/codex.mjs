@@ -410,6 +410,7 @@ export function createCodexDriver({
       // needs the target, not the shell noise around it.
       const action = commandAction(item.commandActions);
       return at(EVENT_KINDS.TOOL, {
+        toolUseId: item.id ?? null,
         action: action.action,
         target: action.target || item.command || '',
         phase,
@@ -422,6 +423,7 @@ export function createCodexDriver({
     if (item.type === 'fileChange') {
       const paths = (item.changes ?? []).map((change) => change.path).filter(Boolean);
       return at(EVENT_KINDS.TOOL, {
+        toolUseId: item.id ?? null,
         action: 'edit',
         target: paths[0] ?? '',
         paths,
@@ -431,6 +433,7 @@ export function createCodexDriver({
     }
     if (item.type === 'mcpToolCall' || item.type === 'dynamicToolCall') {
       return at(EVENT_KINDS.TOOL, {
+        toolUseId: item.id ?? null,
         action: 'tool',
         target: item.server ? `${item.server}.${item.tool}` : item.tool ?? '',
         phase,
@@ -438,10 +441,14 @@ export function createCodexDriver({
       });
     }
     if (item.type === 'webSearch') {
-      return at(EVENT_KINDS.TOOL, { action: 'search', target: item.query ?? '', phase });
+      return at(EVENT_KINDS.TOOL, {
+        toolUseId: item.id ?? null, action: 'search', target: item.query ?? '', phase,
+      });
     }
     if (item.type === 'imageView') {
-      return at(EVENT_KINDS.TOOL, { action: 'read', target: item.path ?? '', phase });
+      return at(EVENT_KINDS.TOOL, {
+        toolUseId: item.id ?? null, action: 'read', target: item.path ?? '', phase,
+      });
     }
     if (item.type === 'agentMessage' && phase === 'completed' && item.text) {
       return at(EVENT_KINDS.MESSAGE, { text: item.text, final: item.phase === 'final_answer' });

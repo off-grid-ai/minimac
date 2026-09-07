@@ -1619,7 +1619,9 @@ function feedEntry(agent, event) {
       text: `${payload.action} ${short}${result}`,
       tone: completed && payload.ok === false ? 'alert' : 'tool',
       full: [target, payload.detail].filter(Boolean).join('\n\n'),
-      operationId: `${event.agentId}:${payload.sessionId ?? ''}:${payload.toolUseId ?? `${payload.action}:${target}`}`,
+      operationId: payload.toolUseId
+        ? `${event.agentId}:${payload.sessionId ?? ''}:${payload.toolUseId}`
+        : null,
     };
   }
   if (event.kind === EVENT_KINDS.CLAIM) {

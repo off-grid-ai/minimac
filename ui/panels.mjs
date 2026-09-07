@@ -12,7 +12,7 @@
 
 import { burnRatio } from '../core/derive.mjs';
 import { rollup, remaining } from '../core/flows.mjs';
-import { compareQueueOrder, nextGate, isDone, unmetDeps } from '../core/board.mjs';
+import { compareQueueOrder, nextGate, isClosed, isDone, unmetDeps } from '../core/board.mjs';
 import { EFFORT_OPTIONS, ENGINES, MODEL_OPTIONS } from '../core/roster.mjs';
 
 const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
@@ -323,8 +323,7 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
   const workers = agents.filter((agent) => agent.role !== 'orchestrator');
   const activeIds = new Set(workers.flatMap((agent) =>
     agent.sessionId ? (agent.workItemIds ?? []) : []));
-  const ordered = items.filter((item) => !['superseded', 'cancelled'].includes(item.disposition)
-    && !isDone(item)).sort(compareQueueOrder);
+  const ordered = items.filter((item) => !isClosed(item)).sort(compareQueueOrder);
   const running = ordered.filter((item) => activeIds.has(item.id));
   const pending = ordered.filter((item) => !activeIds.has(item.id));
   const done = items.filter(isDone);
