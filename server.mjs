@@ -58,6 +58,7 @@ import { createStore } from './adapters/store.mjs';
 import { createWorktrees } from './adapters/git.mjs';
 import { createRepoIndex } from './adapters/fs.mjs';
 import { createUploads } from './adapters/uploads.mjs';
+import { createCiWatcher } from './adapters/ci-watcher.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
 import {
   deriveCards,
@@ -2011,6 +2012,37 @@ const COMMANDS = {
   },
 };
 
+const ciWatcher = createCiWatcher({
+  repo: options.repo,
+  context: () => ({ mission: state.mission, items: itemsOf(state.board) }),
+  onFailures: async ({ number, failures }) => {
+    const names = failures.map((check) => check.name).filter(Boolean);
+    const existing = itemsOf(state.board).find((item) =>
+      !['superseded', 'cancelled'].includes(item.disposition)
+      && new RegExp(`\\b(?:PR|pull request)\\s*#?${number}\\b`, 'i')
+        .test(`${item.title}\n${item.outcome}`));
+    const summary = names.slice(0, 3).join(', ') || 'hosted checks';
+    if (!existing) {
+      const coder = Object.values(state.agents).find((agent) => agent.role === ROLES.CODER);
+      if (coder) {
+        addBoardWork({
+          title: `Fix PR ${number} CI: ${summary}`,
+          plan: 'Read the hosted failure; make the smallest root-cause fix; run its focused proof; push the repaired head.',
+          outcome: `PR ${number} has no failing hosted checks.`,
+          verify: `gh pr checks ${number}`,
+          scope: `pr/${number}`,
+          owner: coder.id,
+          needs: ['coding', 'test', 'commits', 'push'],
+          blockedBy: [],
+          estimateMs: WORKER_LIMIT_MS,
+        }, 'minimac');
+      }
+    }
+    await tellThor('minimac', `CI changed on PR ${number}. Failing now: ${summary}. `
+      + (existing ? `Use checkpoint ${existing.id}.` : 'A new checkpoint was added for the coder.'));
+  },
+});
+
 // End a live engine session without deciding mission membership. This is an
 // internal lifecycle step used by the one public active/bench transition and
 // by Thor's isolated assemble turn. It is not a command clients can call.
@@ -2462,6 +2494,7 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  ciWatcher.stop();
   for (const agent of Object.values(state.agents)) {
     if (!agent.sessionId && !agent.sessionIds?.length) continue;
     await eachSession(agent, (id) => getDriver(agent.engine).interrupt(id)).catch(() => {});
@@ -2530,5 +2563,6 @@ server.listen(options.port, async () => {
   process.stdout.write(`remote control: ${remoteLine()}\n`);
   await ensureEngines();
   await reconcileAdoptedSessions();
+  ciWatcher.start();
   publish({ type: 'state', state: snapshot() });
 });
