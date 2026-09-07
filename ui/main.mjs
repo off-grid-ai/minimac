@@ -744,9 +744,9 @@ function renderStrip(agents, queue = []) {
 // What each agent is doing RIGHT NOW, pinned to its desk. Without this the
 // room shows mood and no content: an agent running twelve git commands looks
 // exactly like one doing nothing.
-// A bubble is for reading, so it holds still. An agent may change what its
-// bubble says at most once every thirty seconds, however fast it is working.
-const BUBBLE_HOLD_MS = 30_000;
+// A bubble is for reading, so it holds still briefly. An agent may change what
+// its bubble says at most once every five seconds, however fast it is working.
+const BUBBLE_HOLD_MS = 5_000;
 const shownBubble = new Map(); // agentId -> { text, at }
 
 const FRESH_MS = 8_000; // how long a bubble reads as newly arrived
