@@ -1111,11 +1111,14 @@ const handlers = {
   stopRun: () => send('stopRun'),
 
   newRun: async () => {
-    const mission = window.prompt('What is the mission for this run?', '');
-    if (mission === null) return;
-    const response = await send('newRun', { mission });
+    const response = await send('newRun', { mission: '', autoStart: false });
     if (response.result?.runId) setRunUrl(response.result.runId);
     state.eventsByAgent = {};
+    state.focus = null;
+    state.target = MISSION_TARGET;
+    composer?.beginMission();
+    scene?.focusOn?.(null);
+    strip?.close();
     await loadRuns();
   },
 

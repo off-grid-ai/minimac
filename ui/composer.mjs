@@ -29,7 +29,7 @@ export function createComposer({
   onSend,
   dropTarget = globalThis,
 }) {
-  if (!dom.input) return { setTarget() {}, focus() {} };
+  if (!dom.input) return { setTarget() {}, focus() {}, beginMission() {} };
   const editor = createMarkdownEditor(dom.input);
 
   let suggestions = [];
@@ -351,6 +351,20 @@ export function createComposer({
   dom.input.addEventListener('blur', () => setTimeout(closeMenu, 120));
 
   return {
+    // A new run starts with one empty mission draft. The server owns the run;
+    // this only clears the old run's local editor state after that succeeds.
+    beginMission() {
+      lastMission = '';
+      historyTarget = MISSION_TARGET;
+      historyIndex = null;
+      historyDraft = '';
+      editor.setValue('');
+      attachments = [];
+      renderAttachments();
+      closeMenu();
+      autosize();
+      editor.focus();
+    },
     // Addressing the mission shows the mission that is already set, so it can
     // be edited rather than retyped from memory. Never while you are typing:
     // a redraw must not overwrite what is in your hands.
