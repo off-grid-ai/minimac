@@ -29,6 +29,8 @@ const ROLE_PROMPTS = Object.freeze({
     'watch their flows, and escalate to the human when two workers disagree on a fact ' +
     'or a worker fails the same step twice. A checkpoint is a necessary state change on ' +
     'the shortest path from the mission to done. It is not a role activity or a status report. ' +
+    'Assembly creates the first checkpoints. When workers discover new required work, use ' +
+    'create_checkpoint to add it, inspect capacity, and start its owner. ' +
     'Each worker gets one ready item that takes no more than eight minutes, with a plan, ' +
     'a verifiable outcome, and its proof. When it stops, assign and start the next ready item.',
   [ROLES.CODER]:
@@ -66,59 +68,12 @@ export function buildOutputSchema() {
     properties: {
       flows: {
         type: 'array',
-        items: {
-          type: 'object',
-          required: ['id', 'step', 'user_visible_result', 'status', 'estimateMs'],
-          properties: {
-            id: {
-              type: 'string',
-              description: 'Stable id for this flow step. Keep it unchanged in later reports.',
-            },
-            step: { type: 'string' },
-            user_visible_result: {
-              type: 'string',
-              description: 'What a person sees or can do. Never a file or a command.',
-            },
-            status: { type: 'string', enum: Object.values(STEP_STATUS) },
-            estimateMs: {
-              type: 'integer',
-              description: 'Agent time for this step, in ms, declared before it starts.',
-            },
-            scope: {
-              type: 'string',
-              description: 'Where this happens, as a path: "mobile", "shared/sync".',
-            },
-            approach: {
-              type: 'object',
-              description: 'One plan, sharpened twice. Coder, tester and auditor only.',
-              properties: {
-                plan: { type: 'string' },
-                sharpened: { type: 'string' },
-                cut: { type: 'string' },
-                inputs: {
-                  type: 'array',
-                  items: { type: 'string' },
-                  description: 'The earlier steps this plan was built on.',
-                },
-              },
-            },
-            actualMs: { type: 'integer' },
-          },
-        },
+        items: buildFlowStepSchema(),
       },
       gates: {
         type: 'array',
         description: 'Changes to shared checkpoints. This is the only writable gate state.',
-        items: {
-          type: 'object',
-          required: ['item', 'gate', 'state', 'receipt'],
-          properties: {
-            item: { type: 'string' },
-            gate: { type: 'string', enum: GATES },
-            state: { type: 'string', enum: ['pass', 'fail', 'running'] },
-            receipt: { type: 'string' },
-          },
-        },
+        items: buildCheckpointUpdateSchema(),
       },
       escalate: {
         type: 'object',
@@ -152,6 +107,63 @@ export function buildOutputSchema() {
   };
 }
 
+export function buildFlowStepSchema() {
+  return {
+    type: 'object',
+    required: ['id', 'step', 'user_visible_result', 'status', 'estimateMs'],
+    additionalProperties: false,
+    properties: {
+      id: {
+        type: 'string',
+        description: 'Stable id for this flow step. Keep it unchanged in later reports.',
+      },
+      step: { type: 'string' },
+      user_visible_result: {
+        type: 'string',
+        description: 'What a person sees or can do. Never a file or a command.',
+      },
+      status: { type: 'string', enum: Object.values(STEP_STATUS) },
+      estimateMs: {
+        type: 'integer',
+        description: 'Agent time for this step, in ms, declared before it starts.',
+      },
+      scope: {
+        type: 'string',
+        description: 'Where this happens, as a path: "mobile", "shared/sync".',
+      },
+      approach: {
+        type: 'object',
+        description: 'One plan, sharpened twice. Coder, tester and auditor only.',
+        properties: {
+          plan: { type: 'string' },
+          sharpened: { type: 'string' },
+          cut: { type: 'string' },
+          inputs: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'The earlier steps this plan was built on.',
+          },
+        },
+      },
+      actualMs: { type: 'integer' },
+    },
+  };
+}
+
+export function buildCheckpointUpdateSchema() {
+  return {
+    type: 'object',
+    required: ['item', 'gate', 'state', 'receipt'],
+    additionalProperties: false,
+    properties: {
+      item: { type: 'string' },
+      gate: { type: 'string', enum: GATES },
+      state: { type: 'string', enum: ['pass', 'fail', 'running'] },
+      receipt: { type: 'string' },
+    },
+  };
+}
+
 // The one block every agent must emit. Neither CLI reliably honours a JSON
 // schema flag mid-conversation, so the contract is carried in the message
 // itself and parsed back out - the same shape from both engines.
@@ -168,8 +180,12 @@ export function reportInstruction(role = null) {
   return [
     '# How you must report',
     '',
+    'Call update_flow as soon as a flow step starts or changes state. Call update_checkpoint '
+      + 'as soon as a checkpoint gate starts, passes, or fails. These calls update the Feed, '
+      + 'Flows, and Checkpoints while you work.',
+    '',
     'Call the MINIMAC report_progress tool before your final answer. It records the same '
-      + 'flows, claims, and gates for every engine.',
+      + 'flows, claims, and gates as one final snapshot for every engine.',
     '',
     'Only if report_progress is unavailable, END YOUR REPLY with this fallback block and '
       + 'nothing after it:',
@@ -215,6 +231,9 @@ export function reportInstruction(role = null) {
     '- The top-level gates list is the ONLY gate state. Do not put gates inside a flow.',
     '- Work only on items you own. If something needs doing on an item you do not '
       + 'own, escalate - never reach into it.',
+    '- If you discover new work that the mission cannot finish without, escalate it to Thor. '
+      + 'Thor uses create_checkpoint and starts an owner. Assembly is not the only time '
+      + 'checkpoints can be created.',
     '- standDown is OPTIONAL and ends your own session. Use it the moment your '
       + 'goal is met, or when you have nothing real left to do on this mission. '
       + 'Sitting idle in a chair costs tokens and fills the floor with noise; '

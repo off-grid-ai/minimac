@@ -492,6 +492,49 @@ function addBoardWork(spec, by) {
   return result;
 }
 
+function updateFlows(agentId, updates) {
+  const agent = state.agents[agentId];
+  if (!agent) return { error: `unknown agent: ${agentId}` };
+  let steps = [...(agent.flows ?? [])];
+  for (const step of updates ?? []) {
+    if (!step?.id || !step?.step) continue;
+    const index = steps.findIndex((candidate) => candidate?.id === step.id);
+    if (index < 0) steps.push(step);
+    else steps[index] = { ...steps[index], ...step };
+  }
+  if (steps.length === 0) return { error: 'a flow update needs a step' };
+  ingest(createEvent(agentId, EVENT_KINDS.PLAN, {
+    steps,
+    updated: (updates ?? []).map((step) => step?.id).filter(Boolean),
+  }));
+  return { steps };
+}
+
+function updateCheckpoint(agentId, move) {
+  const result = advanceGate(state.board, {
+    id: move?.item,
+    gate: move?.gate,
+    state: move?.state,
+    receipt: move?.receipt ?? '',
+    by: agentId,
+  });
+  if (result.error) {
+    ingest(createEvent(agentId, EVENT_KINDS.STATUS, {
+      text: `gate refused: ${result.error}`,
+      from: 'you',
+    }));
+    return result;
+  }
+  state.board = result.board;
+  const item = findItem(state.board, move.item);
+  store.saveItem(item);
+  ingest(createEvent(agentId, EVENT_KINDS.STATUS, {
+    text: `${move.item} ${move.gate}: ${move.state}`,
+    from: 'you',
+  }));
+  return { ...result, item };
+}
+
 function harvestReport(event) {
   const match = REPORT_BLOCK.exec(String(event.payload?.text ?? ''));
   if (!match) return;
@@ -528,31 +571,13 @@ function harvestReport(event) {
   // board.mjs refuses anything out of order or without a receipt - so an agent
   // cannot report a push over untested code however confidently it tries.
   for (const move of report.gates ?? []) {
-    const result = advanceGate(state.board, {
-      id: move?.item,
-      gate: move?.gate,
-      state: move?.state,
-      receipt: move?.receipt ?? '',
-      by: event.agentId,
-    });
-    if (result.error) {
-      ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
-        text: `gate refused: ${result.error}`,
-        from: 'you',
-      }));
-      continue;
-    }
-    state.board = result.board;
-    store.saveItem(result.item);
+    const result = updateCheckpoint(event.agentId, move);
+    if (result.error) continue;
     if (result.item.closedAt) completedWork.push(result.item);
-    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
-      text: `${move.item} ${move.gate}: ${move.state}`,
-      from: 'you',
-    }));
   }
 
   if (Array.isArray(report.flows) && report.flows.length > 0) {
-    ingest(createEvent(event.agentId, EVENT_KINDS.PLAN, { steps: report.flows }));
+    updateFlows(event.agentId, report.flows);
   }
   for (const claim of report.claims ?? []) {
     const text = String(claim?.text ?? claim?.claim ?? '').trim();
@@ -1665,7 +1690,7 @@ const COMMANDS = {
     if (!state.agents[owner] || state.agents[owner].role === ROLES.ORCHESTRATOR) {
       throw new Error(`unknown Avenger: ${owner}`);
     }
-    if (id) {
+    if (id && findItem(state.board, id)) {
       const result = reviseItem(state.board, id, {
         title, plan, outcome, verify, scope, owner, needs, blockedBy, estimateMs,
       });
@@ -1676,7 +1701,7 @@ const COMMANDS = {
       return { item: result.item };
     }
     const result = addBoardWork({
-      title, plan, outcome, verify, scope, owner, needs, blockedBy, estimateMs,
+      id, title, plan, outcome, verify, scope, owner, needs, blockedBy, estimateMs,
     }, by);
     if (result.error) throw new Error(result.error);
     return { item: result.item, duplicate: result.duplicate === true };
@@ -2027,6 +2052,16 @@ async function executeAgentTool(callerId, name, args) {
       payload: { text: `\`\`\`${REPORT_FENCE}\n${JSON.stringify(args)}\n\`\`\`` },
     });
     return { recorded: true };
+  }
+  if (name === AGENT_TOOL.FLOW) {
+    const result = updateFlows(callerId, [args]);
+    if (result.error) throw new Error(result.error);
+    return { updated: args.id, status: args.status };
+  }
+  if (name === AGENT_TOOL.CHECKPOINT) {
+    const result = updateCheckpoint(callerId, args);
+    if (result.error) throw new Error(result.error);
+    return { updated: args.item, gate: args.gate, state: args.state };
   }
   if (name === AGENT_TOOL.INSPECT) {
     const checkpoints = itemsOf(state.board);

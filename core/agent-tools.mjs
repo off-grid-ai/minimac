@@ -4,17 +4,23 @@
 
 import { ROLES } from './roster.mjs';
 import { GATES } from './flows.mjs';
-import { buildOutputSchema } from './dispatch.mjs';
+import {
+  buildCheckpointUpdateSchema,
+  buildFlowStepSchema,
+  buildOutputSchema,
+} from './dispatch.mjs';
 
 export const AGENT_TOOL = Object.freeze({
   REPORT: 'report_progress',
+  FLOW: 'update_flow',
+  CHECKPOINT: 'update_checkpoint',
   INSPECT: 'inspect_avengers',
   ESCALATE: 'escalate_to_thor',
   ASSEMBLE: 'assemble_avengers',
   START: 'start_avenger',
   BENCH: 'bench_avenger',
   GOAL: 'set_avenger_goal',
-  ASSIGN: 'assign_work',
+  ASSIGN: 'create_checkpoint',
 });
 
 const object = (properties, required = []) => ({
@@ -29,6 +35,16 @@ const TOOLS = Object.freeze({
     name: AGENT_TOOL.REPORT,
     description: 'Report flows, evidence, and checkpoint gate results to MINIMAC. This replaces a minimac fenced report.',
     inputSchema: buildOutputSchema(),
+  },
+  [AGENT_TOOL.FLOW]: {
+    name: AGENT_TOOL.FLOW,
+    description: 'Update one Flow step now. The Feed and Flows panel update from this call.',
+    inputSchema: buildFlowStepSchema(),
+  },
+  [AGENT_TOOL.CHECKPOINT]: {
+    name: AGENT_TOOL.CHECKPOINT,
+    description: 'Update one gate on an owned checkpoint now. The Feed and Checkpoints panel update from this call.',
+    inputSchema: buildCheckpointUpdateSchema(),
   },
   [AGENT_TOOL.INSPECT]: {
     name: AGENT_TOOL.INSPECT,
@@ -92,9 +108,9 @@ const TOOLS = Object.freeze({
   },
   [AGENT_TOOL.ASSIGN]: {
     name: AGENT_TOOL.ASSIGN,
-    description: 'Create or update one shared checkpoint. Give an existing checkpoint id to change its owner, dependencies, plan, outcome, proof, or estimate without making a duplicate.',
+    description: 'Create one necessary checkpoint when new work appears after assembly. Inspect capacity, create the checkpoint, then start its owner.',
     inputSchema: object({
-      id: { type: 'string', description: 'Existing item id to reassign. Omit to create an item.' },
+      id: { type: 'string', description: 'A unique short id such as w9.' },
       title: { type: 'string' },
       plan: { type: 'string' },
       outcome: { type: 'string' },
@@ -104,13 +120,20 @@ const TOOLS = Object.freeze({
       needs: { type: 'array', items: { type: 'string', enum: GATES } },
       blockedBy: { type: 'array', items: { type: 'string' } },
       estimateMs: { type: 'integer', minimum: 1, maximum: 480000 },
-    }, ['owner']),
+    }, ['id', 'title', 'plan', 'outcome', 'verify', 'owner', 'needs', 'blockedBy', 'estimateMs']),
   },
 });
 
-const WORKER_TOOLS = Object.freeze([AGENT_TOOL.REPORT, AGENT_TOOL.ESCALATE]);
+const WORKER_TOOLS = Object.freeze([
+  AGENT_TOOL.REPORT,
+  AGENT_TOOL.FLOW,
+  AGENT_TOOL.CHECKPOINT,
+  AGENT_TOOL.ESCALATE,
+]);
 const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.REPORT,
+  AGENT_TOOL.FLOW,
+  AGENT_TOOL.CHECKPOINT,
   AGENT_TOOL.INSPECT,
   AGENT_TOOL.ASSEMBLE,
   AGENT_TOOL.START,

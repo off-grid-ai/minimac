@@ -1529,6 +1529,11 @@ function feedEntry(agent, event) {
     const receipt = payload.receipt ? `  <- ${payload.receipt}` : '  <- no receipt';
     return { at, who, text: `${payload.text}${receipt}`, tone: payload.receipt ? '' : 'alert' };
   }
+  if (event.kind === EVENT_KINDS.PLAN && payload.updated?.length) {
+    const changed = (payload.steps ?? []).filter((step) => payload.updated.includes(step.id));
+    const text = changed.map((step) => `${step.step} - ${step.status}`).join('\n');
+    return text ? { at, who, text: `FLOW\n${text}`, tone: '' } : null;
+  }
   if (event.kind === EVENT_KINDS.BLOCKED) {
     const reason = String(payload.reason ?? '');
     const short = reason.length > 90 ? `${reason.slice(0, 8)}${summariseCommand(reason.slice(8))}` : reason;
