@@ -35,6 +35,7 @@ import {
   workerForCheckpoint,
   workerForSession,
 } from './core/workers.mjs';
+import { canResumeSession } from './core/session-lifecycle.mjs';
 import { setGoal, getGoal, clearGoal, deriveGoals } from './core/goals.mjs';
 import { claimFiles, releaseClaim } from './core/claims.mjs';
 import {
@@ -929,9 +930,9 @@ async function startWorkers(agent, cwd, context) {
   for (const [index, { prompt }] of workerDispatches(context).entries()) {
     const worker = available[index];
     if (!worker) break;
+    const checkpointId = context.workItems?.[index]?.id ?? null;
     const resumableId = worker.resumeSessionId;
-    const canResume = resumableId
-      && (!worker.engine || worker.engine === agent.engine)
+    const canResume = canResumeSession(worker, { engine: agent.engine, checkpointId })
       && typeof driver.resume === 'function';
     const workerAgent = { ...agent, workerId: worker.id };
     let sessionId;
@@ -952,7 +953,6 @@ async function startWorkers(agent, cwd, context) {
       }
     }
     const now = Date.now();
-    const checkpointId = context.workItems?.[index]?.id ?? null;
     const nextWorker = {
       ...worker,
       sessionId,
