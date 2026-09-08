@@ -4,11 +4,59 @@
 
 export const WORKER_STATE = Object.freeze({
   IDLE: 'idle',
+  STARTING: 'starting',
   RUNNING: 'running',
   BLOCKED: 'blocked',
-  EXPIRED: 'expired',
+  STOPPING: 'stopping',
+  STALE: 'stale',
+  FAILED: 'failed',
   STOPPED: 'stopped',
 });
+
+const TRANSITIONS = Object.freeze({
+  [WORKER_STATE.IDLE]: new Set([WORKER_STATE.STARTING, WORKER_STATE.STOPPED]),
+  [WORKER_STATE.STARTING]: new Set([WORKER_STATE.RUNNING, WORKER_STATE.FAILED, WORKER_STATE.STOPPING]),
+  [WORKER_STATE.RUNNING]: new Set([WORKER_STATE.BLOCKED, WORKER_STATE.STOPPING, WORKER_STATE.STALE, WORKER_STATE.FAILED]),
+  [WORKER_STATE.BLOCKED]: new Set([WORKER_STATE.RUNNING, WORKER_STATE.STOPPING, WORKER_STATE.STALE, WORKER_STATE.FAILED]),
+  [WORKER_STATE.STOPPING]: new Set([WORKER_STATE.STOPPED, WORKER_STATE.FAILED]),
+  [WORKER_STATE.STALE]: new Set([WORKER_STATE.STARTING, WORKER_STATE.STOPPED]),
+  [WORKER_STATE.FAILED]: new Set([WORKER_STATE.STARTING, WORKER_STATE.STOPPED]),
+  [WORKER_STATE.STOPPED]: new Set([WORKER_STATE.STARTING, WORKER_STATE.IDLE]),
+});
+
+export function transitionWorker(worker, state, changes = {}, now = Date.now()) {
+  if (!Object.values(WORKER_STATE).includes(state)) {
+    return { worker, error: `unknown worker state ${state}` };
+  }
+  if (worker.state !== state && !TRANSITIONS[worker.state]?.has(state)) {
+    return { worker, error: `${worker.id} cannot move from ${worker.state} to ${state}` };
+  }
+  return {
+    worker: {
+      ...worker,
+      ...changes,
+      state,
+      stateChangedAt: worker.state === state ? worker.stateChangedAt : now,
+    },
+  };
+}
+
+export function workerHealth(
+  worker,
+  { engineState = null, heartbeatAt = worker?.heartbeatAt, now = Date.now(), staleAfterMs = 120_000 } = {},
+) {
+  if (!worker) return { state: WORKER_STATE.FAILED, reason: 'worker does not exist' };
+  if (['failed', 'error'].includes(engineState)) {
+    return { state: WORKER_STATE.FAILED, reason: 'engine session failed' };
+  }
+  if (['stopped', 'closed'].includes(engineState)) {
+    return { state: WORKER_STATE.STOPPED, reason: 'engine session stopped' };
+  }
+  if (worker.sessionId && Number.isFinite(heartbeatAt) && now - heartbeatAt > staleAfterMs) {
+    return { state: WORKER_STATE.STALE, reason: 'engine heartbeat expired' };
+  }
+  return { state: worker.state, reason: null };
+}
 
 export function workerId(agentId, index) {
   return `${agentId}:${index + 1}`;
@@ -24,6 +72,9 @@ export function createWorker(agentId, index, saved = {}) {
     engine: saved.engine ?? null,
     state: saved.state ?? WORKER_STATE.IDLE,
     startedAt: saved.startedAt ?? null,
+    heartbeatAt: saved.heartbeatAt ?? saved.startedAt ?? null,
+    stateChangedAt: saved.stateChangedAt ?? saved.startedAt ?? null,
+    failureReason: saved.failureReason ?? null,
   };
 }
 
@@ -38,13 +89,16 @@ export function ensureWorkers(agent) {
 
 export function projectWorkers(agent, workers = ensureWorkers(agent)) {
   const live = workers.filter((worker) => Boolean(worker.sessionId));
-  const status = live.some((worker) => worker.state === WORKER_STATE.BLOCKED)
-    ? WORKER_STATE.BLOCKED
-    : live.length > 0
-      ? WORKER_STATE.RUNNING
+  const priority = [
+    WORKER_STATE.FAILED, WORKER_STATE.STALE, WORKER_STATE.BLOCKED,
+    WORKER_STATE.STOPPING, WORKER_STATE.STARTING, WORKER_STATE.RUNNING,
+  ];
+  const activeState = priority.find((state) => workers.some((worker) => worker.state === state));
+  const status = activeState
+    ?? (live.length > 0 ? WORKER_STATE.RUNNING
       : agent.enabled === false
         ? WORKER_STATE.STOPPED
-        : WORKER_STATE.IDLE;
+        : WORKER_STATE.IDLE);
   return {
     ...agent,
     workers,

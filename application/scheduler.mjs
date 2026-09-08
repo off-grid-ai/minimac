@@ -17,8 +17,13 @@ export function createScheduler({ getBoard, getAgents, start, limitMs }) {
           capacity: freeWorkers(agent).length,
         });
         if (ready.length === 0) continue;
-        await start(agent.id, ready.map((item) => item.id));
-        started.push(...ready.map((item) => item.id));
+        try {
+          await start(agent.id, ready.map((item) => item.id));
+          started.push(...ready.map((item) => item.id));
+        } catch {
+          // The start boundary records a visible failure and retry time for
+          // these checkpoints. One failed engine must not block other seats.
+        }
       }
       return started;
     } finally {

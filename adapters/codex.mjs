@@ -464,6 +464,13 @@ export function createCodexDriver({
   // ------------------------------------------------------------------ port
 
   return {
+    async sessionHealth(sessionId) {
+      await connect();
+      const result = await request('thread/read', { threadId: sessionId, includeTurns: false });
+      const state = threadState(result?.thread?.status);
+      return { state, live: state === 'running' };
+    },
+
     async configureRuntime(sessionId, agent) {
       runtimeByThread.set(sessionId, {
         model: agent.model || null,
@@ -706,10 +713,12 @@ function planStatus(status) {
 
 function threadState(status) {
   const type = typeof status === 'string' ? status : status?.type;
-  if (type === 'active') return 'running';
-  if (type === 'idle') return 'idle';
-  if (type === 'systemError') return 'blocked';
-  return type ?? 'idle';
+  if (['active', 'inProgress', 'running'].includes(type)) return 'running';
+  if (['idle', 'completed'].includes(type)) return 'idle';
+  if (['systemError', 'blocked'].includes(type)) return 'blocked';
+  if (['failed', 'error'].includes(type)) return 'failed';
+  if (['stopped', 'closed', 'interrupted'].includes(type)) return 'stopped';
+  return 'idle';
 }
 
 function finalText(items) {

@@ -403,6 +403,12 @@ export function createClaudeDriver({
   }
 
   return {
+    async sessionHealth(sessionId) {
+      const session = sessions.get(sessionId);
+      if (!session) return { state: 'stopped', live: false };
+      return { state: session.alive ? 'running' : 'idle', live: session.alive };
+    },
+
     async configureRuntime(sessionId, agent) {
       const session = sessions.get(sessionId);
       if (session) session.agent = agent;

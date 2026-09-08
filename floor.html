@@ -34,6 +34,7 @@
     --danger: #c81e1e;
     --danger-soft: rgba(200, 30, 30, 0.12);
     --danger-edge: rgba(200, 30, 30, 0.50);
+    --status-idle: #b7791f;
     --floor-bg: #101010;
 
     /* Instrument glass: the room must stay faintly readable underneath. */
@@ -85,6 +86,7 @@
       --danger: #f87171;
       --danger-soft: rgba(248, 113, 113, 0.14);
       --danger-edge: rgba(248, 113, 113, 0.52);
+      --status-idle: #d6a43a;
       --floor-bg: #101010;
       --glass: rgba(12, 12, 12, 0.80);
       --glass-solid: rgba(12, 12, 12, 0.93);
@@ -109,6 +111,7 @@
     --danger: #f87171;
     --danger-soft: rgba(248, 113, 113, 0.14);
     --danger-edge: rgba(248, 113, 113, 0.52);
+    --status-idle: #d6a43a;
     --floor-bg: #101010;
     --glass: rgba(12, 12, 12, 0.80);
     --glass-solid: rgba(12, 12, 12, 0.93);
@@ -723,6 +726,27 @@
   }
 
   .feed-controls { border-bottom: 1px solid var(--line); }
+  .feed-mission-context {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: calc(var(--step) * 2);
+    padding: var(--step) 0;
+  }
+  .feed-mission-context span {
+    color: var(--accent);
+    font-size: 9px;
+    letter-spacing: .12em;
+  }
+  .feed-mission-context strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 400;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .feed-levels { display: flex; align-items: center; gap: var(--step); padding: var(--step) 0; }
   .feed-levels > :last-child { margin-left: auto; }
   .feed-levels wa-button::part(base) {
@@ -766,6 +790,53 @@
     text-decoration: none;
     cursor: pointer;
   }
+  .feed-filter-panel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--step);
+    padding-bottom: calc(var(--step) * 1.5);
+  }
+  .feed-filter-panel .feed-levels { width: 100%; padding: 0; }
+  .feed-filter-panel input,
+  .feed-filter-panel select {
+    min-height: 26px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--text);
+    font: 9px var(--mono);
+    padding: 3px 6px;
+  }
+  .feed-filter-panel input { flex: 1 1 180px; min-width: 120px; }
+  .feed-filter-panel select { flex: 0 1 130px; max-width: 170px; }
+  .feed-row { display: grid; gap: var(--step); padding: calc(var(--step) * 2) !important; }
+  .feed-row:hover { background: var(--nested); }
+  .feed-row.is-assignment {
+    border-left: 2px solid var(--accent);
+    background: var(--accent-soft);
+  }
+  .feed-row.is-assignment > .md { font-weight: 600; }
+  .feed-row.is-assignment .feed-references { margin-top: 0; }
+  .feed-row > div:first-child { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: calc(var(--step) * 1.5); }
+  .feed-row > div:first-child strong { color: var(--text); font-size: 10px; font-weight: 600; }
+  .feed-row > div:first-child time { color: var(--faint); font-size: 9px; }
+  .feed-avatar {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font: 9px var(--mono);
+  }
+  .feed-row > .md { margin-left: 28px; }
+  .feed-row > .feed-references,
+  .feed-row > .feed-attachments,
+  .feed-message-actions { margin-left: 28px; }
+  .feed-message-actions { display: flex; align-items: center; gap: 2px; }
+  .feed-message-actions wa-button::part(base) { min-height: 22px; border: 0; border-radius: 12px; padding: 0 6px; font: 8px var(--mono); }
+  .feed-message-actions wa-button[aria-pressed="true"]::part(base) { color: var(--accent); background: var(--accent-soft); }
 
   .prayer-chat {
     position: relative;
@@ -839,18 +910,50 @@
 
   /* ------------------------------------------------------------------ runs */
 
+  .mission-overview {
+    display: grid;
+    gap: var(--step);
+    padding: calc(var(--step) * 2) calc(var(--step) * 1.5) calc(var(--step) * 3);
+    border-bottom: 1px solid var(--line);
+  }
+  .mission-overline { color: var(--accent); font-size: 9px; letter-spacing: .12em; }
+  .mission-title { margin: 0; color: var(--text); font-size: 14px; font-weight: 400; line-height: 1.4; }
+  .mission-progress { margin: 0; color: var(--muted); font-size: 10px; }
+  .mission-token-estimate { margin: 0; color: var(--faint); font-size: 9px; letter-spacing: .08em; }
+  .mission-quality::part(base) { border: 0; background: var(--nested); }
+  .mission-quality::part(header) { font: 9px var(--mono); color: var(--muted); letter-spacing: .1em; }
+  .mission-quality-body { display: grid; gap: calc(var(--step) * 2); padding: var(--step); }
+  .mission-quality-repository h3 { margin: 0 0 var(--step); font: 10px var(--mono); }
+  .mission-quality-row { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr) auto; gap: var(--step); padding: var(--step) 0; border-top: 1px solid var(--line-soft); font-size: 8px; }
+  .mission-quality-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .quality-result.is-fail { color: var(--danger); }
+  .quality-result.is-pass { color: var(--accent); }
+  .mission-alert { margin: 0; color: var(--danger); font-size: 10px; }
+  .acceptance-controls {
+    display: flex; flex-wrap: wrap; gap: var(--step); margin: var(--step) 0 0;
+    padding: 0; border: 0;
+  }
+  .acceptance-controls legend {
+    width: 100%; color: var(--faint); font-size: 9px; letter-spacing: .12em;
+  }
+  .acceptance-chip {
+    display: inline-flex; align-items: center; gap: 4px; color: var(--muted);
+    font-size: 9px; cursor: pointer;
+  }
+  .acceptance-chip input { accent-color: var(--accent); }
+
   .run {
     display: grid;
     gap: 3px;
     padding: calc(var(--step) * 2) calc(var(--step) * 1.5);
     border-left: 2px solid transparent;
     border-bottom: 1px solid var(--line-soft);
-    cursor: pointer;
     transition: background-color 140ms ease-out;
   }
 
   .run:hover { background: var(--nested); }
   .run.is-live { border-left-color: var(--accent); }
+  .run.is-selected { background: var(--nested); }
 
   .run-head { display: flex; align-items: baseline; gap: calc(var(--step) * 2); }
 
@@ -873,6 +976,14 @@
     color: var(--accent-ink);
     background: var(--accent);
     padding: 0 5px;
+    white-space: nowrap;
+  }
+
+  .run-selected {
+    color: var(--accent);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
     white-space: nowrap;
   }
 
@@ -1616,11 +1727,10 @@
   /* ------------------------------------------------------------------ crew */
 
   .agent {
-    padding-block: calc(var(--step) * 2);
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
-    grid-template-areas: "id copies engine runtime" "goal goal goal goal" "chat chat chat chat" "connections connections connections connections";
-    gap: calc(var(--step) * 1) calc(var(--step) * 2);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "header" "goal" "connections";
+    gap: var(--step);
     align-items: center;
     padding: calc(var(--step) * 2) calc(var(--step) * 1.5);
     border-left: 2px solid transparent;
@@ -1633,7 +1743,16 @@
   .agent:hover { background: var(--nested); }
   .agent[aria-selected="true"] { border-left-color: var(--accent); background: var(--nested); }
 
-  .agent .ident { grid-area: id; display: flex; align-items: baseline; gap: calc(var(--step) * 2); min-width: 0; flex-wrap: wrap; }
+  .agent-header {
+    grid-area: header;
+    display: flex;
+    align-items: center;
+    gap: calc(var(--step) * 1.5);
+    min-width: 0;
+  }
+
+  .agent .ident { display: flex; align-items: baseline; gap: var(--step); min-width: 0; flex: 1 1 auto; padding: 0; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+  .agent .ident:hover .name { color: var(--accent); }
 
   /* A persona label carries its seat, so it can get long. It shortens rather
      than wrapping the row onto two lines. */
@@ -1655,17 +1774,24 @@
   .agent[aria-selected="true"] .name { color: var(--accent); text-shadow: 0 0 8px var(--accent-glow); }
   .agent .role { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); }
 
-  .status { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; white-space: nowrap; }
-  .status .dot { width: 5px; height: 5px; background: var(--faint); flex: 0 0 auto; }
-  .status .word { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); }
+  .status { display: inline-flex; align-items: center; flex: 0 0 auto; }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-idle); flex: 0 0 auto; }
   .status[data-status="running"] .dot { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
-  .status[data-status="running"] .word { color: var(--accent); }
-  .status[data-status="blocked"] .dot { background: var(--danger); }
-  .status[data-status="blocked"] .word { color: var(--danger); }
+  .status[data-status="starting"] .dot { background: var(--accent); opacity: .65; }
+  .status[data-status="blocked"] .dot,
+  .status[data-status="failed"] .dot,
+  .status[data-status="stale"] .dot,
+  .status[data-status="stopped"] .dot { background: var(--danger); }
   /* Benched is not a quieter kind of idle: the seat is off the mission. It is
      the toggle's own state, said in words next to everyone else's. */
-  .status[data-status="benched"] .dot { background: transparent; box-shadow: inset 0 0 0 1px var(--muted); }
-  .status[data-status="benched"] .word { color: var(--muted); }
+  .status[data-status="benched"] .dot { background: var(--danger); box-shadow: none; }
+
+  .agent-header > .switch { margin-left: auto !important; }
+  .agent-details-toggle {
+    flex: 0 0 auto; border: 0; background: transparent; color: var(--faint);
+    font: 12px var(--mono); line-height: 1; padding: 3px; cursor: pointer;
+  }
+  .agent-details-toggle:hover { color: var(--accent); }
 
   .agent .goal { grid-area: goal; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .agent .steer { grid-area: chat; min-width: 0; }
@@ -1723,39 +1849,10 @@
   .agent-work-state { color: var(--faint); text-transform: uppercase; letter-spacing: .08em; }
   .agent-empty { margin: 0; padding: var(--step); color: var(--faint); font-size: 9px; }
 
-  /* How many of this hero. It sits beside the engine switch and is built the
-     same way - one sunk strip, no floating boxes - because they are the same
-     kind of control: what this seat IS, not what it is doing. */
-  .copies { grid-area: copies; display: inline-flex; align-items: stretch; background: var(--sunk); padding: 1px; gap: 1px; }
-
-  .copies button {
-    background: transparent;
-    border: 0;
-    color: var(--faint);
-    font: inherit;
-    font-size: 11px;
-    line-height: 1;
-    padding: 2px 7px;
-    cursor: pointer;
-    transition: color 140ms ease-out;
+  .copies {
+    width: 38px; border: 0; background: var(--surface); color: var(--text);
+    font: 9px var(--mono); padding: 3px 14px 3px 5px; cursor: pointer;
   }
-
-  .copies button:hover:not(:disabled) { color: var(--text); }
-  .copies button:disabled { color: var(--line); cursor: default; }
-
-  .copies .copies-count {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 6px;
-    font-size: 9px;
-    letter-spacing: 0.14em;
-    color: var(--muted);
-    background: var(--surface);
-    box-shadow: inset 0 0 0 1px var(--line);
-  }
-
-  /* More than one worker on a seat is a real decision, so it stops being grey. */
-  .copies[data-many="yes"] .copies-count { color: var(--text); }
 
   .engine { grid-area: engine; display: inline-flex; background: var(--sunk); padding: 1px; gap: 1px; }
 
@@ -1780,7 +1877,6 @@
   }
 
   .runtime-controls {
-    grid-area: runtime;
     display: inline-flex;
     gap: 1px;
     padding: 1px;
@@ -1802,11 +1898,7 @@
   .runtime-controls select:focus { outline: 1px solid var(--accent); }
 
   @media (max-width: 760px) {
-    .agent {
-      grid-template-columns: minmax(0, 1fr) auto auto;
-      grid-template-areas: "id copies engine" "runtime runtime runtime" "goal goal goal" "chat chat chat" "connections connections connections";
-    }
-    .runtime-controls { justify-self: start; }
+    .agent-header { flex-wrap: wrap; }
     .agent-connections { grid-template-columns: minmax(0, 1fr); }
   }
 
@@ -1921,6 +2013,8 @@
   }
 
   .dock-btn:hover { color: var(--text); border-color: var(--accent-edge); }
+  .dock-view-count { color: var(--faint); letter-spacing: .06em; }
+  .dock-btn[aria-pressed="true"] .dock-view-count { color: var(--accent); }
 
   /* A lit switch. */
   .dock-btn[aria-pressed="true"] {
@@ -2274,12 +2368,12 @@
 
     <div class="dock">
       <nav class="dock-nav" aria-label="Work views">
+        <button class="dock-btn" id="btnRuns" type="button" aria-pressed="false" aria-controls="winRuns">mission</button>
         <button class="dock-btn" id="btnFlows" type="button" aria-pressed="false" aria-controls="winFlows">flow</button>
         <button class="dock-btn" id="btnCrew" type="button" aria-pressed="false" aria-controls="winCrew">avengers</button>
         <button class="dock-btn" id="btnDecisions" type="button" aria-pressed="false" aria-controls="winDecisions">
           decisions <span id="queueCount" aria-label="decisions waiting on you">0</span>
         </button>
-        <button class="dock-btn" id="btnRuns" type="button" aria-pressed="false" aria-controls="winRuns">missions</button>
       </nav>
       <div class="dock-tools" role="group" aria-label="Console tools">
         <button class="dock-btn mini" id="btnAttach" type="button"

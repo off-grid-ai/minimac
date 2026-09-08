@@ -7,6 +7,7 @@ import {
 import { createEvent, EVENT_KINDS } from '../core/events.mjs';
 import { ROLES } from '../core/roster.mjs';
 import { ORDER_ACTION } from '../core/coordination.mjs';
+import { splitCheckpoint } from '../core/work-units.mjs';
 
 // Application boundary for checkpoint writes. The HTTP server wires
 // storage and delivery into this service; it does not own these use cases.
@@ -70,6 +71,13 @@ export function createWorkBoard({
     const agent = getAgents()[agentId];
     const current = getBoard();
     const target = findItem(current, move?.item);
+    const repeated = target?.gates?.[move?.gate] === move?.state
+      && target.evidence?.some((entry) =>
+        entry.gate === move.gate
+        && entry.state === move.state
+        && entry.receipt === String(move.receipt ?? '').trim()
+        && entry.by === (workerId ?? agentId));
+    if (repeated) return { board: current, item: target, duplicate: true };
     if (workerId && (
       target?.lease?.state !== 'running'
       || target.lease.workerId !== workerId
@@ -114,5 +122,32 @@ export function createWorkBoard({
     return { ...result, item };
   }
 
-  return Object.freeze({ add, updateCheckpoint });
+  function requestSplit(agentId, id, parts, workerId = null) {
+    const item = findItem(getBoard(), id);
+    if (!item) return { board: getBoard(), error: `no item ${id}` };
+    if (item.owner !== agentId && getAgents()[agentId]?.role !== ROLES.ORCHESTRATOR) {
+      return { board: getBoard(), error: `${id} belongs to ${item.owner}` };
+    }
+    if (workerId && item.lease?.workerId !== workerId) {
+      return { board: getBoard(), error: `${id} is not leased to ${workerId}` };
+    }
+    const result = splitCheckpoint(getBoard(), id, parts);
+    if (result.error) return result;
+    setBoard(result.board);
+    // The split also rewires every downstream dependency to the final part.
+    // Save the complete changed graph so a restart cannot restore old edges.
+    for (const changed of result.board.items) saveItem(changed);
+    emit(createEvent(agentId, EVENT_KINDS.STATUS, {
+      text: `${id} split into ${result.parts.map((part) => part.id).join(', ')}`,
+      checkpointId: id,
+      from: 'you',
+    }));
+    for (const part of result.parts) {
+      if (part.owner) order(part.owner, `${part.id}: ${part.title}`, ORDER_ACTION.ASSIGN, part.id);
+    }
+    onChange();
+    return result;
+  }
+
+  return Object.freeze({ add, updateCheckpoint, requestSplit });
 }

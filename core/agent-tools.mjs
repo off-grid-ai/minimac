@@ -27,6 +27,7 @@ export const AGENT_TOOL = Object.freeze({
   PAUSE: 'pause_checkpoint',
   RESUME: 'resume_checkpoint',
   EXTEND: 'extend_checkpoint_lease',
+  SPLIT: 'split_checkpoint',
 });
 
 const object = (properties, required = []) => ({
@@ -181,6 +182,22 @@ const TOOLS = Object.freeze({
     description: 'Extend one running checkpoint lease once. Use this only when the same bounded task is still valid.',
     inputSchema: object({ id: { type: 'string' } }, ['id']),
   },
+  [AGENT_TOOL.SPLIT]: {
+    name: AGENT_TOOL.SPLIT,
+    description: 'Replace the current checkpoint with smaller sequential checkpoints when the planned work is larger than expected.',
+    inputSchema: object({
+      id: { type: 'string' },
+      parts: {
+        type: 'array', minItems: 2,
+        items: object({
+          id: { type: 'string' }, title: { type: 'string' }, plan: { type: 'string' },
+          outcome: { type: 'string' }, verify: { type: 'string' },
+          files: { type: 'array', items: { type: 'string' } },
+          estimateMs: { type: 'integer', minimum: 1, maximum: 480000 },
+        }, ['id', 'title', 'plan', 'outcome', 'verify', 'files', 'estimateMs']),
+      },
+    }, ['id', 'parts']),
+  },
 });
 
 const WORKER_TOOLS = Object.freeze([
@@ -190,6 +207,7 @@ const WORKER_TOOLS = Object.freeze([
   AGENT_TOOL.MESSAGE,
   AGENT_TOOL.COMMENT,
   AGENT_TOOL.REACT,
+  AGENT_TOOL.SPLIT,
 ]);
 const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.REPORT,
@@ -207,6 +225,7 @@ const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.MESSAGE,
   AGENT_TOOL.COMMENT,
   AGENT_TOOL.REACT,
+  AGENT_TOOL.SPLIT,
 ]);
 
 export function toolsForRole(role) {

@@ -11,7 +11,7 @@
 // what it will hold instead of showing an empty box.
 
 import { burnRatio } from '../core/derive.mjs';
-import { rollup, remaining } from '../core/flows.mjs';
+import { GATES, rollup, remaining } from '../core/flows.mjs';
 import { compareQueueOrder, nextGate, isClosed, isDone, unmetDeps } from '../core/board.mjs';
 import { EFFORT_OPTIONS, ENGINES, MODEL_OPTIONS } from '../core/roster.mjs';
 import { checkpointThread, messageIdOf, REACTIONS } from '../core/conversation.mjs';
@@ -68,35 +68,35 @@ export function renderRoster(root, agents, handlers) {
 function agentRow(agent, handlers) {
   const row = el('div', `agent${agent.enabled === false ? ' is-off' : ''}`);
   if (agent.enabled === false) row.style.opacity = '0.55';
-  row.setAttribute('role', 'button');
-  row.setAttribute('tabindex', '0');
   row.setAttribute('aria-selected', String(agent.selected));
   row.setAttribute('aria-label', `${nameOf(agent)}, ${agent.role}, ${agent.status}`);
-  const pick = () => handlers.select(agent.id);
-  row.onclick = pick;
-  row.onkeydown = (event) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      pick();
-    }
-  };
 
-  const ident = el('div', 'ident');
+  const ident = el('button', 'ident');
+  ident.type = 'button';
+  ident.title = `Open ${nameOf(agent)} in Feed`;
+  ident.onclick = (event) => {
+    event.stopPropagation();
+    handlers.openChat?.(agent.id);
+  };
   ident.append(
-    enabledToggle(agent, handlers),
     el('span', 'name', crewName(agent)),
     el('span', 'role', agent.role),
-    statusChip(agent),
   );
 
-  row.append(
-    ident,
-    crewSize(agent, handlers),
-    engineToggle(agent, handlers),
-    runtimeControls(agent, handlers),
-    goalEditor(agent, handlers),
-    createAgentChat(agent, handlers).el,
-  );
+  const header = el('div', 'agent-header');
+  header.append(ident, statusChip(agent));
+  if (!agent.readOnly) header.append(
+    crewSize(agent, handlers), engineToggle(agent, handlers),
+    runtimeControls(agent, handlers), enabledToggle(agent, handlers));
+  const details = el('button', 'agent-details-toggle', agent.selected ? '−' : '+');
+  details.type = 'button';
+  details.title = agent.selected ? 'Hide connected work' : 'Show connected work';
+  details.setAttribute('aria-expanded', String(agent.selected));
+  details.onclick = () => handlers.select(agent.selected ? null : agent.id);
+  header.append(details);
+
+  row.append(header);
+  if (!agent.readOnly) row.append(goalEditor(agent, handlers));
   if (agent.selected) row.append(agentConnections(agent, handlers));
   return row;
 }
@@ -157,7 +157,8 @@ function statusChip(agent) {
   chip.title = benched
     ? `${nameOf(agent)} is off this mission - nothing is dispatched to this seat`
     : `${nameOf(agent)} is ${agent.status}`;
-  chip.append(el('span', 'dot'), el('span', 'word', state));
+  chip.append(el('span', 'dot'));
+  chip.setAttribute('aria-label', state);
   return chip;
 }
 
@@ -243,30 +244,22 @@ function enabledToggle(agent, handlers) {
 // Marvels, each on its own slice - the server has spawned several workers to a
 // seat since the beginning and there has never been a way to ask for it.
 function crewSize(agent, handlers) {
-  const group = el('div', 'copies');
-  group.setAttribute('role', 'group');
-  group.setAttribute('aria-label', `how many ${nameOf(agent)}`);
+  const select = el('select', 'copies');
+  select.setAttribute('aria-label', `${nameOf(agent)} capacity`);
+  select.title = `${nameOf(agent)} capacity`;
   const count = Math.max(1, agent.instances ?? 1);
-
-  const step = (delta, label, enabled) => {
-    const button = el('button', '', label);
-    button.type = 'button';
-    button.disabled = !enabled;
-    button.title = delta > 0 ? `one more ${nameOf(agent)}` : `one fewer ${nameOf(agent)}`;
-    button.onclick = (event) => {
-      event.stopPropagation();
-      handlers.setInstances(agent.id, count + delta);
-    };
-    return button;
+  for (let value = 1; value <= 4; value += 1) {
+    const option = el('option', '', String(value));
+    option.value = String(value);
+    option.selected = value === count;
+    select.append(option);
+  }
+  select.onclick = (event) => event.stopPropagation();
+  select.onchange = (event) => {
+    event.stopPropagation();
+    handlers.setInstances(agent.id, Number(select.value));
   };
-
-  const readout = el('span', 'copies-count', `\u00d7${count}`);
-  readout.title = count > 1
-    ? `${count} workers share this seat, each on its own slice`
-    : 'one worker on this seat';
-  group.dataset.many = count > 1 ? 'yes' : 'no';
-  group.append(step(-1, '\u2212', count > 1), readout, step(1, '+', count < 4));
-  return group;
+  return select;
 }
 
 function engineToggle(agent, handlers) {
@@ -382,14 +375,17 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}, v
     summaryFilter(done.length, 'done', 'done', redraw),
   );
   const toolbar = el('div', 'checkpoint-toolbar');
-  const add = el('button', 'btn primary checkpoint-add', '+ CHECKPOINT');
-  add.type = 'button';
-  add.setAttribute('aria-expanded', String(addingCheckpoint));
-  add.onclick = () => {
-    addingCheckpoint = !addingCheckpoint;
-    redraw();
-  };
-  toolbar.append(summary, add);
+  toolbar.append(summary);
+  if (!view.readOnly) {
+    const add = el('button', 'btn primary checkpoint-add', '+ CHECKPOINT');
+    add.type = 'button';
+    add.setAttribute('aria-expanded', String(addingCheckpoint));
+    add.onclick = () => {
+      addingCheckpoint = !addingCheckpoint;
+      redraw();
+    };
+    toolbar.append(add);
+  }
   frag.append(toolbar);
 
   if (addingCheckpoint) frag.append(checkpointComposer(workers, handlers, redraw));
@@ -550,6 +546,11 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   line.append(title, descriptionNode, meta);
   row.append(line);
 
+  if (handlers.readOnly) {
+    row.append(checkpointDetails(item));
+    return row;
+  }
+
   if (done) {
     row.append(checkpointDetails(item));
     return row;
@@ -655,6 +656,7 @@ function checkpointMessage(event, agents, handlers) {
   article.append(head, body);
   if (payload.attachments?.length) article.append(checkpointAttachments(payload.attachments));
   if (payload.references?.length) article.append(checkpointReferences(payload.references, handlers));
+  if (handlers.readOnly) return article;
 
   const actions = el('div', 'checkpoint-message-actions');
   const reply = createControlButton('Reply');
@@ -739,10 +741,21 @@ function checkpointStatus(item, running, waiting, owner, done = false) {
   const who = owner?.name ?? 'No owner';
   if (done) return `${who} - done`;
   if (running) return `${who} - ${nextGate(item) ?? 'finishing'}`;
+  if (item.startFailure) {
+    const retry = Number.isFinite(item.retryAt) && item.retryAt > Date.now()
+      ? `; retry ${createRelativeLabel(item.retryAt)}`
+      : '; ready to retry';
+    return `${who} - start failed: ${item.startFailure}${retry}`;
+  }
   if (item.paused) return `${who} - paused`;
-  if (waiting.length) return `${who} - waiting`;
-  if (!item.owner) return 'Needs owner';
+  if (waiting.length) return `${who} - waiting for dependency: ${waiting.join(', ')}`;
+  if (!item.owner) return 'Waiting for worker';
   return `${who} - ready`;
+}
+
+function createRelativeLabel(value) {
+  const seconds = Math.max(0, Math.ceil((value - Date.now()) / 1000));
+  return `in ${seconds}s`;
 }
 
 function checkpointStatusIcon(item, running, waiting, done) {
@@ -967,7 +980,7 @@ function flowRow(step, handlers) {
   const head = el('div', 'flow-head');
   const identity = el('div', 'flow-identity');
   identity.append(
-    el('span', 'flow-work-unit-id', step.workUnitId ?? step.id),
+    el('span', 'flow-work-unit-id', step.displayId ?? step.workUnitId ?? step.id),
     el('strong', 'flow-work-unit-title', step.title ?? step.user_visible_result),
     el('p', 'flow-result', step.user_visible_result ?? step.title),
   );
@@ -979,7 +992,7 @@ function flowRow(step, handlers) {
     button.title = `Open ${checkpoint.id}`;
     button.setAttribute('aria-label', `Open checkpoint ${checkpoint.id}`);
     button.append(
-      el('span', 'flow-checkpoint-stage', String(checkpoint.stage ?? '').toUpperCase()),
+      el('span', 'flow-checkpoint-stage', checkpoint.displayId ?? String(checkpoint.stage ?? '').toUpperCase()),
       el('span', 'flow-checkpoint-owner', checkpoint.owner ?? 'unassigned'),
     );
     button.onclick = () => handlers.openCheckpoint?.(checkpoint.id);
@@ -1346,10 +1359,11 @@ function runAgainButton(run, handlers) {
   return button;
 }
 
-export function renderRuns(root, runs, currentId, handlers) {
+export function renderRuns(root, runs, currentId, handlers, selectedId = currentId, view = {}) {
   // The server owns which run is current. An unfinished database row may be a
   // crashed old process; guessing from ended_at made STOP target another run.
-  const rows = [newRunRow(handlers)];
+  const selected = runs.find((run) => run.id === selectedId) ?? null;
+  const rows = [missionOverview(selected, view, handlers), newRunRow(handlers)];
   if (!runs.length) {
     rows.push(
       teach(
@@ -1363,9 +1377,81 @@ export function renderRuns(root, runs, currentId, handlers) {
       run,
       run.id === currentId && !run.ended_at,
       handlers,
+      run.id === selectedId,
     )));
   }
   root.replaceChildren(...rows);
+}
+
+function missionOverview(run, view, handlers) {
+  const section = el('section', 'mission-overview');
+  section.append(el('span', 'mission-overline', run ? `MISSION ${run.id}` : 'MISSION'));
+  section.append(el('h2', 'mission-title', run?.mission || 'No mission selected'));
+  if (!run) return section;
+  const work = view?.progress?.work;
+  if (work) {
+    section.append(el('p', 'mission-progress', `${work.done} of ${work.total} work units done - ${work.percent}%`));
+  }
+  if (view?.tokenEstimate) {
+    section.append(el('p', 'mission-token-estimate',
+      `ESTIMATED CONTEXT · ASSEMBLE ${view.tokenEstimate.assemble} · COLD WORKER ${view.tokenEstimate.coldWorker}`));
+  }
+  for (const alert of view?.contradictions ?? []) {
+    section.append(el('p', 'mission-alert', alert.message));
+  }
+  if (view?.acceptance) section.append(acceptanceControls(view.acceptance, handlers, view.readOnly));
+  if (view?.quality?.length) section.append(qualitySummary(view.quality));
+  return section;
+}
+
+function qualitySummary(repositories) {
+  const details = createDisclosure('QUALITY EVIDENCE');
+  details.classList.add('mission-quality');
+  const body = el('div', 'mission-quality-body');
+  for (const repository of repositories) {
+    const group = el('section', 'mission-quality-repository');
+    group.append(el('h3', '', repository.repository));
+    for (const evidence of repository.evidence ?? []) {
+      const row = el('div', 'mission-quality-row');
+      row.append(
+        el('span', 'checkpoint-id', evidence.checkpointId),
+        el('span', '', evidence.gate),
+        el('span', `quality-result is-${evidence.result}`, evidence.result),
+        el('code', '', evidence.command),
+        createRelativeTime(evidence.time),
+      );
+      group.append(row);
+    }
+    body.append(group);
+  }
+  details.append(body);
+  return details;
+}
+
+function acceptanceControls(acceptance, handlers, readOnly = false) {
+  const fieldset = el('fieldset', 'acceptance-controls');
+  fieldset.append(el('legend', '', 'REQUIRED PROOF'));
+  const required = new Set(acceptance.required ?? []);
+  for (const gate of GATES) {
+    const label = el('label', 'acceptance-chip');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = required.has(gate);
+    input.disabled = readOnly;
+    input.onchange = () => {
+      if (input.checked) {
+        required.add(gate);
+        if (gate === 'push') required.add('prepush');
+      } else {
+        required.delete(gate);
+        if (gate === 'prepush') required.delete('push');
+      }
+      handlers.setAcceptance?.([...required]);
+    };
+    label.append(input, document.createTextNode(gate.toUpperCase()));
+    fieldset.append(label);
+  }
+  return fieldset;
 }
 
 function newRunRow(handlers) {
@@ -1376,8 +1462,8 @@ function newRunRow(handlers) {
   return row;
 }
 
-function runRow(run, live, handlers) {
-  const row = el('div', `run${live ? ' is-live' : ''}`);
+function runRow(run, live, handlers, selected = false) {
+  const row = el('div', `run${live ? ' is-live' : ''}${selected ? ' is-selected' : ''}`);
   row.setAttribute('role', 'button');
   row.setAttribute('tabindex', '0');
   const open = () => handlers.openRun(run.id);
@@ -1398,6 +1484,7 @@ function runRow(run, live, handlers) {
     'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
   mission.title = run.mission || 'untitled run';
   head.append(mission);
+  if (selected) head.append(el('span', 'run-selected', 'open'));
   if (live) head.append(el('span', 'run-live', 'current'), stopButton(handlers));
   else head.append(continueButton(run, handlers), runAgainButton(run, handlers));
   row.append(head);

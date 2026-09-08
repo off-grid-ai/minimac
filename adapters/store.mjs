@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS work_units (
   PRIMARY KEY (run_id, id)
 );
 
+CREATE TABLE IF NOT EXISTS mission_state (
+  run_id      INTEGER PRIMARY KEY REFERENCES runs(id),
+  payload     TEXT NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   name       TEXT PRIMARY KEY,
   value      TEXT NOT NULL,
@@ -71,17 +77,6 @@ CREATE TABLE IF NOT EXISTS middleware (
   name       TEXT PRIMARY KEY,
   text       TEXT NOT NULL,
   updated_at INTEGER NOT NULL
-);
-
--- Legacy import source. Runtime code never writes or reads this table after
--- worker_sessions is populated.
-CREATE TABLE IF NOT EXISTS sessions (
-  run_id     INTEGER NOT NULL REFERENCES runs(id),
-  agent_id   TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  engine     TEXT NOT NULL,
-  started_at INTEGER NOT NULL,
-  PRIMARY KEY (run_id, agent_id)
 );
 
 CREATE TABLE IF NOT EXISTS worker_sessions (
@@ -181,14 +176,6 @@ export function createStore({ file }) {
   const selectWorkerSessions = db.prepare(
     'SELECT * FROM worker_sessions WHERE run_id = ? ORDER BY agent_id, worker_id',
   );
-  const migrateSessions = db.prepare(
-    `INSERT OR IGNORE INTO worker_sessions
-       (run_id, worker_id, agent_id, checkpoint_id, session_id, engine, state, started_at, updated_at)
-     SELECT run_id, agent_id || ':1', agent_id, NULL, session_id, engine, 'idle',
-       started_at, started_at
-     FROM sessions`,
-  );
-  migrateSessions.run();
   const selectEngines = db.prepare('SELECT agent_id, engine FROM engines WHERE run_id = ?');
   const upsertHandoff = db.prepare(
     `INSERT INTO engine_handoffs
@@ -250,6 +237,12 @@ export function createStore({ file }) {
   const selectWorkUnits = db.prepare(
     'SELECT payload FROM work_units WHERE run_id = ? ORDER BY rowid',
   );
+  const upsertMissionState = db.prepare(
+    `INSERT INTO mission_state (run_id, payload, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(run_id) DO UPDATE SET payload = excluded.payload,
+       updated_at = excluded.updated_at`,
+  );
+  const selectMissionState = db.prepare('SELECT payload FROM mission_state WHERE run_id = ?');
   // The run this repo was last working on. A restart is not a new piece of
   // work, so the server rejoins it rather than opening an empty one beside it.
   const selectLiveRun = db.prepare(
@@ -367,6 +360,41 @@ export function createStore({ file }) {
         db.exec('ROLLBACK');
         throw error;
       }
+    },
+
+    saveMissionState(missionState) {
+      if (runId === null) return;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const now = Date.now();
+        upsertMissionState.run(runId, JSON.stringify(missionState ?? {}), now);
+        if (missionState?.board) {
+          clearWorkUnits.run(runId);
+          clearItems.run(runId);
+          for (const workUnit of missionState.board.workUnits ?? []) {
+            upsertWorkUnit.run(runId, workUnit.id, JSON.stringify(workUnit), now);
+          }
+          for (const item of missionState.board.items ?? []) {
+            upsertItem.run(runId, item.id, JSON.stringify(item), now);
+          }
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+
+    missionStateFor(targetRunId) {
+      const row = selectMissionState.get(targetRunId ?? runId);
+      if (!row) return null;
+      try { return JSON.parse(row.payload); } catch { return null; }
+    },
+
+    acceptanceFor(targetRunId) {
+      const row = selectMissionState.get(targetRunId ?? runId);
+      if (!row) return null;
+      try { return JSON.parse(row.payload)?.acceptance ?? null; } catch { return null; }
     },
 
     workUnitsFor(targetRunId) {

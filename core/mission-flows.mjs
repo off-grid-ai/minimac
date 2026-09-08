@@ -34,7 +34,7 @@ function deliveryStatus(board, item) {
 export function projectMissionFlows(board, now = Date.now()) {
   const checkpoints = itemsOf(board)
     .filter((item) => !['cancelled', 'superseded'].includes(item.disposition));
-  return (board?.workUnits ?? []).map((workUnit) => {
+  return (board?.workUnits ?? []).map((workUnit, workUnitIndex) => {
     const stages = checkpoints.filter((item) => item.workUnitId === workUnit.id);
     const failed = stages.find((item) =>
       Object.values(item.gates ?? {}).includes(GATE_STATE.FAIL));
@@ -49,6 +49,7 @@ export function projectMissionFlows(board, now = Date.now()) {
     return {
       id: workUnit.id,
       workUnitId: workUnit.id,
+      displayId: `W${workUnitIndex + 1}`,
       title: workUnit.title,
       user_visible_result: workUnit.outcome || workUnit.title,
       scope: workUnit.scope,
@@ -59,12 +60,17 @@ export function projectMissionFlows(board, now = Date.now()) {
         : item.lease?.startedAt
           ? Math.max(0, now - item.lease.startedAt)
           : 0), 0),
-      checkpoints: stages.map((item) => ({
-        id: item.id,
-        stage: item.stage,
-        owner: item.owner,
-        status: deliveryStatus(board, item),
-      })),
+      checkpoints: stages.map((item) => {
+        const siblings = stages.filter((candidate) => candidate.stage === item.stage);
+        const part = siblings.length > 1 ? `.${siblings.indexOf(item) + 1}` : '';
+        return {
+          id: item.id,
+          displayId: `${String(item.stage ?? '').toUpperCase()}${workUnitIndex + 1}${part}`,
+          stage: item.stage,
+          owner: item.owner,
+          status: deliveryStatus(board, item),
+        };
+      }),
     };
   });
 }

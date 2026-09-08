@@ -13,6 +13,7 @@
 // Pure. No clock it was not handed, no I/O, no DOM.
 
 import { GATES, GATE_STATE } from './flows.mjs';
+import { finishLease } from './leases.mjs';
 
 // The order work actually passes through. A later gate cannot pass while an
 // earlier one has not - that is the whole point of a chain, and it is what
@@ -28,6 +29,7 @@ export const ITEM_STATE = Object.freeze({
   DONE: 'done',         // every gate passed
   SUPERSEDED: 'superseded',
   CANCELLED: 'cancelled',
+  START_FAILED: 'start failed',
 });
 
 let seq = 0;
@@ -78,6 +80,9 @@ export function createItem({
     blockedBy: [...blockedBy],
     paused: false,
     lease: null,
+    startFailure: null,
+    retryAt: null,
+    attempt: 0,
     disposition: 'active',
     replacedBy: null,
     evidence: [],
@@ -138,11 +143,24 @@ export function stateOf(board, item) {
   if (item?.disposition === 'cancelled') return ITEM_STATE.CANCELLED;
   if (isDone(item)) return ITEM_STATE.DONE;
   if (item.paused) return ITEM_STATE.PAUSED;
+  if (item.startFailure) return ITEM_STATE.START_FAILED;
   if (unmetDeps(board, item).length > 0) return ITEM_STATE.BLOCKED;
   if (!item.owner) return ITEM_STATE.OPEN;
   if (item.lease?.state === 'running') return ITEM_STATE.WORKING;
   const moved = Object.values(item.gates ?? {}).some((state) => state !== GATE_STATE.PENDING);
   return moved ? ITEM_STATE.WORKING : ITEM_STATE.ASSIGNED;
+}
+
+export function statusOf(board, item) {
+  const state = stateOf(board, item);
+  if (state === ITEM_STATE.BLOCKED) {
+    return { state, reason: 'waiting for dependency', detail: unmetDeps(board, item).join(', ') };
+  }
+  if (state === ITEM_STATE.OPEN) return { state, reason: 'waiting for worker', detail: 'no owner' };
+  if (state === ITEM_STATE.START_FAILED) {
+    return { state, reason: 'start failed', detail: item.startFailure, retryAt: item.retryAt };
+  }
+  return { state, reason: null, detail: null };
 }
 
 // Can this agent legitimately work on this item right now?
@@ -212,6 +230,47 @@ export function setPaused(board, id, paused) {
   if (!item) return { board, error: `no item ${id}` };
   if (isClosed(item)) return { board, error: `${id} is already closed` };
   const next = { ...item, paused: Boolean(paused) };
+  return { board: replace(board, id, next), item: next };
+}
+
+export function beginCheckpoint(board, id, lease, now = Date.now()) {
+  const item = findItem(board, id);
+  if (!item) return { board, error: `no item ${id}` };
+  if (isClosed(item)) return { board, error: `${id} is already closed` };
+  if (item.lease?.state === 'running') return { board, item, duplicate: true };
+  const next = {
+    ...item,
+    paused: false,
+    lease: { ...lease, state: 'running', startedAt: lease.startedAt ?? now },
+    startFailure: null,
+    retryAt: null,
+    attempt: (item.attempt ?? 0) + 1,
+  };
+  return { board: replace(board, id, next), item: next };
+}
+
+export function endCheckpoint(board, id, leaseState, reason = null, now = Date.now()) {
+  const item = findItem(board, id);
+  if (!item) return { board, error: `no item ${id}` };
+  if (!item.lease || item.lease.state !== 'running') return { board, item, duplicate: true };
+  const next = {
+    ...item,
+    lease: finishLease(item.lease, leaseState, now),
+    startFailure: reason,
+  };
+  return { board: replace(board, id, next), item: next };
+}
+
+export function failCheckpointStart(board, id, reason, retryAt = null) {
+  const item = findItem(board, id);
+  if (!item) return { board, error: `no item ${id}` };
+  if (isClosed(item)) return { board, error: `${id} is already closed` };
+  const next = {
+    ...item,
+    lease: item.lease?.state === 'running' ? finishLease(item.lease, 'start failed') : item.lease,
+    startFailure: String(reason || 'engine did not start'),
+    retryAt: Number.isFinite(retryAt) ? retryAt : null,
+  };
   return { board: replace(board, id, next), item: next };
 }
 
@@ -326,9 +385,18 @@ export function advance(
   const evidence = receipt.trim()
     ? [...item.evidence, { gate, state, receipt: receipt.trim(), by: evidenceBy, at: now }]
     : item.evidence;
-  const next = { ...item, gates, evidence };
+  const completed = isDone({ ...item, gates });
+  const next = {
+    ...item,
+    gates,
+    evidence,
+    closedAt: completed ? now : null,
+    lease: completed && item.lease?.state === 'running'
+      ? finishLease(item.lease, 'done', now)
+      : item.lease,
+  };
   return {
-    board: replace(board, id, { gates, evidence, closedAt: isDone(next) ? now : null }),
+    board: replace(board, id, next),
     item: next,
   };
 }
@@ -411,14 +479,17 @@ export function boardBrief(board, agentId = null) {
   };
 
   const mine = agentId ? items.filter((item) => item.owner === agentId && !isDone(item)) : [];
-  const rest = items.filter((item) => !mine.includes(item));
+  const relevantDependencies = new Set(mine.flatMap((item) => item.blockedBy ?? []));
+  const rest = agentId
+    ? items.filter((item) => relevantDependencies.has(item.id))
+    : items.filter((item) => !mine.includes(item));
 
   return [
     '# Checkpoints',
     '',
     'This is the shared truth. Read it before you act and report against it.',
     ...(mine.length ? ['', '## Yours', '', ...mine.map(line)] : []),
-    ...(rest.length ? ['', '## Everyone else', '', ...rest.map(line)] : []),
+    ...(rest.length ? ['', agentId ? '## Dependencies' : '## Everyone else', '', ...rest.map(line)] : []),
     '',
     'Rules:',
     '- Work only on items you own. If something needs doing on an item you do '

@@ -31,6 +31,7 @@ import { createGoalStrip } from './goalstrip.mjs';
 import { createSound } from './sound.mjs';
 import { renderMarkdown, markdownReady } from './markdown.mjs';
 import { createControlButton } from './controls.mjs';
+import { checkpointThread, messageIdOf, REACTIONS } from '../core/conversation.mjs';
 import { captureScrollAnchor, restoreScrollAnchor } from './scroll-anchor.mjs';
 import { CUES, cueFor, keyOf, neglect, trackWaiting } from '../core/attention.mjs';
 import {
@@ -63,7 +64,11 @@ const state = {
   cards: null,
   board: [],
   flows: [],
-  velocity: null,
+  progress: null,
+  acceptance: null,
+  quality: [],
+  contradictions: [],
+  tokenEstimate: null,
   // Orders being carried across the floor, one at a time.
   errands: createErrands(),
   errandPhase: null,
@@ -71,6 +76,10 @@ const state = {
   feedPreset: 'all',
   feedLevel: 'summary',
   feedFiltersOpen: false,
+  feedQuery: '',
+  feedCheckpoint: '',
+  feedWorkUnit: '',
+  feedStage: '',
   checkpointThreadId: null,
   checkpointReplyTo: null,
   // Which hero's question you are answering. A prayer is a conversation, not
@@ -86,6 +95,9 @@ const state = {
   moves: [],
   open: new Set(),
   runs: [],
+  selectedRunId: null,
+  selectedMission: '',
+  selectedMissionView: null,
   runId: null,
   mission: '',
   feedFilter: null,
@@ -121,6 +133,7 @@ const ACTION_WORDS = Object.freeze({
   moveCheckpoint: 'reorder checkpoint', pauseCheckpoint: 'pause checkpoint',
   reassignCheckpoint: 'reassign checkpoint', forceStartCheckpoint: 'start checkpoint',
   assignWork: 'add checkpoint',
+  setAcceptance: 'set required proof',
 });
 
 async function send(type, payload = {}) {
@@ -155,7 +168,9 @@ function subscribe() {
   source.onmessage = (message) => {
     const data = JSON.parse(message.data);
     if (data.type === 'state') applySnapshot(data.state);
-    if (data.type === 'event') ingest(data.event, data.agent);
+    if (data.type === 'event' && data.runId === state.selectedRunId) {
+      ingest(data.event, data.agent);
+    }
     schedulePanels();
   };
 }
@@ -168,15 +183,24 @@ function applySnapshot(snapshot) {
   state.cards = snapshot.cards ?? null;
   state.board = snapshot.board ?? state.board;
   state.flows = snapshot.flows ?? state.flows;
-  state.velocity = snapshot.velocity ?? state.velocity;
+  state.progress = snapshot.progress ?? state.progress;
+  state.acceptance = snapshot.acceptance ?? state.acceptance;
+  state.quality = snapshot.quality ?? state.quality;
+  state.contradictions = snapshot.contradictions ?? state.contradictions;
+  state.tokenEstimate = snapshot.tokenEstimate ?? state.tokenEstimate;
+  state.runId = snapshot.runId;
+  if (!state.selectedRunId || state.selectedRunId === snapshot.runId) {
+    state.selectedMissionView = null;
+  }
   state.repo = snapshot.repo ?? state.repo;
   state.mission = snapshot.mission ?? state.mission;
-  state.runId = snapshot.runId;
   const requestedRun = runIdFromUrl();
   if (!requestedRun && state.runId) setRunUrl(state.runId, { replace: true });
   const selectedRun = requestedRun ?? state.runId;
-  if (selectedRun && !seeded) {
-    seeded = true;
+  if (selectedRun === state.runId) state.selectedMission = state.mission;
+  if (selectedRun && selectedRun !== seededRunId) {
+    state.selectedRunId = selectedRun;
+    seededRunId = selectedRun;
     seedFromRun(selectedRun);
   }
   // Nothing is selected at boot: the first thing you see is the whole room,
@@ -429,24 +453,27 @@ function pendingApproval(events) {
 
 let panelsQueued = false;
 let lastBubbleAt = 0;
-let seeded = false;
+let seededRunId = null;
 const rendered = new Map();
 const deferred = new WeakSet();
 
 // Everything is already in SQLite, so a reload rejoins the run in progress
 // instead of starting from an empty feed.
 async function seedFromRun(runId) {
-  const { events = [] } = await fetch(`/replay?run=${runId}`)
+  const { run = null, events = [], missionState = null } = await fetch(`/replay?run=${runId}`)
     .then((response) => response.json())
-    .catch(() => ({ events: [] }));
+    .catch(() => ({ run: null, events: [], missionState: null }));
 
+  if (runId !== state.selectedRunId) return;
+  state.selectedMission = run?.mission ?? (runId === state.runId ? state.mission : '');
+  state.selectedMissionView = runId === state.runId ? null : missionState;
   const byAgent = {};
   for (const event of events.slice(-1500)) {
     (byAgent[event.agentId] ??= []).push(event);
   }
-  for (const [agentId, list] of Object.entries(byAgent)) {
-    state.eventsByAgent[agentId] = [...list, ...(state.eventsByAgent[agentId] ?? [])].slice(-800);
-  }
+  state.eventsByAgent = Object.fromEntries(
+    Object.entries(byAgent).map(([agentId, list]) => [agentId, list.slice(-800)]),
+  );
   renderPanels();
 }
 
@@ -511,14 +538,14 @@ function renderChanged(name, root, value, render, { deferWhileEditing = true } =
   rendered.set(name, signature);
 }
 
-function rosterView(agents) {
+function rosterView(agents, board = state.board, readOnly = false) {
   return agents.map((agent) => {
-    const checkpoints = state.board
+    const checkpoints = board
       .filter((item) => item.owner === agent.id)
       .map((item) => ({
         id: item.id,
         title: item.title || item.outcome,
-        state: checkpointState({ items: state.board }, item),
+        state: checkpointState({ items: board }, item),
       }));
     const messages = (state.eventsByAgent[agent.id] ?? [])
       .filter((event) => event.kind === EVENT_KINDS.MESSAGE && plainText(event.payload?.text ?? ''))
@@ -534,15 +561,16 @@ function rosterView(agents) {
       label: agent.label,
       name: agent.name,
       role: agent.role,
-      status: agent.status,
+      status: readOnly ? 'stopped' : agent.status,
       selected: agent.selected,
       enabled: agent.enabled,
-      active: agent.active,
+      active: readOnly ? false : agent.active,
       instances: agent.instances,
       engine: agent.engine,
       model: agent.model,
       effort: agent.effort,
       goal: agent.goal,
+      readOnly,
       checkpoints,
       messages,
     };
@@ -567,8 +595,13 @@ function stepErrands(now) {
 
 function renderPanels() {
   const now = Date.now();
+  const readingLiveMission = !state.selectedRunId || state.selectedRunId === state.runId;
+  const missionView = readingLiveMission ? null : state.selectedMissionView;
+  const board = missionView?.board ?? state.board;
+  const flows = missionView?.flows ?? state.flows;
+  const progress = missionView?.progress ?? state.progress;
   const agents = viewAgents(now);
-  const queue = decisions(now);
+  const queue = readingLiveMission ? decisions(now) : [];
 
   // How long the fleet has been waiting on you, and what that costs the room.
   const before = state.waiting;
@@ -585,7 +618,7 @@ function renderPanels() {
   // read-only projection of its checkpoints, so focus cannot change progress.
   const focused = agents.find((agent) => agent.selected) ?? agents[0];
   if (dom.roster && windows?.isOpen('crew')) {
-    const connectedAgents = rosterView(agents);
+    const connectedAgents = rosterView(agents, board, !readingLiveMission);
     renderChanged('crew', dom.roster, connectedAgents, () => {
       renderRoster(dom.roster, connectedAgents, handlers);
     });
@@ -595,8 +628,8 @@ function renderPanels() {
     dom.roCrew.textContent = `${running}/${agents.length} RUNNING`;
   }
   if (dom.flows && windows?.isOpen('flows')) {
-    const missionFlow = { id: 'mission', name: 'mission', steps: state.flows };
-    renderChanged('flows', dom.flows, state.flows, () => {
+    const missionFlow = { id: 'mission', name: 'mission', steps: flows };
+    renderChanged('flows', dom.flows, flows, () => {
       renderFlows(dom.flows, missionFlow, { openCheckpoint: openCheckpointThread });
     });
   }
@@ -609,9 +642,10 @@ function renderPanels() {
       agent.id, agent.status, agent.enabled, agent.sessionId, agent.workItemIds,
     ]);
     renderChanged('checkpoints', dom.checkpoints, [
-      state.board, state.velocity, workState, state.checkpointThreadId, threadEvents,
+      board, progress, workState, state.checkpointThreadId, threadEvents,
     ], () => {
-      panels.renderBoard(dom.checkpoints, state.board, state.velocity, agents, {
+      panels.renderBoard(dom.checkpoints, board, progress, agents, {
+        readOnly: !readingLiveMission,
         move: (id, direction) => send('moveCheckpoint', { id, direction }),
         pause: (id, paused) => send('pauseCheckpoint', { id, paused }),
         start: (id) => send('forceStartCheckpoint', { id }),
@@ -630,9 +664,10 @@ function renderPanels() {
           focus(agentId);
           openWindow('crew');
         },
-      }, { selectedId: state.checkpointThreadId, events: conversationEvents });
+      }, { selectedId: state.checkpointThreadId, events: conversationEvents, readOnly: !readingLiveMission });
     });
-    renderCheckpointComposer();
+    if (readingLiveMission) renderCheckpointComposer();
+    else if (checkpointChatHost) checkpointChatHost.hidden = true;
   }
   // The focused name still identifies the chat target. It does not own Flow.
   if (dom.focusName) dom.focusName.textContent = focused?.name ?? '';
@@ -653,6 +688,18 @@ function renderPanels() {
     }, { deferWhileEditing: false });
   }
   if (dom.queueCount) dom.queueCount.textContent = String(queue.length);
+  const runningCheckpoints = board.filter((item) => item.lease?.state === 'running').length;
+  const completedFlows = flows.filter((flow) => flow.status === 'verified').length;
+  const flowPercent = flows.length
+    ? Math.round((completedFlows / flows.length) * 100)
+    : 0;
+  const activeAvengers = readingLiveMission
+    ? agents.filter((agent) => agent.active).length
+    : 0;
+  windows?.setMissionContext?.({ id: state.selectedRunId, title: state.selectedMission });
+  windows?.setCount?.('flows', `${flowPercent}%`);
+  windows?.setCount?.('checkpoints', String(runningCheckpoints));
+  windows?.setCount?.('crew', String(activeAvengers));
   windows?.setCount?.('decisions', queue.length);
   windows?.setCount?.('prayer', orderedAgents().filter((a) => prayerThread(a.id)).length);
   composer?.setTarget(state.target, agents, state.mission ?? '');
@@ -674,11 +721,51 @@ function renderPanels() {
   }
   renderPrayer();
   if (dom.runs && windows?.isOpen('runs')) {
-    renderChanged('runs', dom.runs, [state.runs, state.runId], () => {
-      panels.renderRuns?.(dom.runs, state.runs, state.runId, handlers);
+    const missionDetail = readingLiveMission ? {
+      acceptance: state.acceptance,
+      progress: state.progress,
+      contradictions: state.contradictions,
+      tokenEstimate: state.tokenEstimate,
+      quality: state.quality,
+      readOnly: false,
+    } : { ...(missionView ?? {}), readOnly: true };
+    renderChanged('runs', dom.runs, [
+      state.runs,
+      state.runId,
+      state.selectedRunId,
+      missionDetail.acceptance,
+      missionDetail.progress,
+      missionDetail.contradictions,
+      missionDetail.tokenEstimate,
+      missionDetail.quality,
+    ], () => {
+      panels.renderRuns?.(dom.runs, state.runs, state.runId, handlers, state.selectedRunId, {
+        acceptance: missionDetail.acceptance,
+        progress: missionDetail.progress,
+        contradictions: missionDetail.contradictions,
+        tokenEstimate: missionDetail.tokenEstimate,
+        quality: missionDetail.quality,
+      });
     });
   }
   if (dom.roRuns) dom.roRuns.textContent = `${state.runs.length} RUNS`;
+  setDockMetric(dom.btnFlows, `${flowPercent}%`);
+  setDockMetric(dom.btnCheckpoints, String(runningCheckpoints));
+  setDockMetric(dom.btnCrew, String(activeAvengers));
+  if (dom.planAll && state.tokenEstimate) {
+    dom.planAll.title = `Assemble with about ${state.tokenEstimate.assemble} context tokens`;
+  }
+}
+
+function setDockMetric(button, value) {
+  if (!button) return;
+  let metric = button.querySelector('.dock-view-count');
+  if (!metric) {
+    metric = document.createElement('span');
+    metric.className = 'dock-view-count';
+    button.append(metric);
+  }
+  metric.textContent = value;
 }
 
 // Standing at a desk shows that agent's whole standing: their goal, editable in
@@ -1064,18 +1151,19 @@ function frame() {
 // crew are gone from here: they belong to one agent, and they are now at that
 // agent's desk.
 const WINDOW_IDS = {
-  feed: ['winFeed', 'btnFeed'],
+  runs: ['winRuns', 'btnRuns'],
   flows: ['winFlows', 'btnFlows'],
   checkpoints: ['winCheckpoints', 'btnCheckpoints'],
+  feed: ['winFeed', 'btnFeed'],
   crew: ['winCrew', 'btnCrew'],
   decisions: ['winDecisions', 'btnDecisions'],
-  runs: ['winRuns', 'btnRuns'],
   middleware: ['winMiddleware', 'btnMiddleware'],
 };
 
 let windows = null;
+let restoringNavigation = false;
 // Reopening should return to whatever you were last reading.
-let lastPanel = 'feed';
+let lastPanel = 'runs';
 
 function windowEntries() {
   return Object.fromEntries(
@@ -1122,6 +1210,7 @@ const handlers = {
   setGoal: (agentId, objective) => send('setGoal', { agentId, objective }),
   assignEngine: (agentId, engine) => send('assignEngine', { agentId, engine }),
   configureRuntime: (agentId, runtime) => send('configureRuntime', { agentId, ...runtime }),
+  setInstances: (agentId, instances) => send('setInstances', { agentId, instances }),
   setActive: (agentId, active) => send('setActive', { agentId, active }),
   close: () => focus(null),
 
@@ -1143,7 +1232,11 @@ const handlers = {
 
   newRun: async () => {
     const response = await send('newRun', { mission: '', autoStart: false });
-    if (response.result?.runId) setRunUrl(response.result.runId);
+    if (response.result?.runId) {
+      state.selectedRunId = response.result.runId;
+      seededRunId = response.result.runId;
+      setRunUrl(response.result.runId);
+    }
     state.eventsByAgent = {};
     state.focus = null;
     state.target = MISSION_TARGET;
@@ -1156,20 +1249,32 @@ const handlers = {
 
   continueRun: async (runId) => {
     const response = await send('continueRun', { runId });
-    if (response.result?.runId) setRunUrl(response.result.runId);
+    if (response.result?.runId) {
+      state.selectedRunId = response.result.runId;
+      seededRunId = null;
+      setRunUrl(response.result.runId);
+    }
     await loadRuns();
   },
 
   resumeRun: async (runId) => {
     const response = await send('resumeRun', { runId });
-    if (response.result?.runId) setRunUrl(response.result.runId);
+    if (response.result?.runId) {
+      state.selectedRunId = response.result.runId;
+      seededRunId = null;
+      setRunUrl(response.result.runId);
+    }
     state.eventsByAgent = {};
     await loadRuns();
   },
 
   openRun: async (runId, { updateUrl = true } = {}) => {
+    state.selectedRunId = Number(runId);
+    seededRunId = Number(runId);
     if (updateUrl) setRunUrl(runId);
-    const { events } = await fetch(`/replay?run=${runId}`).then((r) => r.json());
+    const { run, events, missionState } = await fetch(`/replay?run=${runId}`).then((r) => r.json());
+    state.selectedMission = run?.mission ?? '';
+    state.selectedMissionView = Number(runId) === state.runId ? null : missionState;
     state.eventsByAgent = {};
     for (const event of events) {
       const list = state.eventsByAgent[event.agentId] ?? [];
@@ -1177,6 +1282,7 @@ const handlers = {
     }
     renderPanels();
   },
+  setAcceptance: (required) => send('setAcceptance', { required }),
   act: (action, decision, from) => {
     // RETRY dispatches the agent again. For an agent blocked because its engine
     // never came up, this is the only action on the card that can clear it.
@@ -1195,7 +1301,7 @@ const handlers = {
       return send('say', {
         target: decision.agentId,
         text:
-          'Stop. Split the current step into smaller steps and report the new flow contract ' +
+          'Stop. Split the current checkpoint into smaller checkpoints and report the new flow contract ' +
           'before continuing.',
       });
     }
@@ -1218,6 +1324,37 @@ function setRunUrl(runId, { replace = false } = {}) {
   if (url.searchParams.get('run') === String(selected)) return;
   url.searchParams.set('run', String(selected));
   window.history[replace ? 'replaceState' : 'pushState']({ runId: selected }, '', url);
+}
+
+function tabFromUrl() {
+  const tab = new URL(window.location.href).searchParams.get('tab');
+  return tab && tab in WINDOW_IDS ? tab : null;
+}
+
+function setTabUrl(tab, { replace = false } = {}) {
+  const url = new URL(window.location.href);
+  if ((url.searchParams.get('tab') ?? null) === (tab ?? null)) return;
+  if (tab) url.searchParams.set('tab', tab);
+  else url.searchParams.delete('tab');
+  window.history[replace ? 'replaceState' : 'pushState'](
+    { runId: state.selectedRunId, tab: tab ?? null },
+    '',
+    url,
+  );
+}
+
+function restorePanelFromUrl() {
+  if (!windows) return;
+  restoringNavigation = true;
+  const tab = tabFromUrl();
+  if (tab) {
+    lastPanel = tab;
+    windows.open(tab);
+  } else {
+    windows.close();
+  }
+  state.open = new Set(windows.openNames());
+  restoringNavigation = false;
 }
 
 // Selecting an agent is walking up to their desk: the camera goes there, the
@@ -1398,12 +1535,23 @@ function renderFeed() {
   // is actually on screen instead.
   if (!feedBody || !feedBody.isConnected || feedBody.offsetParent === null) return;
 
+  const readingLiveMission = state.selectedRunId === state.runId;
+  const feedBoard = state.selectedMissionView?.board ?? state.board;
+  const feedFlows = state.selectedMissionView?.flows ?? state.flows;
+  if (feedChatHost) feedChatHost.hidden = !readingLiveMission;
   const talkTo = state.feedFilter
     ? state.agents[state.feedFilter]
     : state.agents[orchestratorId()];
-  feedChat?.setTarget(talkTo?.id ?? null, orderedAgents(), state.mission ?? '');
+  feedChat?.setTarget(talkTo?.id ?? null, orderedAgents(), state.selectedMission ?? '');
 
   const lines = [];
+  const allMissionEvents = Object.values(state.eventsByAgent).flat();
+  const threadMessages = new Map();
+  for (const item of feedBoard ?? []) {
+    for (const event of checkpointThread(allMissionEvents, item.id)) {
+      threadMessages.set(messageIdOf(event), event);
+    }
+  }
   for (const [agentId, events] of Object.entries(state.eventsByAgent)) {
     if (state.feedFilter && agentId !== state.feedFilter) continue;
     const agent = state.agents[agentId];
@@ -1412,7 +1560,32 @@ function renderFeed() {
       // to each other, or that plus whatever changes what happens next.
       if (!passesDetail(event, state.feedLevel) || !passesPreset(event, state.feedPreset)) continue;
       const entry = feedEntry(agent, event);
-      if (entry) lines.push({ ...entry, ts: event.ts, key: feedEventKey(agentId, event) });
+      if (!entry) continue;
+      const item = entry.checkpointId
+        ? feedBoard.find((candidate) => candidate.id === entry.checkpointId)
+        : null;
+      const workUnit = feedFlows.find((candidate) => candidate.workUnitId === item?.workUnitId);
+      const checkpoint = workUnit?.checkpoints?.find((candidate) => candidate.id === item?.id);
+      if (state.feedCheckpoint && entry.checkpointId !== state.feedCheckpoint) continue;
+      if (state.feedWorkUnit && item?.workUnitId !== state.feedWorkUnit) continue;
+      if (state.feedStage && item?.stage !== state.feedStage) continue;
+      const searchable = [entry.who, entry.text, entry.full, entry.checkpointId, item?.workUnitId, item?.stage]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (state.feedQuery && !searchable.includes(state.feedQuery.toLowerCase())) continue;
+      const enriched = threadMessages.get(messageIdOf(event));
+      lines.push({
+        ...entry,
+        agentId,
+        messageId: messageIdOf(event),
+        workUnitId: item?.workUnitId ?? null,
+        workUnitDisplayId: workUnit?.displayId ?? item?.workUnitId ?? null,
+        checkpointDisplayId: checkpoint?.displayId ?? item?.id ?? null,
+        stage: item?.stage ?? null,
+        reactions: enriched?.reactions ?? {},
+        reactionActors: enriched?.reactionActors ?? {},
+        ts: event.ts,
+        key: feedEventKey(agentId, event),
+      });
     }
   }
   lines.sort((a, b) => a.ts - b.ts);
@@ -1425,18 +1598,84 @@ function renderFeed() {
     return !(next && next.who === line.who && next.text.startsWith(line.text));
   });
 
-  const feedView = JSON.stringify([state.feedLevel, state.feedPreset, state.feedFilter]);
+  const feedView = JSON.stringify([
+    state.selectedRunId, state.feedLevel, state.feedPreset, state.feedFilter,
+    state.feedQuery, state.feedCheckpoint, state.feedWorkUnit, state.feedStage,
+  ]);
   const position = feedView === renderedFeedView
     ? captureScrollAnchor(feedBody)
     : { mode: 'tail' };
   const rows = deduped.slice(-400).map(feedRow);
-  const header = [feedLevelBar(), state.feedFiltersOpen ? presetBar() : null,
-    checkpointCard(), ...(state.feedFilter ? [filterChip()] : [])]
+  const header = [missionFeedContext(), feedLevelBar(), state.feedFiltersOpen ? feedFilterPanel() : null,
+    readingLiveMission ? checkpointCard() : null, ...(state.feedFilter ? [filterChip()] : [])]
     .filter(Boolean);
   feedControls?.replaceChildren(...header);
   feedBody.replaceChildren(...rows);
   restoreScrollAnchor(feedBody, position);
   renderedFeedView = feedView;
+}
+
+function feedFilterPanel() {
+  const panel = document.createElement('section');
+  panel.className = 'feed-filter-panel';
+  panel.append(presetBar());
+
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.placeholder = 'Search this mission';
+  search.value = state.feedQuery;
+  search.oninput = () => {
+    state.feedQuery = search.value;
+    renderFeed();
+    document.querySelector('.feed-filter-panel input[type="search"]')?.focus();
+  };
+  panel.append(search);
+
+  const select = (label, value, options, set) => {
+    const control = document.createElement('select');
+    control.setAttribute('aria-label', label);
+    control.append(new Option(label.toUpperCase(), ''));
+    for (const [id, text] of options) control.append(new Option(text, id));
+    control.value = value;
+    control.onchange = () => { set(control.value); renderFeed(); };
+    return control;
+  };
+  const items = (state.selectedMissionView?.board ?? state.board ?? [])
+    .filter((item) => item.disposition === 'active');
+  const workUnits = [...new Map(items.filter((item) => item.workUnitId)
+    .map((item) => [item.workUnitId, item.workUnitId])).entries()];
+  const checkpoints = items.map((item) => [item.id, item.title || item.id]);
+  const stages = [...new Set(items.map((item) => item.stage).filter(Boolean))]
+    .map((stage) => [stage, stage.toUpperCase()]);
+  panel.append(
+    select('Hero', state.feedFilter ?? '', orderedAgents().map((agent) => [agent.id, agent.label]),
+      (value) => { state.feedFilter = value || null; }),
+    select('Work unit', state.feedWorkUnit, workUnits, (value) => { state.feedWorkUnit = value; }),
+    select('Checkpoint', state.feedCheckpoint, checkpoints, (value) => { state.feedCheckpoint = value; }),
+    select('Stage', state.feedStage, stages, (value) => { state.feedStage = value; }),
+  );
+  const clear = createControlButton('CLEAR');
+  clear.onclick = () => {
+    state.feedQuery = '';
+    state.feedFilter = null;
+    state.feedWorkUnit = '';
+    state.feedCheckpoint = '';
+    state.feedStage = '';
+    renderFeed();
+  };
+  panel.append(clear);
+  return panel;
+}
+
+function missionFeedContext() {
+  const context = document.createElement('div');
+  context.className = 'feed-mission-context';
+  const label = document.createElement('span');
+  label.textContent = `MISSION ${state.selectedRunId ?? ''}`;
+  const title = document.createElement('strong');
+  title.textContent = state.selectedMission || 'No mission set';
+  context.append(label, title);
+  return context;
 }
 
 function feedLevelBar() {
@@ -1533,10 +1772,10 @@ function checkpointCard() {
 
   const head = document.createElement('button');
   head.type = 'button';
-  const v = state.velocity ?? {};
+  const work = state.progress?.work ?? {};
   head.textContent = `CHECKPOINTS  `
-    + `${v.done ?? 0} of ${v.items ?? items.length} done`
-    + (v.percent === null || v.percent === undefined ? '' : `  ·  ${v.percent}% of gates passed`);
+    + `${work.done ?? 0} of ${work.total ?? 0} work units done`
+    + (work.percent === null || work.percent === undefined ? '' : `  ·  ${work.percent}%`);
   head.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;'
     + 'border:0;color:var(--accent,#34d399);font:inherit;font-size:9px;letter-spacing:.12em;'
     + 'padding:6px 8px;cursor:pointer';
@@ -1594,14 +1833,21 @@ function filterChip() {
 }
 
 function feedRow(entry) {
-  const row = document.createElement('div');
-  row.className = `feed-row ${entry.tone}`;
+  const row = document.createElement('article');
+  row.className = `feed-row ${entry.tone}${entry.kind ? ` is-${entry.kind}` : ''}`;
   row.dataset.scrollKey = entry.key;
   row.style.cssText = 'padding:5px 0;border-bottom:1px solid var(--line,#262626)';
 
   const head = document.createElement('div');
   head.style.cssText = 'color:var(--muted,#8a8a8a);font-size:10px;letter-spacing:.06em';
-  head.textContent = `${entry.at}  ${entry.who}${entry.suffix ?? ''}`;
+  const avatar = document.createElement('span');
+  avatar.className = 'feed-avatar';
+  avatar.textContent = String(entry.who || 'M').slice(0, 1).toUpperCase();
+  const author = document.createElement('strong');
+  author.textContent = `${entry.who || 'MINIMAC'}${entry.suffix ?? ''}`;
+  const time = document.createElement('time');
+  time.textContent = entry.at;
+  head.append(avatar, author, time);
   row.append(head);
 
   const body = document.createElement('div');
@@ -1637,24 +1883,52 @@ function feedRow(entry) {
   if (entry.attachments?.length) row.append(feedAttachments(entry.attachments));
   const references = feedReferences(entry);
   if (references) row.append(references);
+  if (entry.checkpointId) {
+    const actions = document.createElement('div');
+    actions.className = 'feed-message-actions';
+    const thread = createControlButton('THREAD');
+    thread.onclick = () => openCheckpointThread(entry.checkpointId);
+    actions.append(thread);
+    if (entry.messageId) {
+      for (const [key, reaction] of Object.entries(REACTIONS)) {
+        const button = createControlButton(`${reaction.symbol}${entry.reactions?.[key] ? ` ${entry.reactions[key]}` : ''}`);
+        button.title = reaction.label;
+        button.setAttribute('aria-pressed', String(entry.reactionActors?.[key]?.includes('you') ?? false));
+        button.onclick = () => send('reactCheckpoint', {
+          id: entry.checkpointId,
+          messageId: entry.messageId,
+          reaction: key,
+        });
+        actions.append(button);
+      }
+    }
+    row.append(actions);
+  }
   return row;
 }
 
 function feedReferences(entry) {
   const refs = [...(entry.references ?? [])];
   if (entry.checkpointId && !refs.some((ref) => ref.kind === 'checkpoint' && ref.id === entry.checkpointId)) {
-    refs.unshift({ kind: 'checkpoint', id: entry.checkpointId });
+    refs.unshift({ kind: 'checkpoint', id: entry.checkpointId, label: entry.checkpointDisplayId });
   }
+  if (entry.workUnitId) refs.unshift({ kind: 'work-unit', id: entry.workUnitId, label: entry.workUnitDisplayId });
   const visible = refs.filter((ref) => ref.kind !== 'attachment');
   if (!visible.length) return null;
   const nav = document.createElement('nav');
   nav.className = 'feed-references';
   nav.setAttribute('aria-label', 'Related work');
   for (const ref of visible) {
-    if (ref.kind === 'checkpoint') {
+    if (ref.kind === 'work-unit') {
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = `#${ref.label ?? ref.id}`;
+      button.textContent = ref.label ?? ref.id;
+      button.onclick = () => openWindow('flows');
+      nav.append(button);
+    } else if (ref.kind === 'checkpoint') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = `#${ref.id === entry.checkpointId ? entry.checkpointDisplayId ?? ref.id : ref.label ?? ref.id}`;
       button.onclick = () => openCheckpointThread(ref.id);
       nav.append(button);
     } else if (ref.kind === 'agent') {
@@ -1743,6 +2017,7 @@ function feedEntry(agent, event) {
       checkpointId: payload.checkpointId ?? null,
       references: payload.references ?? [],
       tone: 'tool',
+      kind: payload.action === 'assign' ? 'assignment' : 'order',
     };
   }
   if (event.kind === EVENT_KINDS.ESCALATION) {
@@ -1800,6 +2075,7 @@ let headerEl = null;
 let feedBody = null;
 let feedControls = null;
 let feedChat = null;
+let feedChatHost = null;
 let prayerComposer = null;
 let checkpointsBody = null;
 let checkpointChat = null;
@@ -1826,6 +2102,7 @@ function mountFeed() {
 
   const talk = document.createElement('footer');
   talk.className = 'feed-chat';
+  feedChatHost = talk;
   feedChat = mountPanelComposer(talk, {
     getTarget: () => state.feedFilter ?? orchestratorId(),
   });
@@ -2461,6 +2738,7 @@ function boot() {
   mountCheckpoints();
   mountPrayerComposer();
   mountMiddleware();
+  orderDockViews();
 
   // The console's extra row when a desk is focused.
   strip = createGoalStrip({
@@ -2471,12 +2749,17 @@ function boot() {
 
   windows = createSidePanel({
     entries: windowEntries(),
-    labels: { feed: 'FEED', checkpoints: 'CHECKPOINTS', crew: 'AVENGERS', decisions: 'DECISIONS',
-              runs: 'MISSIONS', middleware: 'MIDDLEWARE' },
-    onChange: () => renderPanels(),
+    labels: { runs: 'MISSION', flows: 'FLOW', checkpoints: 'CHECKPOINTS', feed: 'FEED',
+              crew: 'AVENGERS', decisions: 'DECISIONS', middleware: 'MIDDLEWARE' },
+    onChange: () => {
+      state.open = new Set(windows?.openNames() ?? []);
+      if (!restoringNavigation) setTabUrl(windows?.openNames()[0] ?? null);
+      renderPanels();
+    },
   });
 
   wireChrome();
+  restorePanelFromUrl();
   // A read-only window onto the one part of the floor you cannot see. It
   // reports; nothing in the app ever reads it back.
   window.minimac = Object.freeze({ sound: () => sound.probe() });
@@ -2493,9 +2776,12 @@ function boot() {
     setConsoleCollapsed(false);
     dom.fileInput?.click();
   });
-  addEventListener('popstate', () => {
+  addEventListener('popstate', async () => {
     const runId = runIdFromUrl() ?? state.runId;
-    if (runId) handlers.openRun(runId, { updateUrl: false });
+    if (runId && runId !== state.selectedRunId) {
+      await handlers.openRun(runId, { updateUrl: false });
+    }
+    restorePanelFromUrl();
   });
   subscribe();
   loadRuns();
@@ -2507,6 +2793,22 @@ function boot() {
   }, RUNS_REFRESH_MS);
   renderPanels();
   requestAnimationFrame(frame);
+}
+
+function orderDockViews() {
+  const nav = dom.btnRuns?.parentElement;
+  if (!nav) return;
+  for (const button of [
+    dom.btnRuns,
+    dom.btnFlows,
+    dom.btnCheckpoints,
+    dom.btnFeed,
+    dom.btnCrew,
+    dom.btnDecisions,
+    dom.btnMiddleware,
+  ]) {
+    if (button) nav.append(button);
+  }
 }
 
 async function loadRuns() {

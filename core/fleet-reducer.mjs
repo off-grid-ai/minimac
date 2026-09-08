@@ -23,6 +23,7 @@ export function applyFleetEvent(agents, event) {
     // A worker-session row is one fact and must never be half populated.
     let projected = patchWorker(next, workerId, {
       engine: eventEngine ?? expectedEngine ?? null,
+      heartbeatAt: event.ts,
     });
     if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
       const ended = [WORKER_STATE.IDLE, WORKER_STATE.STOPPED].includes(event.payload.state);

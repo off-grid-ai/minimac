@@ -458,7 +458,7 @@ function crewSection(agent, crew, team) {
 // THIS mission, and say so in one sentence each.
 export const WORK_PLAN_FENCE = 'minimac-work-plan';
 
-export function planningTask(mission, crew) {
+export function planningTask(mission, crew, board = null) {
   const members = crew.filter((member) => member.role !== 'orchestrator');
   const roster = members
     .map((member) => `- ${member.id}  (${member.label}, ${member.role})`
@@ -488,6 +488,10 @@ export function planningTask(mission, crew) {
     '# First job: assemble the crew',
     '',
     `The mission is:\n\n${mission}`,
+    '',
+    (board?.workUnits?.length ?? 0) > 0
+      ? 'MODE: REGROUP. Keep valid completed work, replace obsolete work, and reassign all open work.'
+      : 'MODE: INITIAL PLAN. Build the first complete work-unit graph.',
     '',
     'Two decisions, in this order: WHO this mission needs, then what each of them '
     + 'is for. Be ruthless about the first - the smallest crew that can finish the '

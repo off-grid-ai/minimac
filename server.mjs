@@ -66,6 +66,7 @@ import { createWorkPlanningService } from './application/work-planning.mjs';
 import { createScheduler } from './application/scheduler.mjs';
 import { createFleetCoordination } from './application/fleet-coordination.mjs';
 import { createWorkerLeaseService } from './application/worker-leases.mjs';
+import { createRuntimeSupervisor } from './application/runtime-supervisor.mjs';
 import { ORDER_ACTION } from './core/coordination.mjs';
 import { LEASE_LIMIT_MS, finishLease } from './core/leases.mjs';
 import { readyCheckpoints } from './core/scheduler.mjs';
@@ -77,6 +78,16 @@ import {
   reactionActive,
 } from './core/conversation.mjs';
 import { projectMissionFlows } from './core/mission-flows.mjs';
+import {
+  createAcceptancePolicy,
+  validateAcceptancePolicy,
+  reconcileAcceptanceChange,
+} from './core/acceptance.mjs';
+import {
+  projectMissionProgress,
+  repositoryQualitySummary,
+  missionContradictions,
+} from './core/mission-quality.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
 import {
   deriveCards,
@@ -99,7 +110,8 @@ import {
   unmetDeps,
   stateOf as checkpointState,
   findItem,
-  progress as boardProgress,
+  beginCheckpoint,
+  failCheckpointStart,
 } from './core/board.mjs';
 import {
   routeCard,
@@ -112,6 +124,8 @@ import { splitFenced, isMachineNoise } from './core/readable.mjs';
 import { AGENT_TOOL, roleCanUseTool } from './core/agent-tools.mjs';
 import { applyFleetEvent } from './core/fleet-reducer.mjs';
 import { activationPlan } from './core/crew.mjs';
+import { estimateDispatchTokens } from './core/token-estimate.mjs';
+import { reconcileReleaseCheckpoints } from './core/work-units.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const MIME = {
@@ -164,6 +178,7 @@ const state = {
   // The shared board. One list of work every agent reads and writes, so
   // coordination stops being prose.
   board: createBoard(),
+  acceptance: createAcceptancePolicy(),
 };
 
 const MAX_REFERENCE_BYTES = 2 * 1024 * 1024;
@@ -256,6 +271,7 @@ if (adopted) {
     }
   }
   state.board = { workUnits: store.workUnitsFor(adopted.id), items: adoptedItems };
+  state.acceptance = store.acceptanceFor(adopted.id) ?? createAcceptancePolicy();
   const adoptedAt = Date.now();
   state.cards = stampCards(
     state.cards,
@@ -492,13 +508,21 @@ async function harvestWorkPlan(event) {
     }));
   }
 
-  const planned = workPlanning.publishInitialPlan(parsed.workUnits);
+  const activeBeforeRegroup = itemsOf(state.board)
+    .filter((item) => item.lease?.state === 'running')
+    .map((item) => ({ id: item.id, agentId: item.lease.agentId, workerId: item.lease.workerId }));
+  const planned = workPlanning.publishWorkPlan(parsed.workUnits);
   if (planned.error) {
     ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
       text: `assemble refused: ${planned.error}; nobody was started`,
       from: 'you',
     }));
     return { applied: false, error: planned.error };
+  }
+  for (const previous of activeBeforeRegroup) {
+    const current = findItem(state.board, previous.id);
+    if (current?.lease?.workerId === previous.workerId && current.lease.state === 'running') continue;
+    await interruptWorker(previous.agentId, previous.workerId, { clearCheckpoint: true }).catch(() => {});
   }
 
   let applied = 0;
@@ -614,13 +638,9 @@ function harvestReport(event) {
       ? interruptWorker(event.agentId, reportingWorker.id)
       : COMMANDS.setActive({ agentId: event.agentId, active: false });
     stop
-      .then(async () => {
+      .then(() => {
         publish({ type: 'state', state: snapshot() });
-        await tellThor(
-          event.agentId,
-          `${reportingWorker?.id ?? event.agentId} finished its assigned checkpoint. `
-            + 'Review the checkpoints. Assign and start the next ready eight-minute work unit, or leave the seat benched.',
-        );
+        scheduleReadyWork();
       })
       .catch(() => {});
   }
@@ -697,6 +717,23 @@ function settleEventLease(event) {
   store.saveItem(settled.item);
 }
 
+function repeatsUnchangedFact(event, withinMs = 300_000) {
+  if (![EVENT_KINDS.STATUS, EVENT_KINDS.BLOCKED].includes(event.kind)) return false;
+  const facts = event.payload ?? {};
+  const signature = JSON.stringify([
+    event.agentId, event.kind, facts.state ?? null, facts.text ?? null,
+    facts.reason ?? null, facts.checkpointId ?? null,
+  ]);
+  const previous = [...state.events].reverse().find((candidate) =>
+    candidate.agentId === event.agentId && candidate.kind === event.kind);
+  if (!previous || event.ts - previous.ts > withinMs) return false;
+  const prior = previous.payload ?? {};
+  return signature === JSON.stringify([
+    previous.agentId, previous.kind, prior.state ?? null, prior.text ?? null,
+    prior.reason ?? null, prior.checkpointId ?? null,
+  ]);
+}
+
 function ingest(rawIncoming) {
   const incoming = identifyWorker(rawIncoming);
   if (incoming.kind === EVENT_KINDS.STATUS
@@ -717,7 +754,12 @@ function ingest(rawIncoming) {
     state.agents = applyFleetEvent(state.agents, incoming);
     persistEventWorker(incoming);
     store.record(incoming);
-    publish({ type: 'event', event: incoming, agent: publicAgent(state.agents[incoming.agentId]) });
+    publish({
+      type: 'event',
+      runId: store.runId,
+      event: incoming,
+      agent: publicAgent(state.agents[incoming.agentId]),
+    });
     harvestBlocks(incoming);
     scheduleCards();
     return;
@@ -730,11 +772,21 @@ function ingest(rawIncoming) {
     return;
   }
   if (raw !== null) event.payload = { ...event.payload, raw };
+  if (repeatsUnchangedFact(event)) {
+    state.agents = applyFleetEvent(state.agents, event);
+    persistEventWorker(event);
+    return;
+  }
   state.events = appendEvent(state.events, event);
   state.agents = applyFleetEvent(state.agents, event);
   persistEventWorker(event);
   store.record(event);
-  publish({ type: 'event', event, agent: publicAgent(state.agents[event.agentId]) });
+  publish({
+    type: 'event',
+    runId: store.runId,
+    event,
+    agent: publicAgent(state.agents[event.agentId]),
+  });
   if (raw !== null) harvestBlocks({ ...event, payload: { ...event.payload, text: raw } });
   scheduleCards();
 }
@@ -745,6 +797,7 @@ function ingest(rawIncoming) {
 // same on the floor.
 let coordination = null;
 let scheduler = null;
+let runtimeSupervisor = null;
 let schedulerQueued = false;
 
 function scheduleReadyWork() {
@@ -792,6 +845,7 @@ const workPlanning = createWorkPlanningService({
   getBoard: () => state.board,
   setBoard: (board) => { state.board = board; },
   getAgents: () => state.agents,
+  getAcceptance: () => state.acceptance,
   saveWorkPlan: (board) => store.saveWorkPlan(board),
   workerLimitMs: LEASE_LIMIT_MS,
 });
@@ -992,17 +1046,32 @@ async function startWorkers(agent, cwd, context) {
     const worker = available[index];
     if (!worker) break;
     const checkpointId = context.workItems?.[index]?.id ?? null;
+    const startingAt = Date.now();
+    state.agents = patchAgent(
+      state.agents,
+      agent.id,
+      patchWorker(state.agents[agent.id], worker.id, {
+        checkpointId,
+        engine: agent.engine,
+        state: WORKER_STATE.STARTING,
+        startedAt: startingAt,
+        heartbeatAt: startingAt,
+        failureReason: null,
+      }),
+    );
     const resumableId = worker.resumeSessionId;
     const canResume = canResumeSession(worker, { engine: agent.engine, checkpointId })
       && typeof driver.resume === 'function';
     const workerAgent = { ...agent, workerId: worker.id };
     let sessionId;
-    if (!canResume) {
-      sessionId = await driver.start(workerAgent, cwd, prompt);
-    } else {
-      try {
+    try {
+      if (!canResume) {
+        sessionId = await driver.start(workerAgent, cwd, prompt);
+      } else {
         sessionId = await driver.resume(workerAgent, cwd, resumableId, prompt);
-      } catch {
+      }
+    } catch (resumeError) {
+      if (canResume) {
         // A saved handle can disappear. Clear only this worker's handle, then
         // start its replacement without changing another worker at the seat.
         state.agents = patchAgent(
@@ -1010,7 +1079,31 @@ async function startWorkers(agent, cwd, context) {
           agent.id,
           patchWorker(state.agents[agent.id], worker.id, { resumeSessionId: null }),
         );
-        sessionId = await driver.start(workerAgent, cwd, prompt);
+        try {
+          sessionId = await driver.start(workerAgent, cwd, prompt);
+        } catch (startError) {
+          state.agents = patchAgent(
+            state.agents,
+            agent.id,
+            patchWorker(state.agents[agent.id], worker.id, {
+              state: WORKER_STATE.FAILED,
+              sessionId: null,
+              failureReason: startError.message,
+            }),
+          );
+          throw startError;
+        }
+      } else {
+        state.agents = patchAgent(
+          state.agents,
+          agent.id,
+          patchWorker(state.agents[agent.id], worker.id, {
+            state: WORKER_STATE.FAILED,
+            sessionId: null,
+            failureReason: resumeError.message,
+          }),
+        );
+        throw resumeError;
       }
     }
     const now = Date.now();
@@ -1021,7 +1114,9 @@ async function startWorkers(agent, cwd, context) {
       checkpointId,
       engine: agent.engine,
       state: WORKER_STATE.RUNNING,
-      startedAt: worker.startedAt ?? now,
+      startedAt: now,
+      heartbeatAt: now,
+      failureReason: null,
     };
     state.agents = patchAgent(
       state.agents,
@@ -1083,6 +1178,8 @@ function readyWork(agentId) {
 function checkpointTask(item) {
   return [
     `# Assigned task: ${item.id}`,
+    item.workUnitId ? `Work unit: ${item.workUnitId}` : null,
+    item.stage ? `Stage: ${item.stage.toUpperCase()}` : null,
     '',
     item.title,
     '',
@@ -1091,7 +1188,7 @@ function checkpointTask(item) {
     `Proof: ${item.verify}`,
     '',
     'Finish this task within eight minutes. Report the gate receipts, then stand down.',
-  ].join('\n');
+  ].filter((line) => line !== null).join('\n');
 }
 
 async function tellThor(from, text) {
@@ -1252,6 +1349,22 @@ function postCheckpointReaction({ id, messageId, reaction, from = 'you', authorA
 // ----------------------------------------------------------------- commands
 
 const COMMANDS = {
+  setAcceptance({ required }) {
+    ensureRun();
+    const validated = validateAcceptancePolicy({ required });
+    if (validated.error) throw new Error(validated.error);
+    const reconciled = reconcileAcceptanceChange(
+      state.acceptance,
+      validated.policy,
+      state.board,
+    );
+    state.acceptance = validated.policy;
+    state.board = reconcileReleaseCheckpoints(reconciled.board, state.agents, state.acceptance);
+    store.saveMissionState({ acceptance: state.acceptance, board: state.board });
+    publish({ type: 'state', state: snapshot() });
+    return { acceptance: state.acceptance, removed: reconciled.removed };
+  },
+
   // One mission in, a goal on every seat out. Nothing is ever dispatched blind.
   async setMission({ mission, attachments = [] }) {
     state.mission = mission;
@@ -1260,6 +1373,7 @@ const COMMANDS = {
     // The run is titled by its mission, and the mission usually arrives after
     // the run has started, so the record has to be told.
     store.renameRun(mission);
+    store.saveMissionState({ acceptance: state.acceptance });
     state.goals = deriveGoals(state.goals, state.agents, mission);
     // The orchestrator's goal is the mission, always. A goal saved on an
     // earlier run - or the old role template - must never outrank the sentence
@@ -1313,7 +1427,7 @@ const COMMANDS = {
       await COMMANDS.setActive({
         agentId: orchestrator.id,
         active: true,
-        task: planningTask(state.mission, crewRoster()),
+        task: planningTask(state.mission, crewRoster(), state.board),
         planning: true,
         exclusiveOutput: true,
       });
@@ -1374,13 +1488,15 @@ const COMMANDS = {
     state.events = [];
     state.mission = previous.mission;
     store.startRun(state.mission, options.repo);
+    state.acceptance = store.acceptanceFor(Number(runId)) ?? createAcceptancePolicy();
+    store.saveMissionState({ acceptance: state.acceptance });
     for (const agent of Object.values(state.agents)) store.saveEngine(agent.id, agent.engine);
 
     // The new run record continues the old work. Copy the checkpoints into the
     // new run before any worker starts, so the UI and every agent receive the
     // same queue instead of an empty one.
     state.board = { workUnits: store.workUnitsFor(Number(runId)), items: savedItems };
-    for (const item of savedItems) store.saveItem(item);
+    store.saveWorkPlan(state.board);
 
     for (const row of savedGoals) {
       if (row.objective) {
@@ -1473,11 +1589,13 @@ const COMMANDS = {
     // in the record but must not be handed to this crew as though it were
     // theirs - which is how a LICENSE plan turned up under a CI mission.
     state.board = createBoard();
+    state.acceptance = createAcceptancePolicy();
     state.cards = [];
     state.dismissedCards = new Set();
     state.verdicts = {};
     state.mission = mission ?? '';
     const id = store.startRun(state.mission, options.repo);
+    store.saveMissionState({ acceptance: state.acceptance });
     state.goals = deriveGoals(state.goals, state.agents, state.mission);
     for (const [agentId, goal] of Object.entries(state.goals)) store.saveGoal(agentId, goal);
     for (const agent of Object.values(state.agents)) store.saveEngine(agent.id, agent.engine);
@@ -1534,6 +1652,18 @@ const COMMANDS = {
     try {
       startedWorkers = await startWorkers(agent, cwd, context);
     } catch (error) {
+      const retryAt = Date.now() + 15_000;
+      for (const item of assignedItems ?? []) {
+        const failed = failCheckpointStart(state.board, item.id, error.message, retryAt);
+        if (!failed.error) {
+          state.board = failed.board;
+          store.saveItem(failed.item);
+        }
+      }
+      if ((assignedItems ?? []).length > 0) {
+        const timer = setTimeout(scheduleReadyWork, Math.max(0, retryAt - Date.now()));
+        timer.unref?.();
+      }
       ingest(
         createBlockedEvent(agentId, {
           category: BLOCKED_REASONS.ERROR,
@@ -1557,7 +1687,7 @@ const COMMANDS = {
           checkpointId: worker.checkpointId,
           sessionId: worker.sessionId,
         });
-        const leased = reviseItem(state.board, worker.checkpointId, { lease });
+        const leased = beginCheckpoint(state.board, worker.checkpointId, lease);
         if (!leased.error) {
           state.board = leased.board;
           store.saveItem(leased.item);
@@ -2030,6 +2160,21 @@ scheduler = createScheduler({
   limitMs: LEASE_LIMIT_MS,
 });
 
+runtimeSupervisor = createRuntimeSupervisor({
+  getBoard: () => state.board,
+  getAgents: () => state.agents,
+  markStale: (agentId, workerId) => expireWorkerLease(agentId, workerId),
+  recover: async () => scheduleReadyWork(),
+  inspect: (worker) => getDriver(worker.engine).sessionHealth?.(worker.sessionId, options.repo),
+});
+const runtimeSupervisorTimer = setInterval(() => {
+  void runtimeSupervisor.reconcileWorkers().catch((error) => ingest(createBlockedEvent('minimac', {
+    category: BLOCKED_REASONS.ERROR,
+    reason: `worker recovery failed: ${error.message}`,
+  })));
+}, 15_000);
+runtimeSupervisorTimer.unref?.();
+
 coordination = createFleetCoordination({
   getEvents: () => state.events,
   emit: ingest,
@@ -2121,7 +2266,37 @@ async function interruptWorker(
   const worker = ensureWorkers(agent).find((candidate) => candidate.id === workerId);
   const sessionId = worker?.sessionId;
   if (!sessionId) return false;
-  await getDriver(agent.engine).interrupt(sessionId);
+  state.agents = patchAgent(
+    state.agents,
+    agentId,
+    patchWorker(state.agents[agentId], workerId, { state: WORKER_STATE.STOPPING }),
+  );
+  try {
+    await getDriver(agent.engine).interrupt(sessionId);
+  } catch (error) {
+    workerLeases?.clear(workerId);
+    const failedWorker = patchWorker(state.agents[agentId], workerId, {
+      state: WORKER_STATE.FAILED,
+      sessionId: null,
+      resumeSessionId: null,
+      checkpointId: null,
+      failureReason: error.message,
+    });
+    state.agents = patchAgent(state.agents, agentId, failedWorker);
+    if (worker.checkpointId) {
+      const retryAt = Date.now() + 15_000;
+      const failed = failCheckpointStart(state.board, worker.checkpointId, error.message, retryAt);
+      if (!failed.error) {
+        state.board = failed.board;
+        store.saveItem(failed.item);
+        const timer = setTimeout(scheduleReadyWork, Math.max(0, retryAt - Date.now()));
+        timer.unref?.();
+      }
+    }
+    store.saveWorkerSession(ensureWorkers(failedWorker)
+      .find((candidate) => candidate.id === workerId));
+    throw error;
+  }
   workerLeases?.clear(workerId);
   const next = patchWorker(state.agents[agentId], workerId, {
     state: workerState,
@@ -2151,13 +2326,52 @@ async function interruptWorker(
 async function expireWorkerLease(agentId, workerId) {
   const agent = state.agents[agentId];
   const worker = agent && ensureWorkers(agent).find((candidate) => candidate.id === workerId);
-  if (!worker?.sessionId) return false;
-  const stopped = await interruptWorker(agentId, workerId, { workerState: WORKER_STATE.EXPIRED });
-  if (worker.checkpointId) {
-    const paused = setCheckpointPaused(state.board, worker.checkpointId, true);
-    if (!paused.error) {
-      state.board = paused.board;
-      store.saveItem(paused.item);
+  const leasedItem = itemsOf(state.board).find((item) =>
+    item.lease?.state === 'running' && item.lease.workerId === workerId);
+  if (!worker) {
+    if (!leasedItem) return false;
+    const retryAt = Date.now() + 15_000;
+    const failed = failCheckpointStart(
+      state.board,
+      leasedItem.id,
+      'worker session no longer exists; MINIMAC will retry',
+      retryAt,
+    );
+    if (!failed.error) {
+      state.board = failed.board;
+      store.saveItem(failed.item);
+      const timer = setTimeout(scheduleReadyWork, Math.max(0, retryAt - Date.now()));
+      timer.unref?.();
+    }
+    return true;
+  }
+  const stopped = worker.sessionId
+    ? await interruptWorker(agentId, workerId, {
+      workerState: WORKER_STATE.STALE,
+      clearCheckpoint: true,
+    })
+    : true;
+  if (!worker.sessionId) {
+    state.agents = patchAgent(state.agents, agentId, patchWorker(agent, workerId, {
+      state: WORKER_STATE.STALE,
+      checkpointId: null,
+      failureReason: 'worker session disappeared',
+    }));
+  }
+  const checkpointId = worker.checkpointId ?? leasedItem?.id ?? null;
+  if (checkpointId) {
+    const retryAt = Date.now() + 15_000;
+    const failed = failCheckpointStart(
+      state.board,
+      checkpointId,
+      'worker session became stale; MINIMAC will retry',
+      retryAt,
+    );
+    if (!failed.error) {
+      state.board = failed.board;
+      store.saveItem(failed.item);
+      const timer = setTimeout(scheduleReadyWork, Math.max(0, retryAt - Date.now()));
+      timer.unref?.();
     }
   }
   return stopped;
@@ -2191,6 +2405,7 @@ async function handleCommand(cmd) {
 // -------------------------------------------------------------------- wire
 
 function snapshot() {
+  const workers = Object.values(state.agents).flatMap((agent) => ensureWorkers(agent));
   return {
     agents: Object.fromEntries(
       Object.entries(state.agents).map(([id, agent]) => [id, publicAgent(agent)]),
@@ -2210,7 +2425,16 @@ function snapshot() {
     // One mission truth, two views. Flow is derived from checkpoints and is
     // never stored or accepted as a second progress record.
     flows: projectMissionFlows(state.board),
-    velocity: boardProgress(state.board),
+    acceptance: state.acceptance,
+    progress: projectMissionProgress(state.board, state.acceptance),
+    quality: repositoryQualitySummary(state.board),
+    contradictions: missionContradictions(state.board, workers, state.acceptance),
+    tokenEstimate: estimateDispatchTokens({
+      mission: state.mission,
+      board: state.board,
+      crew: crewRoster(),
+      attachments: state.attachments,
+    }),
     schema: buildOutputSchema(),
   };
 }
@@ -2295,7 +2519,20 @@ const server = createServer(async (req, res) => {
     const runId = Number(url.searchParams.get('run'));
     const agentId = url.searchParams.get('agent');
     const events = agentId ? store.replay(runId, agentId) : store.replayRun(runId);
-    return json(res, 200, { events });
+    const board = { workUnits: store.workUnitsFor(runId), items: store.itemsFor(runId) };
+    const acceptance = store.acceptanceFor(runId) ?? createAcceptancePolicy();
+    return json(res, 200, {
+      run: store.getRun(runId),
+      events,
+      missionState: {
+        board: board.items,
+        flows: projectMissionFlows(board),
+        acceptance,
+        progress: projectMissionProgress(board, acceptance),
+        quality: repositoryQualitySummary(board),
+        contradictions: missionContradictions(board, [], acceptance),
+      },
+    });
   }
   return serveStatic(url.pathname, res);
 });
@@ -2464,6 +2701,12 @@ async function executeAgentTool(principal, name, args) {
       from: callerId,
       authorAgentId: callerId,
     });
+  }
+  if (name === AGENT_TOOL.SPLIT) {
+    const result = workBoard.requestSplit(callerId, args.id, args.parts, workerId);
+    if (result.error) throw new Error(result.error);
+    await interruptWorker(callerId, workerId, { clearCheckpoint: true });
+    return { split: args.id, checkpoints: result.parts.map((part) => part.id) };
   }
   if (name === AGENT_TOOL.ASSEMBLE) {
     const result = await harvestWorkPlan({

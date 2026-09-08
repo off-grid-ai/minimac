@@ -1,4 +1,4 @@
-import { isDone, stateOf } from './board.mjs';
+import { createItem, findItem, isClosed, isDone, stateOf } from './board.mjs';
 import { ROLES } from './roster.mjs';
 
 export const STAGE_ORDER = Object.freeze(['pw', 'dw', 'cw', 'tw', 'aw', 'rw']);
@@ -121,11 +121,12 @@ export function expandWorkUnit(spec, workUnits, now = Date.now()) {
   }));
 }
 
-export function createReleaseCheckpoints(workUnits, agents, now = Date.now()) {
+export function createReleaseCheckpoints(workUnits, agents, acceptance = null, now = Date.now()) {
   const tester = Object.values(agents).find((agent) => agent.role === ROLES.TESTER)?.id ?? null;
   const coder = Object.values(agents).find((agent) => agent.role === ROLES.CODER)?.id ?? null;
   const finalStages = workUnits.map((workUnit) =>
     stageCheckpointId(workUnit.id, workUnit.stages.at(-1)));
+  const required = new Set(acceptance?.required ?? ['prepush', 'push']);
   return [
     {
       id: 'release.prepush', title: 'Prove the complete mission before push',
@@ -140,10 +141,33 @@ export function createReleaseCheckpoints(workUnits, agents, now = Date.now()) {
       plan: 'Push the verified commits to the configured GitHub remote.',
       outcome: 'The verified mission is available on GitHub.',
       verify: 'Record the pushed branch and remote revision.',
-      scope: 'release', owner: coder, needs: ['push'], blockedBy: ['release.prepush'],
+      scope: 'release', owner: coder, needs: ['push'],
+      blockedBy: required.has('prepush') ? ['release.prepush'] : finalStages,
       estimateMs: 240_000, files: [], createdAt: now,
     },
-  ];
+  ].filter((item) => item.needs.some((gate) => required.has(gate)));
+}
+
+export function reconcileReleaseCheckpoints(board, agents, acceptance, now = Date.now()) {
+  const expected = createReleaseCheckpoints(board?.workUnits ?? [], agents, acceptance, now);
+  const expectedById = new Map(expected.map((item) => [item.id, item]));
+  const seen = new Set();
+  const items = (board?.items ?? []).map((item) => {
+    if (!item.id.startsWith('release.')) return item;
+    const spec = expectedById.get(item.id);
+    if (!spec) {
+      return isClosed(item) ? item : {
+        ...item, disposition: 'cancelled', lease: null, paused: false, closedAt: now,
+      };
+    }
+    seen.add(item.id);
+    if (isClosed(item) && item.disposition !== 'active') return createItem(spec, now);
+    return { ...item, blockedBy: spec.blockedBy, owner: spec.owner };
+  });
+  for (const spec of expected) {
+    if (!seen.has(spec.id)) items.push(createItem(spec, now));
+  }
+  return { ...board, items };
 }
 
 export function workUnitState(board, workUnit) {
@@ -160,4 +184,42 @@ export function workUnitState(board, workUnit) {
 export function releaseReady(board) {
   const release = (board.items ?? []).find((item) => item.id === 'release.push');
   return Boolean(release && isDone(release));
+}
+
+export function splitCheckpoint(board, id, parts, now = Date.now()) {
+  const source = findItem(board, id);
+  if (!source) return { board, error: `no item ${id}` };
+  if (isClosed(source)) return { board, error: `${id} is already closed` };
+  if (!Array.isArray(parts) || parts.length < 2) return { board, error: 'a split needs at least two parts' };
+  const ids = new Set((board.items ?? []).map((item) => item.id));
+  for (const part of parts) {
+    if (!part.id || ids.has(part.id)) return { board, error: `split id is missing or already used: ${part.id ?? ''}` };
+    if (!part.title || !part.plan || !part.outcome || !part.verify) {
+      return { board, error: 'every split part needs title, plan, outcome, and verify' };
+    }
+    ids.add(part.id);
+  }
+  const created = parts.map((part, index) => createItem({
+    ...source,
+    ...part,
+    id: part.id,
+    needs: Object.keys(source.gates ?? {}),
+    blockedBy: index === 0 ? source.blockedBy : [parts[index - 1].id],
+    lease: null,
+  }, now + index));
+  const replacementId = created.at(-1).id;
+  const retired = {
+    ...source,
+    disposition: 'superseded',
+    replacedBy: replacementId,
+    paused: false,
+    lease: null,
+    closedAt: now,
+  };
+  const items = (board.items ?? []).map((item) => {
+    if (item.id === id) return retired;
+    if (!(item.blockedBy ?? []).includes(id)) return item;
+    return { ...item, blockedBy: item.blockedBy.map((dependency) => dependency === id ? replacementId : dependency) };
+  });
+  return { board: { ...board, items: [...items, ...created] }, item: retired, parts: created };
 }

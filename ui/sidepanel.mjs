@@ -29,6 +29,17 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
   tabs.className = 'sidepanel-tabs';
   tabs.setAttribute('role', 'tablist');
 
+  const missionNav = document.createElement('div');
+  missionNav.className = 'sidepanel-mission-nav';
+  const missionButton = document.createElement('button');
+  missionButton.type = 'button';
+  missionButton.className = 'sidepanel-mission-button';
+  missionButton.textContent = 'MISSIONS';
+  missionButton.onclick = () => show('runs');
+  const missionContext = document.createElement('span');
+  missionContext.className = 'sidepanel-mission-context';
+  missionNav.append(missionButton, missionContext);
+
   const bodies = document.createElement('div');
   bodies.className = 'sidepanel-bodies';
 
@@ -39,7 +50,7 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
   close.setAttribute('aria-label', 'close panel');
   close.onclick = () => hide();
 
-  panel.append(grip, tabs, bodies, close);
+  panel.append(grip, missionNav, tabs, bodies, close);
   document.body.append(panel);
   applyWidth();
   style();
@@ -55,6 +66,8 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
     entry.bar?.remove();
     bodies.append(entry.el);
 
+    if (name === 'runs') continue;
+
     const tab = document.createElement('button');
     tab.type = 'button';
     tab.className = 'sidepanel-tab';
@@ -63,6 +76,7 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
     // number worth seeing without opening anything.
     const badge = document.createElement('i');
     badge.className = 'sidepanel-count';
+    badge.dataset.view = name;
     badge.hidden = true;
     tab.append(badge);
     badges.set(name, badge);
@@ -81,6 +95,7 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
       tabButtons.get(key)?.setAttribute('aria-selected', String(key === name));
       entries[key]?.button?.setAttribute('aria-pressed', String(key === name));
     }
+    missionButton.setAttribute('aria-selected', String(name === 'runs'));
     applyWidth();
     save({ width });
     onChange?.();
@@ -130,6 +145,10 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
       badge.textContent = String(count);
       badge.hidden = !count;
     },
+    setMissionContext({ id = null, title = '' } = {}) {
+      missionContext.textContent = id ? `#${id}  ${title || 'No mission set'}` : 'NO MISSION SELECTED';
+      missionContext.title = title || '';
+    },
     open: show,
     close: hide,
     toggle(name) {
@@ -175,8 +194,25 @@ function style() {
       background: transparent; border: 0; color: var(--muted, #8a8a8a);
       font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
     }
+    .sidepanel-mission-nav {
+      display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center;
+      gap: 10px; padding: 10px 40px 8px 16px;
+      border-bottom: 1px solid var(--line, #262626); flex: none;
+    }
+    .sidepanel-mission-button {
+      background: transparent; border: 0; color: var(--accent, #34d399);
+      font: inherit; font-size: 10px; letter-spacing: .12em; padding: 4px 0;
+      cursor: pointer;
+    }
+    .sidepanel-mission-button[aria-selected="true"] {
+      box-shadow: inset 0 -1px 0 var(--accent, #34d399);
+    }
+    .sidepanel-mission-context {
+      min-width: 0; overflow: hidden; color: var(--muted, #8a8a8a);
+      font-size: 10px; text-overflow: ellipsis; white-space: nowrap;
+    }
     .sidepanel-tabs {
-      display: flex; flex-wrap: nowrap; gap: 0; padding: 10px 40px 10px 16px;
+      display: flex; flex-wrap: nowrap; gap: 0; padding: 6px 40px 6px 16px;
       border-bottom: 1px solid var(--line, #262626); flex: none;
       overflow-x: auto; scrollbar-width: none;
     }
@@ -188,9 +224,12 @@ function style() {
     }
     .sidepanel-tab:hover { color: var(--text, #e8e8e8); }
     .sidepanel-count {
-      display: inline-block; margin-left: 5px; padding: 0 4px;
+      display: inline-block; margin-left: 5px;
       font-style: normal; font-size: 9px; line-height: 14px;
-      background: var(--danger, #f87171); color: #fff;
+      color: var(--faint, #5a5a5a);
+    }
+    .sidepanel-count[data-view="decisions"] {
+      padding: 0 4px; background: var(--danger, #f87171); color: #fff;
     }
     .sidepanel-tab[aria-selected="true"] {
       color: var(--accent, #34d399); border-bottom-color: var(--accent, #34d399);
@@ -206,7 +245,7 @@ function style() {
     .sidepanel-body .win-body,
     .sidepanel-body > div:last-child { flex: 1; min-height: 0; overflow: auto; }
     .sidepanel-body .win-body {
-      padding: 16px 24px 28px 28px;
+      padding: 12px 16px 20px 20px;
       background-position: 12px 0;
     }
     .sidepanel-body .win-grip { display: none !important; }
