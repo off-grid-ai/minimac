@@ -62,6 +62,8 @@ effect on that agent's next dispatch. The floor never knows which engine a desk 
 
 - **Codex** talks to `codex app-server` over its JSON-RPC socket. Started automatically.
 - **Claude** spawns `claude --print` in streaming mode.
+  MINIMAC sets Claude Code to compact at 200K tokens and disables its 1M context
+  variants for every new or resumed seat.
 - **Sim** is a scripted fake behind the same port, for demos.
 
 ## The loop

@@ -55,6 +55,23 @@ const PLAN_STATUS = Object.freeze({
 
 const HISTORY_LIMIT = 16_000;
 
+// MINIMAC keeps every Claude seat inside the same bounded context policy.
+// Claude Code gives environment settings precedence over interactive commands
+// and launch flags, so this applies equally to new and resumed headless runs.
+const CONTEXT_ENV = Object.freeze({
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200k',
+  CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+});
+
+function contextEnvironment(environment = process.env) {
+  // A parent shell must not silently disable MINIMAC's compact policy or add
+  // a gateway-only limit to the recognized model ids used by the roster.
+  const inherited = { ...environment };
+  delete inherited.DISABLE_COMPACT;
+  delete inherited.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
+  return { ...inherited, ...CONTEXT_ENV };
+}
+
 // Claude states a permission problem in prose. This is the one place that
 // reads it, so "blocked" means the same thing whichever tool tripped.
 const NEEDS_APPROVAL = /\b(requires? (approval|permission)|permission (denied|required)|was blocked|not allowed|user (denied|rejected))\b/i;
@@ -284,6 +301,7 @@ export function createClaudeDriver({
   function launch(agent, cwd, sessionId, resume) {
     const child = spawn(bin, argsFor(agent, sessionId, resume), {
       cwd,
+      env: contextEnvironment(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let resolveReady;
