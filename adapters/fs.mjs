@@ -3,7 +3,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { open, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -85,13 +85,24 @@ export function createRepoIndex() {
     async resource(repo, reference) {
       if (reference?.kind === 'file') {
         const path = isAbsolute(reference.id) ? resolve(reference.id) : resolve(repo, reference.id);
-        const rel = relative(resolve(repo), path);
+        const repoPath = await realpath(resolve(repo));
+        const resourcePath = await realpath(path).catch(() => null);
+        if (!resourcePath) throw new Error(`file does not exist: ${reference.id}`);
+        const rel = relative(repoPath, resourcePath);
         if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('file is outside the mission repository');
-        const info = await stat(path).catch(() => null);
+        const info = await stat(resourcePath).catch(() => null);
         if (!info?.isFile()) throw new Error(`file does not exist: ${reference.id}`);
+        const handle = await open(resourcePath, 'r');
+        const length = Math.min(info.size, 200_000);
+        const buffer = Buffer.alloc(length);
+        try {
+          await handle.read(buffer, 0, length, 0);
+        } finally {
+          await handle.close();
+        }
         return {
           kind: 'file', id: rel, label: rel, bytes: info.size,
-          content: (await readFile(path, 'utf8')).slice(0, 200_000),
+          content: buffer.toString('utf8'),
         };
       }
       if (reference?.kind === 'skill') {

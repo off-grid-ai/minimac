@@ -674,36 +674,19 @@ function harvestReport(event) {
 // speech: they are parsed here and stripped before anything is shown.
 const FENCES = [REPORT_FENCE, WORK_PLAN_FENCE, VERDICT_FENCE];
 
-// One reply arrives as several flushes. Splitting each flush on its own fails
-// the moment a chunk boundary lands inside the fence marker itself - which is
-// how raw JSON reached the floor and how an empty code block was rendered.
-//
-// So the whole reply is re-split from the start every time and only the NEW
-// prose is emitted. A boundary can then fall anywhere and the answer is the
-// same, because there is no per-chunk state to get out of step.
-const wire = new Map();
-
 function partitionAgentOutput(event) {
   if (event.kind !== EVENT_KINDS.ENGINE_OUTPUT) return { event, raw: null };
-
-  const wireKey = event.payload?.workerId ?? event.payload?.sessionId ?? event.agentId;
-  const held = wire.get(wireKey) ?? { buffer: '', shown: 0 };
-  const buffer = held.buffer + String(event.payload?.text ?? '');
+  // Draft output is temporary adapter state. Only the complete answer becomes
+  // a message or is inspected for machine report blocks.
+  if (event.payload?.final !== true) return { event, raw: null };
+  const buffer = String(event.payload?.text ?? '');
   const { prose, open } = splitFenced(buffer, FENCES, false, true);
 
   // A block that has closed is complete and can be parsed. Nothing is parsed
   // while one is still open, which is why a split report used to be dropped.
   const raw = open ? null : buffer;
-  const delta = prose.slice(held.shown);
-
-  if (open) {
-    wire.set(wireKey, { buffer, shown: prose.length });
-  } else {
-    wire.set(wireKey, { buffer: '', shown: 0 });
-  }
-
-  if (!delta || isMachineNoise(delta)) return { event: null, raw };
-  return { event: { ...event, payload: { ...event.payload, text: delta } }, raw };
+  if (!prose || isMachineNoise(prose)) return { event: null, raw };
+  return { event: { ...event, payload: { ...event.payload, text: prose } }, raw };
 }
 
 function identifyWorker(event) {
@@ -1771,7 +1754,7 @@ const COMMANDS = {
     const parsed = parseMentions(text, {
       agents: Object.values(state.agents), checkpoints: itemsOf(state.board), decisions: state.cards,
     });
-    const namesAgent = parsed.agents.length > 0;
+    const namesAgent = parsed.references.some((reference) => reference.kind === 'hero');
     const routedTarget = routeOf(parsed, target);
     // A pasted path is an attachment, so dragging a file in and pasting its
     // path behave the same way.
@@ -1780,8 +1763,9 @@ const COMMANDS = {
         attachments = [...attachments, { path, name: path.split('/').pop(), type: 'file' }];
       }
     }
-    if (parsed.files.length > 0 && state.agents[routedTarget]) {
-      await COMMANDS.claim({ agentId: routedTarget, patterns: parsed.files });
+    const files = parsed.references.filter((reference) => reference.kind === 'file').map((reference) => reference.id);
+    if (files.length > 0 && state.agents[routedTarget]) {
+      await COMMANDS.claim({ agentId: routedTarget, patterns: files });
     }
     if (target === 'mission' && !namesAgent) {
       return COMMANDS.setMission({ mission: text, attachments });
@@ -2259,6 +2243,15 @@ conversations = createConversationService({
   emit: ingest,
   id: randomUUID,
   missionId: () => String(store.runId),
+  validateContext: (context) => {
+    if (context.kind === CONTEXT_KIND.MISSION) return context.id === String(store.runId);
+    if (context.kind === CONTEXT_KIND.CHECKPOINT) return Boolean(findItem(state.board, context.id));
+    if (context.kind === CONTEXT_KIND.DECISION) {
+      return state.cards.some((card) => String(card.key ?? card.id) === context.id);
+    }
+    return false;
+  },
+  validateRecipient: (agentId) => Boolean(state.agents[agentId]),
   resolveMentions: async (text) => parseMentions(text, {
     agents: Object.values(state.agents), checkpoints: itemsOf(state.board), decisions: state.cards,
   }),
@@ -2552,9 +2545,6 @@ function snapshot() {
       checkpoints: itemsOf(state.board).map((item) => workspaceQuery.checkpoint(item.id)).filter(Boolean),
       decisions: state.cards.map((card) => workspaceQuery.decision(card.key ?? card.id)).filter(Boolean),
     } : null,
-    missionConversation: messagesForContext(state.events, {
-      kind: CONTEXT_KIND.MISSION, id: String(store.runId),
-    }),
     schema: buildOutputSchema(),
   };
 }

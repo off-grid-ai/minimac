@@ -9,35 +9,28 @@
 const TOKEN = /(^|\s)([@/#])([\w./~-]*[\w/-])/g;
 
 export function parseMentions(text, { agents = [], checkpoints = [], decisions = [] } = {}) {
-  const files = [];
-  const skills = [];
-  const mentionedAgents = [];
-  const mentionedCheckpoints = [];
-  const mentionedDecisions = [];
+  const references = [];
   const aliases = agentMentionAliases(agents);
   const checkpointIds = new Set(checkpoints.map((item) => String(item.id).toLowerCase()));
   const decisionIds = new Set(decisions.map((item) => String(item.key ?? item.id).toLowerCase()));
 
   for (const [, , sigil, name] of text.matchAll(TOKEN)) {
     if (sigil === '/') {
-      push(skills, name);
+      pushReference(references, { kind: 'skill', id: name });
       continue;
     }
     if (sigil === '#') {
       const key = name.toLowerCase();
-      if (checkpointIds.has(key)) push(mentionedCheckpoints, name);
-      else if (decisionIds.has(key)) push(mentionedDecisions, name);
+      if (checkpointIds.has(key)) pushReference(references, { kind: 'checkpoint', id: name });
+      else if (decisionIds.has(key)) pushReference(references, { kind: 'decision', id: name });
       continue;
     }
     const agentId = aliases.get(name.toLowerCase());
-    if (agentId) push(mentionedAgents, agentId);
-    else push(files, name);
+    if (agentId) pushReference(references, { kind: 'hero', id: agentId });
+    else pushReference(references, { kind: 'file', id: name });
   }
 
-  return {
-    text, files, skills, agents: mentionedAgents,
-    checkpoints: mentionedCheckpoints, decisions: mentionedDecisions,
-  };
+  return { text, references };
 }
 
 // One alias codec for autocomplete and routing. Stable ids always win. A
@@ -89,9 +82,11 @@ export function applyMention(text, mention, value) {
 // A mention of an agent retargets the message; a message with no agent mention
 // goes wherever the composer is pointed.
 export function routeOf(parsed, fallbackAgentId) {
-  return parsed.agents[0] ?? fallbackAgentId;
+  return parsed.references.find((reference) => reference.kind === 'hero')?.id ?? fallbackAgentId;
 }
 
-function push(list, value) {
-  if (value && !list.includes(value)) list.push(value);
+function pushReference(list, reference) {
+  if (reference.id && !list.some((value) => value.kind === reference.kind && value.id === reference.id)) {
+    list.push(reference);
+  }
 }

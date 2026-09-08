@@ -77,7 +77,7 @@ export function createDelivery({ id, authorId, messageId, recipientId, state, er
   return { event: createEvent(authorId, EVENT_KINDS.DELIVERY, { id, messageId, recipientId, state, error }, createdAt) };
 }
 
-export function messageContext(event) { return event?.payload?.message?.context ?? event?.payload?.context ?? null; }
+export function messageContext(event) { return event?.payload?.message?.context ?? null; }
 
 export function applyConversationEvent(projection = {}, event) {
   const next = {
@@ -116,12 +116,10 @@ export function messagesForContext(events, context) {
     .sort((left, right) => left.createdAt - right.createdAt);
 }
 
-export function messagesForHero(events, heroId, board = []) {
-  const owned = new Set(board.filter((item) => item.owner === heroId).map((item) => item.id));
+export function messagesForHero(events, heroId) {
   return conversationOf(events).messages.filter((message) =>
     message.authorId === heroId || message.recipients.includes(heroId)
-    || message.references.some((reference) => reference.kind === 'hero' && reference.id === heroId)
-    || (message.context.kind === CONTEXT_KIND.CHECKPOINT && owned.has(message.context.id)));
+    || message.references.some((reference) => reference.kind === REFERENCE_KIND.HERO && reference.id === heroId));
 }
 
 export function reactionsForMessage(events, messageId) {
@@ -150,11 +148,7 @@ export function threadSummary(events, context) {
 
 export function conversationReferences({ context, parsed, attachments = [], skills = [] }) {
   return normalizeReferences([
-    context ? { kind: context.kind, id: context.id } : null,
-    ...(parsed?.agents ?? []).map((id) => ({ kind: 'hero', id })),
-    ...(parsed?.checkpoints ?? []).map((id) => ({ kind: 'checkpoint', id })),
-    ...(parsed?.decisions ?? []).map((id) => ({ kind: 'decision', id })),
-    ...(parsed?.files ?? []).map((id) => ({ kind: 'file', id })),
+    ...(parsed?.references ?? []).filter((reference) => reference.kind !== 'skill'),
     ...skills.map((skill) => ({ kind: 'skill', id: skill.id, label: skill.label })),
     ...attachments.map((file) => ({ kind: 'attachment', id: file.path, label: file.name })),
   ].filter(Boolean));

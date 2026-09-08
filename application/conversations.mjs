@@ -3,39 +3,49 @@ import {
   messageExists, normalizeContext, reactionActive,
 } from '../core/conversation.mjs';
 
-export function createConversationService({ getEvents, emit, id, missionId, resolveMentions, resolveSkills, deliver }) {
-  const output = new Map();
+export function createConversationService({
+  getEvents, emit, id, missionId, resolveMentions, resolveSkills, validateContext, validateRecipient, deliver,
+}) {
   async function post({
     authorId, context, recipients = [], body = '', attachments = [], references = [],
     replyToMessageId = null, from = 'agent', wake = false,
   }) {
     const primary = normalizeContext(context, missionId());
     if (!primary) throw new Error('message context does not exist');
+    if (validateContext && !validateContext(primary)) throw new Error(`${primary.kind} ${primary.id} does not exist`);
+    for (const recipientId of recipients) {
+      if (validateRecipient && !validateRecipient(recipientId)) throw new Error(`recipient ${recipientId} does not exist`);
+    }
     if (replyToMessageId && !messageExists(getEvents(), primary, replyToMessageId)) {
       throw new Error(`no message ${replyToMessageId} in this conversation`);
     }
     const parsed = await resolveMentions(body);
-    const skills = await resolveSkills(parsed.skills ?? []);
+    const skills = await resolveSkills((parsed.references ?? [])
+      .filter((reference) => reference.kind === 'skill').map((reference) => reference.id));
     const result = createMessage({
       id: id(), authorId, context: primary, recipients, replyToMessageId, body, attachments, from,
       references: [...references, ...conversationReferences({ context: primary, parsed, attachments, skills })],
     });
     if (result.error) throw new Error(result.error);
     emit(result.event);
-    for (const recipientId of result.message.recipients) await send(result.message, recipientId, wake);
-    return result.message;
+    const deliveries = [];
+    for (const recipientId of result.message.recipients) deliveries.push(await send(result.message, recipientId, wake));
+    return { ...result.message, deliveries };
   }
 
   async function send(message, recipientId, wake) {
+    const deliveryId = id();
     const delivery = (state, error = null) => emit(createDelivery({
-      id: id(), authorId: message.authorId, messageId: message.id, recipientId, state, error,
+      id: deliveryId, authorId: message.authorId, messageId: message.id, recipientId, state, error,
     }).event);
     delivery(DELIVERY_STATE.QUEUED);
     try {
       await deliver(recipientId, conversationPrompt(message), { wake });
       delivery(DELIVERY_STATE.DELIVERED);
+      return { id: deliveryId, recipientId, state: DELIVERY_STATE.DELIVERED, error: null };
     } catch (error) {
       delivery(DELIVERY_STATE.FAILED, error.message);
+      return { id: deliveryId, recipientId, state: DELIVERY_STATE.FAILED, error: error.message };
     }
   }
 
@@ -50,16 +60,10 @@ export function createConversationService({ getEvents, emit, id, missionId, reso
   }
 
   function acceptAgentOutput(event, context) {
-    const streamId = event.payload?.workerId ?? event.payload?.sessionId ?? event.agentId;
-    const accumulated = `${output.get(streamId) ?? ''}${event.payload?.text ?? ''}`;
-    if (event.payload?.partial === true && event.payload?.final !== true) {
-      output.set(streamId, accumulated);
-      return null;
-    }
-    output.delete(streamId);
+    if (event.payload?.final !== true) return null;
     const result = createMessage({
       id: id(), authorId: event.agentId, context: normalizeContext(context, missionId()),
-      recipients: event.payload?.recipients ?? [], body: accumulated,
+      recipients: event.payload?.recipients ?? [], body: event.payload?.text ?? '',
       attachments: event.payload?.attachments ?? [], references: event.payload?.references ?? [],
       from: event.payload?.from ?? 'agent', createdAt: event.ts,
     });

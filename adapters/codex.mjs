@@ -85,25 +85,33 @@ export function createCodexDriver({
 
   // ------------------------------------------------------- message batching
 
-  const buffers = new Map(); // threadId -> { agentId, text, timer }
+  const buffers = new Map(); // threadId -> { agentId, pending, complete, timer }
   const FLUSH_MS = 500;
 
   function bufferDelta(agentId, threadId, delta) {
-    const entry = buffers.get(threadId) ?? { agentId, text: '', timer: null };
-    entry.text += delta;
+    const entry = buffers.get(threadId) ?? { agentId, pending: '', complete: '', timer: null };
+    entry.pending += delta;
+    entry.complete += delta;
     if (!entry.timer) entry.timer = setTimeout(() => flushDelta(threadId), FLUSH_MS);
     buffers.set(threadId, entry);
   }
 
-  function flushDelta(threadId, final = false) {
+  function flushDelta(threadId, final = false, fallback = '') {
     const entry = buffers.get(threadId);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    buffers.delete(threadId);
-    if (entry.text.trim()) {
-      emit(createEvent(entry.agentId, EVENT_KINDS.ENGINE_OUTPUT, {
-        text: entry.text,
+    if (!entry && !String(fallback).trim()) return;
+    if (entry?.timer) clearTimeout(entry.timer);
+    const text = final ? (entry?.complete || fallback) : entry?.pending;
+    if (final) buffers.delete(threadId);
+    else if (entry) {
+      entry.pending = '';
+      entry.timer = null;
+      buffers.set(threadId, entry);
+    }
+    if (String(text ?? '').trim()) {
+      emit(createEvent(entry?.agentId ?? agentByThread.get(threadId), EVENT_KINDS.ENGINE_OUTPUT, {
+        text,
         partial: !final,
+        final,
         sessionId: threadId,
         workerId: workerByThread.get(threadId) ?? null,
       }));
@@ -342,7 +350,7 @@ export function createCodexDriver({
         return at(EVENT_KINDS.STATUS, { state: 'running', turnId: params.turn?.id });
 
       case 'turn/completed':
-        flushDelta(params.threadId, true); {
+        flushDelta(params.threadId, true, finalText(params.turn?.items)); {
         turnByThread.delete(threadId);
         const turn = params.turn ?? {};
         at(EVENT_KINDS.RESULT, {
@@ -455,9 +463,8 @@ export function createCodexDriver({
         toolUseId: item.id ?? null, action: 'read', target: item.path ?? '', phase,
       });
     }
-    if (item.type === 'agentMessage' && phase === 'completed' && item.text) {
-      return at(EVENT_KINDS.ENGINE_OUTPUT, { text: item.text, final: item.phase === 'final_answer' });
-    }
+    // The delta buffer owns agent prose and emits it once when the turn ends.
+    // item/completed often repeats the complete answer after the deltas.
     return undefined;
   }
 
