@@ -1853,15 +1853,35 @@
   }
   #composerInput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 12px -4px var(--accent-glow); }
   #composer.is-collapsed #composerInput {
-    height: 34px;
-    max-height: 34px;
-    overflow: hidden;
-    white-space: nowrap;
+    display: none;
   }
-  #composer.is-collapsed #composerInput > * { display: inline; }
+  #composer.is-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "dock";
+  }
+  #composer.is-collapsed > #attachments,
+  #composer.is-collapsed > #composerTarget,
+  #composer.is-collapsed > #composerSend,
+  #composer.is-collapsed > #mentionMenu { display: none; }
   #composerSend { grid-area: send; }
 
-  .dock { grid-area: dock; display: flex; align-items: center; gap: calc(var(--step) * 1.5); flex-wrap: wrap; }
+  .dock {
+    grid-area: dock;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(var(--step) * 2);
+    flex-wrap: wrap;
+  }
+  .dock-nav,
+  .dock-tools {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--step) * 1.5);
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+  .dock-tools { flex: 0 0 auto; }
 
   .dock-btn {
     display: inline-flex;
@@ -2232,27 +2252,31 @@
     <button class="btn primary" id="composerSend" type="button">SEND</button>
 
     <div class="dock">
-      <button class="dock-btn" id="btnFlows" type="button" aria-pressed="false" aria-controls="winFlows">flow</button>
-      <button class="dock-btn" id="btnCrew" type="button" aria-pressed="false" aria-controls="winCrew">avengers</button>
-      <button class="dock-btn" id="btnDecisions" type="button" aria-pressed="false" aria-controls="winDecisions">
-        decisions <span id="queueCount" aria-label="decisions waiting on you">0</span>
-      </button>
-      <button class="dock-btn" id="btnRuns" type="button" aria-pressed="false" aria-controls="winRuns">missions</button>
-      <button class="dock-btn mini" id="composerCollapse" type="button" aria-expanded="true"
-              aria-controls="composerInput" aria-label="Collapse mission text" title="Collapse mission text">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-      </button>
-      <div id="sceneZoom" role="group" aria-label="Scene zoom">
-        <button id="sceneZoomOut" type="button" aria-label="Zoom scene out" title="Zoom scene out">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5M7 10h6"/></svg>
+      <nav class="dock-nav" aria-label="Work views">
+        <button class="dock-btn" id="btnFlows" type="button" aria-pressed="false" aria-controls="winFlows">flow</button>
+        <button class="dock-btn" id="btnCrew" type="button" aria-pressed="false" aria-controls="winCrew">avengers</button>
+        <button class="dock-btn" id="btnDecisions" type="button" aria-pressed="false" aria-controls="winDecisions">
+          decisions <span id="queueCount" aria-label="decisions waiting on you">0</span>
         </button>
-        <output id="sceneZoomLevel" aria-live="polite">125%</output>
-        <button id="sceneZoomIn" type="button" aria-label="Zoom scene in" title="Zoom scene in">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5M7 10h6M10 7v6"/></svg>
+        <button class="dock-btn" id="btnRuns" type="button" aria-pressed="false" aria-controls="winRuns">missions</button>
+      </nav>
+      <div class="dock-tools" role="group" aria-label="Console tools">
+        <button class="dock-btn mini" id="btnAttach" type="button"
+                aria-label="Attach a file" title="Attach a file — or just drop one on the window">+file</button>
+        <div id="sceneZoom" role="group" aria-label="Scene zoom">
+          <button id="sceneZoomOut" type="button" aria-label="Zoom scene out" title="Zoom scene out">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5M7 10h6"/></svg>
+          </button>
+          <output id="sceneZoomLevel" aria-live="polite">125%</output>
+          <button id="sceneZoomIn" type="button" aria-label="Zoom scene in" title="Zoom scene in">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5M7 10h6M10 7v6"/></svg>
+          </button>
+        </div>
+        <button class="dock-btn mini" id="composerCollapse" type="button" aria-expanded="true"
+                aria-controls="composerInput goalStrip" aria-label="Collapse console" title="Collapse console">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
         </button>
       </div>
-      <button class="dock-btn mini" id="btnAttach" type="button"
-              aria-label="Attach a file" title="Attach a file — or just drop one on the window">+file</button>
     </div>
 
     <div id="mentionMenu" hidden role="listbox" aria-label="Completions"></div>

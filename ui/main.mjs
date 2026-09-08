@@ -1147,6 +1147,7 @@ const handlers = {
     state.eventsByAgent = {};
     state.focus = null;
     state.target = MISSION_TARGET;
+    setConsoleCollapsed(false);
     composer?.beginMission();
     scene?.focusOn?.(null);
     strip?.close();
@@ -1249,6 +1250,7 @@ function fireMove(agentId, tone = 'neutral') {
 function addressMission() {
   state.target = MISSION_TARGET;
   renderPanels();
+  setConsoleCollapsed(false);
   composer?.focus();
 }
 
@@ -1267,6 +1269,15 @@ function addPing(fromId, toId) {
 }
 
 // -------------------------------------------------------------------- boot
+
+function setConsoleCollapsed(collapsed) {
+  dom.composer?.classList.toggle('is-collapsed', collapsed);
+  strip?.syncVisibility();
+  dom.composerCollapse?.setAttribute('aria-expanded', String(!collapsed));
+  const label = collapsed ? 'Expand console' : 'Collapse console';
+  dom.composerCollapse?.setAttribute('aria-label', label);
+  if (dom.composerCollapse) dom.composerCollapse.title = label;
+}
 
 function wireChrome() {
   // ASSEMBLE before START: Thor decides who this mission actually needs,
@@ -1314,17 +1325,10 @@ function wireChrome() {
   });
   paintZoom();
 
-  const setComposerCollapsed = (collapsed) => {
-    dom.composer?.classList.toggle('is-collapsed', collapsed);
-    dom.composerCollapse?.setAttribute('aria-expanded', String(!collapsed));
-    const label = collapsed ? 'Expand mission text' : 'Collapse mission text';
-    dom.composerCollapse?.setAttribute('aria-label', label);
-    if (dom.composerCollapse) dom.composerCollapse.title = label;
-  };
   dom.composerCollapse?.addEventListener('click', () => {
-    setComposerCollapsed(!dom.composer?.classList.contains('is-collapsed'));
+    setConsoleCollapsed(!dom.composer?.classList.contains('is-collapsed'));
   });
-  dom.composerInput?.addEventListener('focus', () => setComposerCollapsed(false));
+  dom.composerInput?.addEventListener('focus', () => setConsoleCollapsed(false));
 
   for (const name of Object.keys(WINDOW_IDS)) {
     dom[WINDOW_IDS[name][1]]?.addEventListener('click', () => toggleWindow(name));
@@ -2149,7 +2153,7 @@ function clearPrayerChrome() {
 // A switch on the console, cloned from its neighbours so it cannot drift out
 // of style with them.
 function mountFeedButton() {
-  const sibling = dom.btnCrew ?? dom.btnDecisions;
+  const sibling = dom.btnFlows ?? dom.btnCrew ?? dom.btnDecisions;
   if (!sibling?.parentElement) return;
   const button = sibling.cloneNode(false);
   button.id = 'btnFeed';
@@ -2485,7 +2489,10 @@ function boot() {
     pending: state.errands.pending.length,
     waypoint: viewAgents(Date.now()).find((a) => a.errand)?.errand ?? null,
   });
-  dom.btnAttach?.addEventListener('click', () => dom.fileInput?.click());
+  dom.btnAttach?.addEventListener('click', () => {
+    setConsoleCollapsed(false);
+    dom.fileInput?.click();
+  });
   addEventListener('popstate', () => {
     const runId = runIdFromUrl() ?? state.runId;
     if (runId) handlers.openRun(runId, { updateUrl: false });

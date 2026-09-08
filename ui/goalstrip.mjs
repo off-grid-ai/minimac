@@ -21,6 +21,7 @@ export function createGoalStrip({ handlers, console: consoleEl, renderDecisions 
   style();
 
   const root = document.createElement('div');
+  root.id = 'goalStrip';
   root.className = 'goalstrip';
   root.hidden = true;
 
@@ -147,6 +148,15 @@ export function createGoalStrip({ handlers, console: consoleEl, renderDecisions 
     goal.style.overflowY = goal.scrollHeight > cap ? 'auto' : 'hidden';
   }
 
+  function syncVisibility() {
+    root.hidden = !agentId || consoleEl?.classList.contains('is-collapsed');
+    if (root.hidden) {
+      document.documentElement.style.setProperty('--desk-h', '0px');
+      return;
+    }
+    follow();
+  }
+
   return {
     get agentId() {
       return agentId;
@@ -154,15 +164,15 @@ export function createGoalStrip({ handlers, console: consoleEl, renderDecisions 
 
     close() {
       agentId = null;
-      root.hidden = true;
-      document.documentElement.style.setProperty('--desk-h', '0px');
+      syncVisibility();
     },
+
+    syncVisibility,
 
     render(agent) {
       if (!agent) return this.close();
       const fresh = agent.id !== agentId;
       agentId = agent.id;
-      root.hidden = false;
 
       who.textContent = agent.label ?? agent.name;
       who.dataset.status = agent.status;
@@ -182,8 +192,7 @@ export function createGoalStrip({ handlers, console: consoleEl, renderDecisions 
         goal.value = objective;
       }
       paintDecisions(agent.decisions ?? []);
-
-      follow(); // places the strip and measures the field at its real width
+      syncVisibility(); // places the strip and measures the field at its real width
     },
   };
 }
