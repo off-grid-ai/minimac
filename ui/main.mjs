@@ -65,6 +65,8 @@ const state = {
   errandPhase: null,
   hovered: null,
   feedPreset: 'all',
+  checkpointThreadId: null,
+  checkpointReplyTo: null,
   // Which hero's question you are answering. A prayer is a conversation, not
   // a one-line reply typed into a card that then vanishes.
   prayerWith: null,
@@ -572,18 +574,38 @@ function renderPanels() {
     });
   }
   if (dom.checkpoints && windows?.isOpen('checkpoints')) {
+    const conversationEvents = Object.values(state.eventsByAgent).flat();
+    const threadEvents = state.checkpointThreadId
+      ? conversationEvents.filter((event) => event.payload?.checkpointId === state.checkpointThreadId)
+      : [];
     const workState = agents.map((agent) => [
       agent.id, agent.status, agent.enabled, agent.sessionId, agent.workItemIds,
     ]);
-    renderChanged('checkpoints', dom.checkpoints, [state.board, state.velocity, workState], () => {
+    renderChanged('checkpoints', dom.checkpoints, [
+      state.board, state.velocity, workState, state.checkpointThreadId, threadEvents,
+    ], () => {
       panels.renderBoard(dom.checkpoints, state.board, state.velocity, agents, {
         move: (id, direction) => send('moveCheckpoint', { id, direction }),
         pause: (id, paused) => send('pauseCheckpoint', { id, paused }),
         start: (id) => send('forceStartCheckpoint', { id }),
         reassign: (id, owner) => send('reassignCheckpoint', { id, owner }),
         add: (checkpoint) => send('assignWork', checkpoint),
-      });
+        openThread: openCheckpointThread,
+        closeThread: closeCheckpointThread,
+        reply: (messageId, author) => {
+          state.checkpointReplyTo = { messageId, author };
+          renderCheckpointReply();
+          checkpointChat?.focus();
+        },
+        react: (id, messageId, reaction) => send('reactCheckpoint', { id, messageId, reaction }),
+        openAgent: (agentId) => {
+          closeCheckpointThread();
+          focus(agentId);
+          openWindow('crew');
+        },
+      }, { selectedId: state.checkpointThreadId, events: conversationEvents });
     });
+    renderCheckpointComposer();
   }
   // The focused name still identifies the chat target. It does not own Flow.
   if (dom.focusName) dom.focusName.textContent = focused?.name ?? '';
@@ -1673,6 +1695,9 @@ let feedControls = null;
 let feedChat = null;
 let prayerComposer = null;
 let checkpointsBody = null;
+let checkpointChat = null;
+let checkpointChatHost = null;
+let checkpointReply = null;
 
 // The feed is a window like any other: same chrome, same dock switch, same
 // dragging and resizing. Building it here rather than in the markup only means
@@ -1715,7 +1740,29 @@ function mountCheckpoints() {
   checkpointsBody = document.createElement('div');
   checkpointsBody.className = 'win-body';
   checkpointsBody.id = 'checkpoints';
-  win.append(bar, checkpointsBody);
+  checkpointChatHost = document.createElement('footer');
+  checkpointChatHost.className = 'checkpoint-chat';
+  checkpointChatHost.hidden = true;
+  checkpointReply = document.createElement('div');
+  checkpointReply.className = 'checkpoint-compose-reply';
+  checkpointReply.hidden = true;
+  checkpointChatHost.append(checkpointReply);
+  checkpointChat = mountPanelComposer(checkpointChatHost, {
+    getTarget: () => state.board.find((item) => item.id === state.checkpointThreadId)?.owner ?? orchestratorId(),
+    dispatch: ({ text, attachments }) => send('commentCheckpoint', {
+      id: state.checkpointThreadId,
+      text,
+      attachments,
+      replyToId: state.checkpointReplyTo?.messageId ?? null,
+    }).then((result) => {
+      if (result.ok) {
+        state.checkpointReplyTo = null;
+        renderCheckpointReply();
+      }
+      return result;
+    }),
+  });
+  win.append(bar, checkpointsBody, checkpointChatHost);
   document.body.append(win);
   dom.winCheckpoints = win;
   dom.checkpoints = checkpointsBody;
@@ -1728,6 +1775,49 @@ function mountCheckpoints() {
     sibling.parentElement.insertBefore(button, sibling);
     dom.btnCheckpoints = button;
   }
+}
+
+function openCheckpointThread(id) {
+  if (!state.board.some((item) => item.id === id)) return;
+  state.checkpointThreadId = id;
+  state.checkpointReplyTo = null;
+  openWindow('checkpoints');
+  renderCheckpointComposer();
+  schedulePanels();
+}
+
+function closeCheckpointThread() {
+  state.checkpointThreadId = null;
+  state.checkpointReplyTo = null;
+  renderCheckpointComposer();
+  schedulePanels();
+}
+
+function renderCheckpointComposer() {
+  if (!checkpointChatHost) return;
+  checkpointChatHost.hidden = !state.checkpointThreadId;
+  renderCheckpointReply();
+  const owner = state.board.find((item) => item.id === state.checkpointThreadId)?.owner;
+  checkpointChat?.setTarget(owner ?? orchestratorId(), orderedAgents(), '');
+}
+
+function renderCheckpointReply() {
+  if (!checkpointReply) return;
+  const reply = state.checkpointReplyTo;
+  checkpointReply.hidden = !reply;
+  checkpointReply.replaceChildren();
+  if (!reply) return;
+  const text = document.createElement('span');
+  text.textContent = `Replying to ${reply.author}`;
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.setAttribute('aria-label', 'Cancel reply');
+  cancel.textContent = '×';
+  cancel.onclick = () => {
+    state.checkpointReplyTo = null;
+    renderCheckpointReply();
+  };
+  checkpointReply.append(text, cancel);
 }
 
 function mountPrayerComposer() {

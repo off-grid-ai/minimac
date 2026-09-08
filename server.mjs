@@ -4,7 +4,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -2204,6 +2204,26 @@ const server = createServer(async (req, res) => {
     const root = join(ROOT, 'data', 'attachments');
     if (!wanted.startsWith(root)) return json(res, 403, { error: 'forbidden' });
     return serveStatic(wanted.slice(ROOT.length), res);
+  }
+  // Repository references in a conversation are links, not copied content.
+  // Resolve them against the configured repository and never outside it.
+  if (url.pathname === '/repo-file') {
+    const root = resolve(options.repo);
+    const wanted = resolve(root, String(url.searchParams.get('path') ?? ''));
+    if (wanted !== root && !wanted.startsWith(`${root}${sep}`)) {
+      return json(res, 403, { error: 'forbidden' });
+    }
+    try {
+      const body = await readFile(wanted);
+      res.writeHead(200, {
+        'content-type': 'text/plain; charset=utf-8',
+        'content-length': body.length,
+        'cache-control': 'no-store',
+      });
+      return res.end(body);
+    } catch {
+      return json(res, 404, { error: 'not found' });
+    }
   }
   if (url.pathname === '/dirs') {
     return json(res, 200, await repoIndex.dirs(url.searchParams.get('path') ?? ''));

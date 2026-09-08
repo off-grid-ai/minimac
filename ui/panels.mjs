@@ -14,6 +14,8 @@ import { burnRatio } from '../core/derive.mjs';
 import { rollup, remaining } from '../core/flows.mjs';
 import { compareQueueOrder, nextGate, isClosed, isDone, unmetDeps } from '../core/board.mjs';
 import { EFFORT_OPTIONS, ENGINES, MODEL_OPTIONS } from '../core/roster.mjs';
+import { checkpointThread, messageIdOf, REACTIONS } from '../core/conversation.mjs';
+import { renderMarkdown } from './markdown.mjs';
 
 const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
 
@@ -317,9 +319,14 @@ function isOpen(agentId, path, depth) {
 let addingCheckpoint = false;
 let checkpointFilter = 'all';
 
-export function renderBoard(root, board, velocity, agents = [], handlers = {}) {
+export function renderBoard(root, board, velocity, agents = [], handlers = {}, view = {}) {
   const items = board ?? [];
-  const redraw = () => renderBoard(root, board, velocity, agents, handlers);
+  const selected = items.find((item) => item.id === view.selectedId);
+  if (selected) {
+    root.replaceChildren(checkpointConversation(selected, items, agents, handlers, view.events ?? []));
+    return;
+  }
+  const redraw = () => renderBoard(root, board, velocity, agents, handlers, view);
   const frag = document.createDocumentFragment();
   const workers = agents.filter((agent) => agent.role !== 'orchestrator');
   const ordered = items.filter((item) => !isClosed(item)).sort(compareQueueOrder);
@@ -495,7 +502,10 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   const heading = item.title || item.outcome;
   const description = item.outcome && item.outcome !== heading ? item.outcome : item.plan;
   const line = el('div', 'checkpoint-line');
-  const title = el('div', 'checkpoint-title');
+  const title = el('button', 'checkpoint-title');
+  title.type = 'button';
+  title.title = `Open ${item.id} conversation`;
+  title.onclick = () => handlers.openThread?.(item.id);
   const headingId = `checkpoint-${item.id}-title`;
   row.setAttribute('aria-labelledby', headingId);
   const label = el('span', 'checkpoint-label', heading);
@@ -549,6 +559,163 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   }
   row.append(controls, checkpointDetails(item));
   return row;
+}
+
+function checkpointConversation(item, all, agents, handlers, events) {
+  const page = el('section', 'checkpoint-thread');
+  const owner = agents.find((agent) => agent.id === item.owner);
+  const waiting = unmetDeps({ items: all }, item);
+  const running = item.lease?.state === 'running';
+  const done = isDone(item);
+  const top = el('header', 'checkpoint-thread-head');
+  const back = document.createElement('wa-button');
+  back.setAttribute('appearance', 'plain');
+  back.textContent = '← CHECKPOINTS';
+  back.onclick = () => handlers.closeThread?.();
+  const identity = el('div', 'checkpoint-thread-identity');
+  identity.append(
+    el('span', 'checkpoint-id', item.id),
+    el('h2', '', item.title || item.outcome),
+    el('p', '', item.outcome || item.plan || 'No result description.'),
+  );
+  top.append(back, identity);
+
+  const facts = el('div', 'checkpoint-thread-facts');
+  const status = el('span', 'checkpoint-state');
+  status.append(
+    checkpointIcon(checkpointStatusIcon(item, running, waiting, done)),
+    document.createTextNode(checkpointStatus(item, running, waiting, owner, done)),
+  );
+  const ownerButton = el('button', 'checkpoint-person', owner?.name ?? 'No owner');
+  ownerButton.type = 'button';
+  ownerButton.disabled = !owner;
+  ownerButton.onclick = () => owner && handlers.openAgent?.(owner.id);
+  facts.append(status, checkpointTiming(item), ownerButton);
+
+  const details = document.createElement('wa-details');
+  details.className = 'checkpoint-thread-details';
+  details.setAttribute('summary', 'Plan and proof');
+  const detailBody = el('div', 'checkpoint-detail-body');
+  detailBody.append(
+    detailLine('PLAN', item.plan),
+    detailLine('PROOF', item.verify),
+    detailLine('NEXT', nextGate(item) ?? 'done'),
+  );
+  details.append(detailBody);
+
+  const timeline = el('div', 'checkpoint-timeline');
+  const messages = checkpointThread(events, item.id);
+  if (!messages.length) {
+    timeline.append(teach('no checkpoint messages yet', 'Write below to start the work conversation.'));
+  } else {
+    for (const event of messages) timeline.append(checkpointMessage(event, agents, handlers));
+  }
+  page.append(top, facts, details, timeline);
+  return page;
+}
+
+function checkpointMessage(event, agents, handlers) {
+  const payload = event.payload ?? {};
+  const messageId = messageIdOf(event);
+  const author = payload.from === 'you'
+    ? 'You'
+    : agents.find((agent) => agent.id === event.agentId)?.name ?? event.agentId;
+  const article = el('article', 'checkpoint-message');
+  article.dataset.messageId = messageId ?? '';
+  if (payload.replyToId) article.dataset.replyTo = payload.replyToId;
+  const head = el('header', 'checkpoint-message-head');
+  const time = document.createElement('wa-relative-time');
+  time.setAttribute('date', new Date(event.ts).toISOString());
+  time.setAttribute('format', 'narrow');
+  time.setAttribute('sync', '');
+  head.append(el('strong', '', author), time);
+  if (payload.replyToId) head.append(el('span', 'checkpoint-reply-mark', `reply to ${shortId(payload.replyToId)}`));
+
+  const body = el('div', 'checkpoint-message-body md');
+  body.innerHTML = renderMarkdown(checkpointMessageText(event));
+  article.append(head, body);
+  if (payload.attachments?.length) article.append(checkpointAttachments(payload.attachments));
+  if (payload.references?.length) article.append(checkpointReferences(payload.references, handlers));
+
+  const actions = el('div', 'checkpoint-message-actions');
+  const reply = document.createElement('wa-button');
+  reply.setAttribute('appearance', 'plain');
+  reply.setAttribute('size', 'small');
+  reply.textContent = 'Reply';
+  reply.onclick = () => handlers.reply?.(messageId, author);
+  actions.append(reply);
+  for (const [key, reaction] of Object.entries(REACTIONS)) {
+    const button = document.createElement('wa-button');
+    button.setAttribute('appearance', 'plain');
+    button.setAttribute('size', 'small');
+    button.title = reaction.label;
+    const count = event.reactions?.[key] ?? 0;
+    button.textContent = `${reaction.symbol}${count ? ` ${count}` : ''}`;
+    button.onclick = () => handlers.react?.(payload.checkpointId, messageId, key);
+    actions.append(button);
+  }
+  article.append(actions);
+  return article;
+}
+
+function checkpointMessageText(event) {
+  const payload = event.payload ?? {};
+  if (event.kind === 'message') return String(payload.text ?? '');
+  if (event.kind === 'order') return String(payload.text ?? payload.instruction ?? 'Work assigned.');
+  if (event.kind === 'escalation') return String(payload.why ?? payload.text ?? 'Needs a decision.');
+  if (event.kind === 'claim') return String(payload.text ?? payload.claim ?? 'Evidence added.');
+  return String(payload.text ?? payload.reason ?? payload.summary ?? event.kind);
+}
+
+function checkpointAttachments(files) {
+  const gallery = el('div', 'checkpoint-attachments');
+  for (const file of files) {
+    const link = el('a', 'checkpoint-attachment');
+    link.href = `/attachment?path=${encodeURIComponent(file.path)}`;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    if (String(file.type ?? '').startsWith('image/')) {
+      const image = el('img');
+      image.src = link.href;
+      image.alt = file.name ?? 'Attached image';
+      image.loading = 'lazy';
+      link.append(image);
+    } else link.textContent = file.name ?? 'Attachment';
+    gallery.append(link);
+  }
+  return gallery;
+}
+
+function checkpointReferences(references, handlers) {
+  const row = el('nav', 'checkpoint-references');
+  row.setAttribute('aria-label', 'Related work');
+  for (const reference of references) {
+    if (reference.kind === 'attachment') continue;
+    const label = reference.label ?? reference.id;
+    if (reference.kind === 'checkpoint') {
+      const button = el('button', '', `#${label}`);
+      button.type = 'button';
+      button.onclick = () => handlers.openThread?.(reference.id);
+      row.append(button);
+    } else if (reference.kind === 'agent') {
+      const button = el('button', '', `@${label}`);
+      button.type = 'button';
+      button.onclick = () => handlers.openAgent?.(reference.id);
+      row.append(button);
+    } else if (reference.kind === 'file' || reference.kind === 'skill') {
+      const link = el('a', '', reference.kind === 'skill' ? `/${label}` : `@${label}`);
+      link.href = `/repo-file?path=${encodeURIComponent(reference.id)}`;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      row.append(link);
+    }
+  }
+  return row;
+}
+
+function shortId(value) {
+  const text = String(value ?? '');
+  return text.length > 14 ? `${text.slice(0, 11)}…` : text;
 }
 
 function checkpointStatus(item, running, waiting, owner, done = false) {
