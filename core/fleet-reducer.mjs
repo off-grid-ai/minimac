@@ -1,5 +1,6 @@
 import { EVENT_KINDS } from './events.mjs';
 import { ensureWorkers, patchWorker, WORKER_STATE } from './workers.mjs';
+import { isCurrentSessionEvent } from './session-lifecycle.mjs';
 
 export function applyFleetEvent(agents, event) {
   const agent = agents[event.agentId];
@@ -11,11 +12,11 @@ export function applyFleetEvent(agents, event) {
     const worker = ensureWorkers(next).find((candidate) => candidate.id === workerId);
     if (!worker) return agents;
     const eventSessionId = event.payload?.sessionId;
-    const knownSessionId = worker.sessionId ?? worker.resumeSessionId;
-    if (knownSessionId && eventSessionId && knownSessionId !== eventSessionId) return agents;
     const eventEngine = event.payload?.engine ?? null;
+    if (!isCurrentSessionEvent(worker, { sessionId: eventSessionId, engine: eventEngine })) {
+      return agents;
+    }
     const expectedEngine = worker.engine ?? agent.engine;
-    if (eventEngine && expectedEngine && eventEngine !== expectedEngine) return agents;
 
     // The runtime event can arrive before startWorkers() returns. Bind the
     // worker to its engine before persistence sees that first session event.

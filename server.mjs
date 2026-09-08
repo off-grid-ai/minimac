@@ -35,7 +35,7 @@ import {
   workerForCheckpoint,
   workerForSession,
 } from './core/workers.mjs';
-import { canResumeSession } from './core/session-lifecycle.mjs';
+import { canResumeSession, isCurrentSessionEvent } from './core/session-lifecycle.mjs';
 import { setGoal, getGoal, clearGoal, deriveGoals } from './core/goals.mjs';
 import { claimFiles, releaseClaim } from './core/claims.mjs';
 import {
@@ -665,15 +665,37 @@ function persistEventWorker(event) {
   if (worker) store.saveWorkerSession(worker);
 }
 
+function settleEventLease(event) {
+  const workerId = event.payload?.workerId;
+  if (!workerId) return;
+  const worker = ensureWorkers(state.agents[event.agentId])
+    .find((candidate) => candidate.id === workerId);
+  if (!isCurrentSessionEvent(worker, event.payload)) return;
+  const checkpointId = event.payload?.checkpointId ?? worker.checkpointId;
+  const item = checkpointId && findItem(state.board, checkpointId);
+  if (!item?.lease || item.lease.workerId !== workerId) return;
+  if (item.lease.sessionId && event.payload?.sessionId
+    && item.lease.sessionId !== event.payload.sessionId) return;
+  const settled = reviseItem(state.board, checkpointId, {
+    lease: finishLease(item.lease, event.payload.state, event.ts),
+  });
+  if (settled.error) return;
+  state.board = settled.board;
+  store.saveItem(settled.item);
+}
+
 function ingest(rawIncoming) {
   const incoming = identifyWorker(rawIncoming);
   if (incoming.kind === EVENT_KINDS.STATUS
     && [WORKER_STATE.IDLE, WORKER_STATE.STOPPED].includes(incoming.payload?.state)) {
-    const workerId = incoming.payload?.workerId
-      ?? workerForSession(state.agents[incoming.agentId], incoming.payload?.sessionId)?.id;
-    if (workerId) {
-      workerLeases?.clear(workerId);
-      revokeWorkerPrincipal(workerId);
+    const worker = incoming.payload?.workerId
+      ? ensureWorkers(state.agents[incoming.agentId])
+        .find((candidate) => candidate.id === incoming.payload.workerId)
+      : workerForSession(state.agents[incoming.agentId], incoming.payload?.sessionId);
+    if (isCurrentSessionEvent(worker, incoming.payload)) {
+      workerLeases?.clear(worker.id);
+      revokeWorkerPrincipal(worker.id);
+      settleEventLease(incoming);
     }
   }
   // A result carries its text in its own envelope and is never split, so it
