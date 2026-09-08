@@ -1,10 +1,10 @@
 import { createEvent, EVENT_KINDS } from './events.mjs';
 
 export const REACTIONS = Object.freeze({
-  acknowledge: { symbol: 'OK', label: 'acknowledged' },
-  watching: { symbol: 'EYE', label: 'investigating' },
+  acknowledge: { symbol: '✅', label: 'acknowledged' },
+  watching: { symbol: '👀', label: 'investigating' },
   question: { symbol: '?', label: 'needs clarification' },
-  blocked: { symbol: 'X', label: 'blocked or disagrees' },
+  blocked: { symbol: '⛔', label: 'blocked or disagrees' },
 });
 
 export function checkpointOf(event) {
@@ -12,7 +12,9 @@ export function checkpointOf(event) {
 }
 
 export function messageIdOf(event) {
-  return event?.payload?.messageId ?? null;
+  if (event?.payload?.messageId) return event.payload.messageId;
+  if (!event?.agentId || !Number.isFinite(event?.ts)) return null;
+  return `${event.agentId}:${event.ts}:${event.kind}`;
 }
 
 export function createCheckpointMessage({
@@ -46,8 +48,18 @@ export function createReaction({
 }
 
 export function checkpointThread(events, checkpointId) {
+  const visibleKinds = new Set([
+    EVENT_KINDS.MESSAGE,
+    EVENT_KINDS.ORDER,
+    EVENT_KINDS.ESCALATION,
+    EVENT_KINDS.CLAIM,
+    EVENT_KINDS.BLOCKED,
+    EVENT_KINDS.APPROVAL,
+    EVENT_KINDS.PING,
+    EVENT_KINDS.REACTION,
+  ]);
   const related = events
-    .filter((event) => checkpointOf(event) === checkpointId)
+    .filter((event) => checkpointOf(event) === checkpointId && visibleKinds.has(event.kind))
     .sort((left, right) => left.ts - right.ts);
   const reactions = new Map();
   for (const event of related) {
