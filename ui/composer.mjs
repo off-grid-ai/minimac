@@ -27,6 +27,7 @@ export function createComposer({
   getHistory = () => [],
   setTarget,
   onSend,
+  dispatch = ({ target, text, attachments }) => send('say', { target, text, attachments }),
   dropTarget = globalThis,
 }) {
   if (!dom.input) return { setTarget() {}, focus() {}, beginMission() {} };
@@ -108,7 +109,7 @@ export function createComposer({
       localHistory.set(target, [...sent, text]);
     }
     onSend?.({ target, text, attachments, from: dom.input.getBoundingClientRect() });
-    send('say', { target, text, attachments });
+    dispatch({ target, text, attachments });
     editor.setValue('');
     historyIndex = null;
     historyDraft = '';

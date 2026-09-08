@@ -1747,7 +1747,7 @@ function mountPrayerComposer() {
 
 // The main console and both side-panel chats use createComposer. This shell
 // only adapts that component to a fixed panel footer; it adds no send path.
-function mountPanelComposer(host, { getTarget, extraActions = [] }) {
+function mountPanelComposer(host, { getTarget, extraActions = [], dispatch }) {
   const attachments = document.createElement('div');
   attachments.className = 'panel-attachments';
   attachments.hidden = true;
@@ -1799,6 +1799,7 @@ function mountPanelComposer(host, { getTarget, extraActions = [] }) {
     getHistory: () => sentHistoryFor(getTarget()),
     setTarget: () => {},
     onSend: flyMessage,
+    dispatch,
     dropTarget: host,
   });
 }
