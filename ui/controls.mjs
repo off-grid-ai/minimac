@@ -1,22 +1,15 @@
-// Accessible controls with an optional Web Awesome presentation layer.
-// Native HTML is the complete fallback, so a blocked CDN never removes an
-// action, a timestamp, or a disclosure from the product.
+// One native control boundary for compact operator actions. A CDN component
+// can register before or after first render, so selecting the element type at
+// runtime produced two visual systems on the same surface.
 
 function available(name) {
   return Boolean(globalThis.customElements?.get(name));
 }
 
 export function createControlButton(text, { size = 'small' } = {}) {
-  if (available('wa-button')) {
-    const button = document.createElement('wa-button');
-    button.setAttribute('appearance', 'plain');
-    button.setAttribute('size', size);
-    button.textContent = text;
-    return button;
-  }
   const button = document.createElement('button');
   button.type = 'button';
-  button.className = 'control-fallback';
+  button.className = `control-button is-${size}`;
   button.textContent = text;
   return button;
 }

@@ -10,7 +10,6 @@ import {
   detectLoops,
   eventsPerMin,
   gradeClaims,
-  pendingDecisions,
 } from '../core/derive.mjs';
 import {
   createQueue as createErrands,
@@ -61,7 +60,7 @@ const state = {
   agents: {},
   goals: {},
   claims: {},
-  cards: null,
+  cards: [],
   board: [],
   flows: [],
   progress: null,
@@ -403,50 +402,8 @@ function claimsFor(agentId) {
   return gradeClaims(claims).graded;
 }
 
-// The room derives its own cards on the server now, so the screen renders what
-// the monitor found rather than working it out a second time. The local pass
-// stays as the fallback for a server that has not sent any yet (an old build,
-// or the first frame after a reload).
-function decisions(now) {
-  if (state.cards) return state.cards;
-  return deriveLocalCards(now);
-}
-
-function deriveLocalCards(now) {
-  return orderedAgents().filter((agent) => agent.enabled !== false).flatMap((agent) => {
-    const events = state.eventsByAgent[agent.id] ?? [];
-    const approval = pendingApproval(events);
-    const cards = pendingDecisions(agent, events, now, { items: state.board }).map((decision) => ({
-      ...decision,
-      agentName: agent.label ?? agent.name,
-      // An engine parked on a permission request is not just "blocked": it is
-      // asking a question with named answers, so the card carries them.
-      approval: decision.kind === 'blocked' ? approval : null,
-    }));
-    if (approval && !cards.some((card) => card.approval)) {
-      cards.unshift({
-        agentId: agent.id,
-        agentName: agent.label ?? agent.name,
-        kind: 'approval',
-        detail: approval.summary,
-        actions: ['steer', 'kill'],
-        approval,
-      });
-    }
-    return cards;
-  });
-}
-
-// The newest approval that has not been answered yet.
-function pendingApproval(events) {
-  const resolved = new Set();
-  let open = null;
-  for (const event of events) {
-    if (event.kind !== EVENT_KINDS.APPROVAL) continue;
-    if (event.payload?.resolved) resolved.add(event.payload.id);
-    else open = event.payload;
-  }
-  return open && !resolved.has(open.id) ? open : null;
+function decisions() {
+  return state.cards;
 }
 
 // ------------------------------------------------------------------ render
@@ -639,7 +596,13 @@ function renderPanels() {
       ? conversationEvents.filter((event) => event.payload?.checkpointId === state.checkpointThreadId)
       : [];
     const workState = agents.map((agent) => [
-      agent.id, agent.status, agent.enabled, agent.sessionId, agent.workItemIds,
+      agent.id,
+      agent.status,
+      agent.enabled,
+      (agent.workers ?? []).map((worker) => [
+        worker.id, worker.state, worker.sessionId, worker.checkpointId,
+      ]),
+      agent.workItemIds,
     ]);
     renderChanged('checkpoints', dom.checkpoints, [
       board, progress, workState, state.checkpointThreadId, threadEvents,
@@ -1546,9 +1509,12 @@ function renderFeed() {
 
   const lines = [];
   const allMissionEvents = Object.values(state.eventsByAgent).flat();
+  const threads = new Map();
   const threadMessages = new Map();
   for (const item of feedBoard ?? []) {
-    for (const event of checkpointThread(allMissionEvents, item.id)) {
+    const thread = checkpointThread(allMissionEvents, item.id);
+    threads.set(item.id, thread);
+    for (const event of thread) {
       threadMessages.set(messageIdOf(event), event);
     }
   }
@@ -1561,6 +1527,9 @@ function renderFeed() {
       if (!passesDetail(event, state.feedLevel) || !passesPreset(event, state.feedPreset)) continue;
       const entry = feedEntry(agent, event);
       if (!entry) continue;
+      // Checkpoint messages live in their checkpoint thread. The mission Feed
+      // contains the assignment root plus messages about the mission itself.
+      if (entry.checkpointId && entry.kind !== 'assignment') continue;
       const item = entry.checkpointId
         ? feedBoard.find((candidate) => candidate.id === entry.checkpointId)
         : null;
@@ -1581,6 +1550,12 @@ function renderFeed() {
         workUnitDisplayId: workUnit?.displayId ?? item?.workUnitId ?? null,
         checkpointDisplayId: checkpoint?.displayId ?? item?.id ?? null,
         stage: item?.stage ?? null,
+        assignmentTo: entry.kind === 'assignment'
+          ? state.agents[event.payload?.toAgentId]?.label ?? event.payload?.toAgentId
+          : null,
+        threadCount: entry.checkpointId
+          ? Math.max(0, (threads.get(entry.checkpointId)?.length ?? 0) - 1)
+          : 0,
         reactions: enriched?.reactions ?? {},
         reactionActors: enriched?.reactionActors ?? {},
         ts: event.ts,
@@ -1792,15 +1767,10 @@ function presetBar() {
     'padding:2px 0 6px', 'background:var(--surface,#121212)',
   ].join(';');
   for (const preset of FEED_PRESETS) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = preset.label;
+    const button = createControlButton(preset.label);
     button.title = preset.blurb;
     const on = preset.id === state.feedPreset;
-    button.style.cssText = 'background:transparent;font:inherit;font-size:9px;'
-      + 'letter-spacing:.1em;text-transform:uppercase;padding:2px 7px;cursor:pointer;'
-      + `border:1px solid ${on ? 'var(--accent,#34d399)' : 'var(--line,#262626)'};`
-      + `color:${on ? 'var(--accent,#34d399)' : 'var(--faint,#5a5a5a)'}`;
+    button.setAttribute('aria-pressed', String(on));
     button.onclick = () => {
       state.feedPreset = preset.id;
       renderFeed();
@@ -1821,12 +1791,8 @@ function filterChip() {
   const who = state.agents[state.feedFilter]?.label ?? state.feedFilter;
   chip.append(document.createTextNode(`ONLY ${who.toUpperCase()}`));
 
-  const all = document.createElement('button');
-  all.type = 'button';
-  all.textContent = 'SHOW ALL';
-  all.style.cssText =
-    'margin-left:auto;background:transparent;border:1px solid var(--line,#262626);'
-    + 'color:var(--muted,#8a8a8a);font:inherit;padding:2px 7px;cursor:pointer';
+  const all = createControlButton('SHOW ALL');
+  all.style.marginLeft = 'auto';
   all.onclick = clearFeedFilter;
   chip.append(all);
   return chip;
@@ -1849,6 +1815,18 @@ function feedRow(entry) {
   time.textContent = entry.at;
   head.append(avatar, author, time);
   row.append(head);
+
+  if (entry.kind === 'assignment') {
+    const assignment = document.createElement('div');
+    assignment.className = 'feed-assignment-label';
+    assignment.textContent = [
+      'ASSIGNED',
+      entry.assignmentTo,
+      entry.workUnitDisplayId,
+      entry.checkpointDisplayId,
+    ].filter(Boolean).join(' / ');
+    row.append(assignment);
+  }
 
   const body = document.createElement('div');
   body.className = 'md';
@@ -1886,23 +1864,18 @@ function feedRow(entry) {
   if (entry.checkpointId) {
     const actions = document.createElement('div');
     actions.className = 'feed-message-actions';
-    const thread = createControlButton('THREAD');
-    thread.onclick = () => openCheckpointThread(entry.checkpointId);
-    actions.append(thread);
-    if (entry.messageId) {
-      for (const [key, reaction] of Object.entries(REACTIONS)) {
-        const button = createControlButton(`${reaction.symbol}${entry.reactions?.[key] ? ` ${entry.reactions[key]}` : ''}`);
-        button.title = reaction.label;
-        button.setAttribute('aria-pressed', String(entry.reactionActors?.[key]?.includes('you') ?? false));
-        button.onclick = () => send('reactCheckpoint', {
-          id: entry.checkpointId,
-          messageId: entry.messageId,
-          reaction: key,
-        });
-        actions.append(button);
-      }
+    for (const [key, reaction] of Object.entries(REACTIONS)) {
+      const actors = (entry.reactionActors?.[key] ?? [])
+        .filter((actor) => actor !== 'you' && actor !== entry.agentId);
+      if (!actors.length) continue;
+      const chip = document.createElement('span');
+      chip.className = 'reaction-chip';
+      chip.textContent = `${reaction.symbol} ${actors.length}`;
+      chip.title = `${reaction.label}: ${actors
+        .map((actor) => state.agents[actor]?.label ?? actor).join(', ')}`;
+      actions.append(chip);
     }
-    row.append(actions);
+    if (actions.childElementCount) row.append(actions);
   }
   return row;
 }
@@ -1922,9 +1895,21 @@ function feedReferences(entry) {
     if (ref.kind === 'work-unit') {
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = ref.label ?? ref.id;
+      button.textContent = `#${ref.label ?? ref.id}`;
       button.onclick = () => openWindow('flows');
       nav.append(button);
+      if (entry.checkpointId) {
+        const thread = document.createElement('button');
+        thread.type = 'button';
+        thread.className = 'feed-thread-button';
+        thread.setAttribute('aria-label', `Open ${entry.checkpointDisplayId ?? 'checkpoint'} thread`);
+        thread.title = entry.threadCount
+          ? `Open thread · ${entry.threadCount} messages`
+          : 'Open thread';
+        thread.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.5h10v6H7l-3 3v-3H3z"/></svg>';
+        thread.onclick = () => openCheckpointThread(entry.checkpointId);
+        nav.append(thread);
+      }
     } else if (ref.kind === 'checkpoint') {
       const button = document.createElement('button');
       button.type = 'button';
@@ -2013,7 +1998,9 @@ function feedEntry(agent, event) {
     return {
       at,
       who,
-      text: `${payload.action.toUpperCase()} -> ${to}${payload.checkpointId ? ` · ${payload.checkpointId}` : ''}\n${payload.text}`,
+      text: payload.action === 'assign'
+        ? String(payload.text ?? '')
+        : `${payload.action.toUpperCase()} -> ${to}${payload.checkpointId ? ` · ${payload.checkpointId}` : ''}\n${payload.text}`,
       checkpointId: payload.checkpointId ?? null,
       references: payload.references ?? [],
       tone: 'tool',
@@ -2483,50 +2470,51 @@ function renderMiddleware(order) {
   if (!middlewareBody) return;
 
   const intro = document.createElement('div');
-  intro.style.cssText = 'padding:6px 0 10px;color:var(--muted,#8a8a8a)';
-  intro.textContent = `Every dispatch is built from these, in order: ${order.join(' → ')}`;
+  intro.className = 'middleware-intro';
+  intro.textContent = `DISPATCH ORDER / ${order.join(' / ')}`;
 
   middlewareBody.replaceChildren(intro, ...middlewareSteps.map(stepEditor));
 }
 
 function stepEditor(step) {
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--line,#262626)';
+  const wrap = document.createElement('details');
+  wrap.className = 'middleware-step';
+  if (step.overridden) wrap.open = true;
 
-  const head = document.createElement('div');
-  head.style.cssText =
-    'display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:.12em;'
-    + 'text-transform:uppercase;color:var(--muted,#8a8a8a)';
+  const head = document.createElement('summary');
+  head.className = 'middleware-step-head';
   const name = document.createElement('span');
   name.textContent = step.name;
   if (step.overridden) {
-    name.style.color = 'var(--accent,#34d399)';
-    name.textContent += ' · yours';
+    name.className = 'is-overridden';
   }
   head.append(name);
 
+  const mode = document.createElement('span');
+  mode.className = 'middleware-step-state';
+  mode.textContent = step.overridden ? 'CUSTOM' : 'DEFAULT';
+  head.append(mode);
+
+  const editor = document.createElement('div');
+  editor.className = 'middleware-editor';
+
   const save = document.createElement('button');
   save.type = 'button';
-  save.className = 'act';
+  save.className = 'control-button is-small';
   save.textContent = 'SAVE';
-  save.style.cssText = 'margin-left:auto;flex:none';
 
   const reset = document.createElement('button');
   reset.type = 'button';
-  reset.className = 'act';
+  reset.className = 'control-button is-small';
   reset.textContent = 'RESET';
-  reset.style.flex = 'none';
+  reset.disabled = !step.overridden;
 
   const box = document.createElement('textarea');
   box.value = step.text;
-  box.rows = 8;
+  box.rows = Math.max(4, Math.min(10, String(step.text ?? '').split('\n').length + 1));
   box.spellcheck = false;
   box.setAttribute('aria-label', `${step.name} prompt`);
-  box.style.cssText = [
-    'width:100%', 'margin-top:6px', 'resize:vertical', 'font:inherit',
-    'background:var(--bg,#0a0a0a)', 'color:var(--text,#e8e8e8)',
-    'border:1px solid var(--line,#262626)', 'padding:6px 8px', 'white-space:pre-wrap',
-  ].join(';');
+  box.className = 'middleware-input';
 
   save.onclick = async () => {
     await send('setMiddleware', { name: step.name, text: box.value });
@@ -2537,8 +2525,11 @@ function stepEditor(step) {
     await loadMiddleware();
   };
 
-  head.append(save, reset);
-  wrap.append(head, box);
+  const actions = document.createElement('div');
+  actions.className = 'middleware-actions';
+  actions.append(save, reset);
+  editor.append(box, actions);
+  wrap.append(head, editor);
   return wrap;
 }
 

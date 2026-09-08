@@ -519,7 +519,8 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   const row = el('article', `checkpoint-row${running ? ' is-running' : ''}${done ? ' is-done' : ''}`);
   const waiting = unmetDeps({ items: all }, item);
   const owner = agents.find((agent) => agent.id === item.owner);
-  const ownerBusy = owner?.sessionId && !(owner.workItemIds ?? []).includes(item.id);
+  const ownerBusy = (owner?.workers ?? []).some((worker) =>
+    worker.sessionId && worker.checkpointId !== item.id);
   const heading = item.title || item.outcome;
   const description = item.outcome && item.outcome !== heading ? item.outcome : item.plan;
   const line = el('div', 'checkpoint-line');
@@ -656,22 +657,22 @@ function checkpointMessage(event, agents, handlers) {
   article.append(head, body);
   if (payload.attachments?.length) article.append(checkpointAttachments(payload.attachments));
   if (payload.references?.length) article.append(checkpointReferences(payload.references, handlers));
-  if (handlers.readOnly) return article;
 
   const actions = el('div', 'checkpoint-message-actions');
-  const reply = createControlButton('Reply');
-  reply.onclick = () => handlers.reply?.(messageId, author);
-  actions.append(reply);
-  for (const [key, reaction] of Object.entries(REACTIONS)) {
-    const button = createControlButton('');
-    button.title = reaction.label;
-    const count = event.reactions?.[key] ?? 0;
-    button.textContent = `${reaction.symbol}${count ? ` ${count}` : ''}`;
-    button.setAttribute('aria-pressed', String(event.reactionActors?.[key]?.includes('you') ?? false));
-    button.onclick = () => handlers.react?.(payload.checkpointId, messageId, key);
-    actions.append(button);
+  if (!handlers.readOnly) {
+    const reply = createControlButton('REPLY');
+    reply.onclick = () => handlers.reply?.(messageId, author);
+    actions.append(reply);
   }
-  article.append(actions);
+  for (const [key, reaction] of Object.entries(REACTIONS)) {
+    const actors = (event.reactionActors?.[key] ?? [])
+      .filter((actor) => actor !== 'you' && actor !== event.agentId);
+    if (!actors.length) continue;
+    const chip = el('span', 'reaction-chip', `${reaction.symbol} ${actors.length}`);
+    chip.title = `${reaction.label}: ${actors.join(', ')}`;
+    actions.append(chip);
+  }
+  if (actions.childElementCount) article.append(actions);
   return article;
 }
 
