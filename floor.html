@@ -1545,7 +1545,7 @@
     padding-block: calc(var(--step) * 2);
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto auto;
-    grid-template-areas: "id copies engine runtime" "goal goal goal goal" "chat chat chat chat";
+    grid-template-areas: "id copies engine runtime" "goal goal goal goal" "chat chat chat chat" "connections connections connections connections";
     gap: calc(var(--step) * 1) calc(var(--step) * 2);
     align-items: center;
     padding: calc(var(--step) * 2) calc(var(--step) * 1.5);
@@ -1618,6 +1618,36 @@
   .agent .goal-input::placeholder { color: var(--faint); }
   .agent input.goal-input:hover { color: var(--text); border-bottom-color: var(--line); }
   .agent input.goal-input:focus { outline: none; color: var(--text); border-bottom-color: var(--accent); }
+  .agent-connections {
+    grid-area: connections;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: calc(var(--step) * 3);
+    margin-top: var(--step);
+    padding-top: calc(var(--step) * 2);
+    border-top: 1px solid var(--line);
+    cursor: default;
+  }
+  .agent-connections h4 { margin: 0 0 var(--step); color: var(--faint); font: 9px var(--mono); letter-spacing: .12em; }
+  .agent-work-list, .agent-message-list { display: grid; align-content: start; gap: 1px; min-width: 0; }
+  .agent-work-link, .agent-message-link {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: calc(var(--step) * 1.5);
+    align-items: baseline;
+    min-width: 0;
+    padding: var(--step);
+    border: 0;
+    background: var(--surface);
+    color: var(--text);
+    font: 9px/1.4 var(--mono);
+    text-align: left;
+  }
+  button.agent-work-link, button.agent-message-link { cursor: pointer; }
+  button.agent-work-link:hover, button.agent-message-link:hover { background: var(--accent-soft); color: var(--accent); }
+  .agent-work-link > span:nth-child(2), .agent-message-link > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-work-state { color: var(--faint); text-transform: uppercase; letter-spacing: .08em; }
+  .agent-empty { margin: 0; padding: var(--step); color: var(--faint); font-size: 9px; }
 
   /* How many of this hero. It sits beside the engine switch and is built the
      same way - one sunk strip, no floating boxes - because they are the same
@@ -1700,9 +1730,10 @@
   @media (max-width: 760px) {
     .agent {
       grid-template-columns: minmax(0, 1fr) auto auto;
-      grid-template-areas: "id copies engine" "runtime runtime runtime" "goal goal goal" "chat chat chat";
+      grid-template-areas: "id copies engine" "runtime runtime runtime" "goal goal goal" "chat chat chat" "connections connections connections";
     }
     .runtime-controls { justify-self: start; }
+    .agent-connections { grid-template-columns: minmax(0, 1fr); }
   }
 
   /* --------------------------------------------------------------- console

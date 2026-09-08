@@ -96,7 +96,47 @@ function agentRow(agent, handlers) {
     goalEditor(agent, handlers),
     createAgentChat(agent, handlers).el,
   );
+  if (agent.selected) row.append(agentConnections(agent, handlers));
   return row;
+}
+
+function agentConnections(agent, handlers) {
+  const section = el('section', 'agent-connections');
+  section.onclick = (event) => event.stopPropagation();
+  const checkpoints = el('div', 'agent-work-list');
+  checkpoints.append(el('h4', '', `CHECKPOINTS ${agent.checkpoints?.length ?? 0}`));
+  if (!agent.checkpoints?.length) checkpoints.append(el('p', 'agent-empty', 'No checkpoints assigned.'));
+  for (const item of agent.checkpoints ?? []) {
+    const button = el('button', 'agent-work-link');
+    button.type = 'button';
+    button.append(
+      el('span', 'checkpoint-id', item.id),
+      el('span', '', item.title),
+      el('span', 'agent-work-state', item.state),
+    );
+    button.onclick = () => handlers.openCheckpoint?.(item.id);
+    checkpoints.append(button);
+  }
+
+  const messages = el('div', 'agent-message-list');
+  messages.append(el('h4', '', 'RECENT MESSAGES'));
+  if (!agent.messages?.length) messages.append(el('p', 'agent-empty', 'No recent messages.'));
+  for (const message of agent.messages ?? []) {
+    const row = message.checkpointId ? el('button', 'agent-message-link') : el('div', 'agent-message-link');
+    if (message.checkpointId) {
+      row.type = 'button';
+      row.onclick = () => handlers.openCheckpoint?.(message.checkpointId);
+    }
+    const time = document.createElement('wa-relative-time');
+    time.setAttribute('date', new Date(message.ts).toISOString());
+    time.setAttribute('format', 'narrow');
+    time.setAttribute('sync', '');
+    row.append(time, el('span', '', message.text),
+      message.checkpointId ? el('span', 'checkpoint-id', message.checkpointId) : document.createTextNode(''));
+    messages.append(row);
+  }
+  section.append(checkpoints, messages);
+  return section;
 }
 
 // The one word for where this seat stands. A benched agent is never dispatched,

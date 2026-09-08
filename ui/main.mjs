@@ -3,6 +3,7 @@
 // room, the docked windows and the composer. No rules live here.
 
 import { EVENT_KINDS } from '../core/events.mjs';
+import { isDone } from '../core/board.mjs';
 import { crosstalkDelivery } from '../core/coordination.mjs';
 import {
   agentPose,
@@ -510,21 +511,42 @@ function renderChanged(name, root, value, render, { deferWhileEditing = true } =
 }
 
 function rosterView(agents) {
-  return agents.map((agent) => ({
-    id: agent.id,
-    label: agent.label,
-    name: agent.name,
-    role: agent.role,
-    status: agent.status,
-    selected: agent.selected,
-    enabled: agent.enabled,
-    active: agent.active,
-    instances: agent.instances,
-    engine: agent.engine,
-    model: agent.model,
-    effort: agent.effort,
-    goal: agent.goal,
-  }));
+  return agents.map((agent) => {
+    const checkpoints = state.board
+      .filter((item) => item.owner === agent.id)
+      .map((item) => ({
+        id: item.id,
+        title: item.title || item.outcome,
+        state: item.lease?.state === 'running' ? 'running'
+          : item.paused ? 'paused' : isDone(item) ? 'done' : 'pending',
+      }));
+    const messages = (state.eventsByAgent[agent.id] ?? [])
+      .filter((event) => event.kind === EVENT_KINDS.MESSAGE && plainText(event.payload?.text ?? ''))
+      .slice(-3)
+      .map((event) => ({
+        id: event.payload?.messageId ?? `${agent.id}:${event.ts}`,
+        text: firstLine(plainText(event.payload?.text ?? '')),
+        checkpointId: event.payload?.checkpointId ?? null,
+        ts: event.ts,
+      }));
+    return {
+      id: agent.id,
+      label: agent.label,
+      name: agent.name,
+      role: agent.role,
+      status: agent.status,
+      selected: agent.selected,
+      enabled: agent.enabled,
+      active: agent.active,
+      instances: agent.instances,
+      engine: agent.engine,
+      model: agent.model,
+      effort: agent.effort,
+      goal: agent.goal,
+      checkpoints,
+      messages,
+    };
+  });
 }
 
 // The walkover, tick by tick. Two signature moves bracket it: the carrier's
@@ -563,8 +585,9 @@ function renderPanels() {
   // read-only projection of its checkpoints, so focus cannot change progress.
   const focused = agents.find((agent) => agent.selected) ?? agents[0];
   if (dom.roster && windows?.isOpen('crew')) {
-    renderChanged('crew', dom.roster, rosterView(agents), () => {
-      renderRoster(dom.roster, agents, handlers);
+    const connectedAgents = rosterView(agents);
+    renderChanged('crew', dom.roster, connectedAgents, () => {
+      renderRoster(dom.roster, connectedAgents, handlers);
     });
   }
   if (dom.roCrew) {
@@ -1095,6 +1118,7 @@ function closeTopWindow() {
 const handlers = {
   select: focus,
   openChat: openAgentFeed,
+  openCheckpoint: openCheckpointThread,
   setGoal: (agentId, objective) => send('setGoal', { agentId, objective }),
   assignEngine: (agentId, engine) => send('assignEngine', { agentId, engine }),
   configureRuntime: (agentId, runtime) => send('configureRuntime', { agentId, ...runtime }),
