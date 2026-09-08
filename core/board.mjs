@@ -43,12 +43,13 @@ export function nextId(existing = []) {
 }
 
 export function createBoard() {
-  return { items: [] };
+  return { workUnits: [], items: [] };
 }
 
 export function createItem({
   id, title, plan = '', outcome = '', verify = '', scope = '', owner = null,
-  blockedBy = [], estimateMs = null, needs = null,
+  blockedBy = [], estimateMs = null, needs = null, workUnitId = null, stage = null,
+  files = [], required = true,
 }, now = Date.now()) {
   const gates = {};
   // Only the gates this item actually needs. A docs change has no test gate,
@@ -63,11 +64,15 @@ export function createItem({
   }
   return {
     id,
+    workUnitId,
+    stage,
     title: String(title ?? '').trim(),
     plan: String(plan ?? '').trim(),
     outcome: String(outcome ?? '').trim(),
     verify: String(verify ?? '').trim(),
     scope: String(scope ?? '').trim(),
+    files: [...files],
+    required: required !== false,
     owner,
     gates,
     blockedBy: [...blockedBy],

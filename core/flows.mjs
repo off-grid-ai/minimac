@@ -16,7 +16,10 @@
 
 // The gates, in the order work actually passes through them. Fixed on purpose:
 // a vocabulary each agent invents cannot be compared across repos.
-export const GATES = Object.freeze(['coding', 'wiring', 'lint', 'test', 'commits', 'push']);
+export const GATES = Object.freeze([
+  'product', 'design', 'coding', 'wiring', 'lint', 'test', 'audit', 'review',
+  'commits', 'prepush', 'push',
+]);
 
 export const GATE_STATE = Object.freeze({
   PASS: 'pass',

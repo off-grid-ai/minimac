@@ -53,6 +53,14 @@ CREATE TABLE IF NOT EXISTS items (
   PRIMARY KEY (run_id, id)
 );
 
+CREATE TABLE IF NOT EXISTS work_units (
+  run_id      INTEGER NOT NULL REFERENCES runs(id),
+  id          TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (run_id, id)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   name       TEXT PRIMARY KEY,
   value      TEXT NOT NULL,
@@ -232,6 +240,15 @@ export function createStore({ file }) {
        updated_at = excluded.updated_at`,
   );
   const selectItems = db.prepare('SELECT payload FROM items WHERE run_id = ? ORDER BY rowid');
+  const clearWorkUnits = db.prepare('DELETE FROM work_units WHERE run_id = ?');
+  const upsertWorkUnit = db.prepare(
+    `INSERT INTO work_units (run_id, id, payload, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(run_id, id) DO UPDATE SET payload = excluded.payload,
+       updated_at = excluded.updated_at`,
+  );
+  const selectWorkUnits = db.prepare(
+    'SELECT payload FROM work_units WHERE run_id = ? ORDER BY rowid',
+  );
   // The run this repo was last working on. A restart is not a new piece of
   // work, so the server rejoins it rather than opening an empty one beside it.
   const selectLiveRun = db.prepare(
@@ -330,6 +347,23 @@ export function createStore({ file }) {
     saveItem(item) {
       if (runId === null || !item?.id) return;
       upsertItem.run(runId, item.id, JSON.stringify(item), Date.now());
+    },
+
+    saveWorkPlan(board) {
+      if (runId === null) return;
+      clearWorkUnits.run(runId);
+      for (const workUnit of board?.workUnits ?? []) {
+        upsertWorkUnit.run(runId, workUnit.id, JSON.stringify(workUnit), Date.now());
+      }
+      for (const item of board?.items ?? []) {
+        upsertItem.run(runId, item.id, JSON.stringify(item), Date.now());
+      }
+    },
+
+    workUnitsFor(targetRunId) {
+      return selectWorkUnits.all(targetRunId ?? runId)
+        .map((row) => { try { return JSON.parse(row.payload); } catch { return null; } })
+        .filter(Boolean);
     },
 
     itemsFor(targetRunId) {
