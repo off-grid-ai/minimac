@@ -961,28 +961,12 @@ async function startWorkers(agent, cwd, context) {
       engine: agent.engine,
       state: WORKER_STATE.RUNNING,
       startedAt: worker.startedAt ?? now,
-      leaseStartedAt: checkpointId ? now : null,
-      leaseExpiresAt: checkpointId ? now + LEASE_LIMIT_MS : null,
     };
     state.agents = patchAgent(
       state.agents,
       agent.id,
       patchWorker(state.agents[agent.id], worker.id, nextWorker),
     );
-    if (checkpointId) {
-      const leased = reviseItem(state.board, checkpointId, {
-        lease: {
-          workerId: worker.id,
-          startedAt: now,
-          expiresAt: now + LEASE_LIMIT_MS,
-          state: WORKER_STATE.RUNNING,
-        },
-      });
-      if (!leased.error) {
-        state.board = leased.board;
-        store.saveItem(leased.item);
-      }
-    }
     store.saveWorkerSession(nextWorker);
     started.push(nextWorker);
   }
@@ -1872,8 +1856,6 @@ const COMMANDS = {
       sessionId: null,
       resumeSessionId: null,
       checkpointId: null,
-      leaseStartedAt: null,
-      leaseExpiresAt: null,
     }));
     state.agents = patchAgent(state.agents, agentId, projectWorkers({
       ...state.agents[agentId],
@@ -2017,8 +1999,6 @@ async function interruptWorker(
     sessionId: null,
     resumeSessionId: sessionId,
     checkpointId: clearCheckpoint ? null : worker.checkpointId,
-    leaseStartedAt: null,
-    leaseExpiresAt: null,
   });
   state.agents = patchAgent(state.agents, agentId, next);
   if (worker.checkpointId) {

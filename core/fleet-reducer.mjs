@@ -29,8 +29,6 @@ export function applyFleetEvent(agents, event) {
         state: event.payload.state,
         sessionId: ended ? null : eventSessionId,
         resumeSessionId: ended ? eventSessionId ?? worker.resumeSessionId : null,
-        leaseStartedAt: ended ? null : worker.leaseStartedAt,
-        leaseExpiresAt: ended ? null : worker.leaseExpiresAt,
       });
     }
     if (event.kind === EVENT_KINDS.BLOCKED) {

@@ -1,6 +1,6 @@
 // Worker instances are the runtime source of truth. An Avenger is a seat and
-// role; each worker owns one engine conversation and, while active, one work
-// unit lease. Seat fields are read-only compatibility projections.
+// role; each worker owns one engine conversation. The work board owns active
+// checkpoint leases. Seat fields are read-only compatibility projections.
 
 export const WORKER_STATE = Object.freeze({
   IDLE: 'idle',
@@ -24,8 +24,6 @@ export function createWorker(agentId, index, saved = {}) {
     engine: saved.engine ?? null,
     state: saved.state ?? WORKER_STATE.IDLE,
     startedAt: saved.startedAt ?? null,
-    leaseStartedAt: saved.leaseStartedAt ?? null,
-    leaseExpiresAt: saved.leaseExpiresAt ?? null,
   };
 }
 
@@ -88,7 +86,5 @@ export function hydrateWorker(row) {
     engine: row.engine,
     state: row.state ?? WORKER_STATE.IDLE,
     startedAt: row.started_at,
-    leaseStartedAt: row.lease_started_at,
-    leaseExpiresAt: row.lease_expires_at,
   });
 }

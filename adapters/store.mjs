@@ -86,8 +86,6 @@ CREATE TABLE IF NOT EXISTS worker_sessions (
   state           TEXT NOT NULL,
   started_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL,
-  lease_started_at INTEGER,
-  lease_expires_at INTEGER,
   PRIMARY KEY (run_id, worker_id)
 );
 
@@ -118,6 +116,17 @@ export function createStore({ file }) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
+  // Old builds copied checkpoint lease times into worker sessions. The work
+  // board is now the only lease owner, so remove those duplicate columns when
+  // an existing database opens.
+  const workerSessionColumns = new Set(
+    db.prepare('PRAGMA table_info(worker_sessions)').all().map((column) => column.name),
+  );
+  for (const column of ['lease_started_at', 'lease_expires_at']) {
+    if (workerSessionColumns.has(column)) {
+      db.exec(`ALTER TABLE worker_sessions DROP COLUMN ${column}`);
+    }
+  }
   // Old builds could assign one conversation to several worker rows. Keep the
   // newest owner, then make that ownership rule permanent in SQLite.
   db.exec(`
@@ -151,28 +160,24 @@ export function createStore({ file }) {
   );
   const upsertWorkerSession = db.prepare(
     `INSERT INTO worker_sessions
-       (run_id, worker_id, agent_id, checkpoint_id, session_id, engine, state,
-        started_at, updated_at, lease_started_at, lease_expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (run_id, worker_id, agent_id, checkpoint_id, session_id, engine, state, started_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(run_id, worker_id) DO UPDATE SET
        agent_id = excluded.agent_id,
        checkpoint_id = excluded.checkpoint_id,
        session_id = excluded.session_id,
        engine = excluded.engine,
        state = excluded.state,
-       updated_at = excluded.updated_at,
-       lease_started_at = excluded.lease_started_at,
-       lease_expires_at = excluded.lease_expires_at`,
+       updated_at = excluded.updated_at`,
   );
   const selectWorkerSessions = db.prepare(
     'SELECT * FROM worker_sessions WHERE run_id = ? ORDER BY agent_id, worker_id',
   );
   const migrateSessions = db.prepare(
     `INSERT OR IGNORE INTO worker_sessions
-       (run_id, worker_id, agent_id, checkpoint_id, session_id, engine, state,
-        started_at, updated_at, lease_started_at, lease_expires_at)
+       (run_id, worker_id, agent_id, checkpoint_id, session_id, engine, state, started_at, updated_at)
      SELECT run_id, agent_id || ':1', agent_id, NULL, session_id, engine, 'idle',
-       started_at, started_at, NULL, NULL
+       started_at, started_at
      FROM sessions`,
   );
   migrateSessions.run();
@@ -313,8 +318,6 @@ export function createStore({ file }) {
         worker.state ?? 'idle',
         worker.startedAt ?? now,
         now,
-        worker.leaseStartedAt ?? null,
-        worker.leaseExpiresAt ?? null,
       );
     },
 
