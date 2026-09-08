@@ -641,7 +641,7 @@ function checkpointConversation(item, all, agents, handlers, events) {
   const timeline = el('div', 'checkpoint-timeline');
   const messages = checkpointThread(events, item.id);
   if (!messages.length) {
-    timeline.append(teach('no checkpoint messages yet', 'Write below to start the work conversation.'));
+    timeline.append(teach('no checkpoint messages yet', 'Write below to record context, evidence, or a reply with this work.'));
   } else {
     for (const event of messages) timeline.append(checkpointMessage(event, agents, handlers));
   }

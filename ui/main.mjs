@@ -1846,10 +1846,13 @@ function mountCheckpoints() {
   checkpointChatHost = document.createElement('footer');
   checkpointChatHost.className = 'checkpoint-chat';
   checkpointChatHost.hidden = true;
+  const note = document.createElement('p');
+  note.className = 'checkpoint-compose-note';
+  note.textContent = 'Notes stay with this checkpoint. Use @hero in the main input when action is required.';
   checkpointReply = document.createElement('div');
   checkpointReply.className = 'checkpoint-compose-reply';
   checkpointReply.hidden = true;
-  checkpointChatHost.append(checkpointReply);
+  checkpointChatHost.append(note, checkpointReply);
   checkpointChat = mountPanelComposer(checkpointChatHost, {
     getTarget: () => state.board.find((item) => item.id === state.checkpointThreadId)?.owner ?? orchestratorId(),
     dispatch: ({ text, attachments }) => send('commentCheckpoint', {
