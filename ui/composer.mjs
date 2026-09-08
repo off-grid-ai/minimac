@@ -41,6 +41,7 @@ export function createComposer({
   let historyIndex = null;
   let historyDraft = '';
   let historyTarget = null;
+  let submitting = false;
   const localHistory = new Map();
 
   function agentNames() {
@@ -100,16 +101,36 @@ export function createComposer({
     editor.focus();
   }
 
-  function submit() {
+  async function submit() {
+    if (submitting) return;
     const text = editor.value().trim();
     if (!text && attachments.length === 0) return;
     const target = getTarget();
+    const sentAttachments = [...attachments];
+    submitting = true;
+    dom.send.disabled = true;
+    dom.input.setAttribute('aria-busy', 'true');
+    dom.input.removeAttribute('aria-invalid');
+    try {
+      const result = await dispatch({ target, text, attachments: sentAttachments });
+      if (result?.ok === false) {
+        dom.input.setAttribute('aria-invalid', 'true');
+        return;
+      }
+    } catch (error) {
+      dom.input.setAttribute('aria-invalid', 'true');
+      dom.input.title = error?.message ?? 'Message could not be sent';
+      return;
+    } finally {
+      submitting = false;
+      dom.send.disabled = false;
+      dom.input.removeAttribute('aria-busy');
+    }
     if (text) {
       const sent = localHistory.get(target) ?? [];
       localHistory.set(target, [...sent, text]);
     }
-    onSend?.({ target, text, attachments, from: dom.input.getBoundingClientRect() });
-    dispatch({ target, text, attachments });
+    onSend?.({ target, text, attachments: sentAttachments, from: dom.input.getBoundingClientRect() });
     editor.setValue('');
     historyIndex = null;
     historyDraft = '';

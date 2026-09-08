@@ -788,6 +788,8 @@
     border-color: var(--accent);
     box-shadow: 0 0 12px -4px var(--accent-glow);
   }
+  .panel-compose-input[aria-invalid="true"] { border-color: var(--danger); }
+  .panel-compose-input[aria-busy="true"] { opacity: .7; }
 
   .panel-compose-actions {
     grid-area: actions;
