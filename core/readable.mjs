@@ -174,6 +174,28 @@ export const FEED_PRESETS = Object.freeze([
   { id: 'evidence', label: 'evidence', blurb: 'only what was claimed, and the command behind it' },
 ]);
 
+// Detail changes how much of one event stream is shown. It never creates a
+// second feed or changes what is stored.
+export const FEED_LEVELS = Object.freeze([
+  { id: 'summary', label: 'summary', blurb: 'messages, decisions, blocks, and evidence' },
+  { id: 'detailed', label: 'detailed', blurb: 'summary plus completed operations and work changes' },
+  { id: 'verbose', label: 'verbose', blurb: 'every stored event that the feed can display' },
+]);
+
+const SUMMARY_KINDS = new Set([
+  'message', 'order', 'escalation', 'claim', 'blocked', 'approval', 'result', 'prayer',
+]);
+const DETAILED_KINDS = new Set([...SUMMARY_KINDS, 'ping', 'lease', 'tool']);
+
+export function passesDetail(event, level = 'summary') {
+  if (level === 'verbose') return true;
+  if (level === 'detailed') {
+    if (!DETAILED_KINDS.has(event?.kind)) return false;
+    return event.kind !== 'tool' || event.payload?.phase === 'completed';
+  }
+  return SUMMARY_KINDS.has(event?.kind);
+}
+
 export function isPreset(id) {
   return id === 'board' || FEED_PRESETS.some((preset) => preset.id === id);
 }

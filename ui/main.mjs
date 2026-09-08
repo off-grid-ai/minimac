@@ -38,7 +38,9 @@ import {
   shortenDetail,
   summariseCommand,
   isMachineNoise,
+  FEED_LEVELS,
   FEED_PRESETS,
+  passesDetail,
   passesPreset,
   doingWords,
 } from '../core/readable.mjs';
@@ -65,6 +67,8 @@ const state = {
   errandPhase: null,
   hovered: null,
   feedPreset: 'all',
+  feedLevel: 'summary',
+  feedFiltersOpen: false,
   checkpointThreadId: null,
   checkpointReplyTo: null,
   // Which hero's question you are answering. A prayer is a conversation, not
@@ -1378,7 +1382,7 @@ function renderFeed() {
     for (const event of events.slice(-300)) {
       // The preset decides the altitude: everything, only the heroes talking
       // to each other, or that plus whatever changes what happens next.
-      if (!passesPreset(event, state.feedPreset)) continue;
+      if (!passesDetail(event, state.feedLevel) || !passesPreset(event, state.feedPreset)) continue;
       const entry = feedEntry(agent, event);
       if (entry) lines.push({ ...entry, ts: event.ts, key: feedEventKey(agentId, event) });
     }
@@ -1393,17 +1397,49 @@ function renderFeed() {
     return !(next && next.who === line.who && next.text.startsWith(line.text));
   });
 
-  const feedView = JSON.stringify([state.feedPreset, state.feedFilter]);
+  const feedView = JSON.stringify([state.feedLevel, state.feedPreset, state.feedFilter]);
   const position = feedView === renderedFeedView
     ? captureScrollAnchor(feedBody)
     : { mode: 'tail' };
   const rows = deduped.slice(-400).map(feedRow);
-  const header = [presetBar(), checkpointCard(), ...(state.feedFilter ? [filterChip()] : [])]
+  const header = [feedLevelBar(), state.feedFiltersOpen ? presetBar() : null,
+    checkpointCard(), ...(state.feedFilter ? [filterChip()] : [])]
     .filter(Boolean);
   feedControls?.replaceChildren(...header);
   feedBody.replaceChildren(...rows);
   restoreScrollAnchor(feedBody, position);
   renderedFeedView = feedView;
+}
+
+function feedLevelBar() {
+  const bar = document.createElement('div');
+  bar.className = 'feed-levels';
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', 'Feed detail');
+  for (const level of FEED_LEVELS) {
+    const button = document.createElement('wa-button');
+    button.setAttribute('appearance', 'plain');
+    button.setAttribute('size', 'small');
+    button.textContent = level.label.toUpperCase();
+    button.title = level.blurb;
+    button.setAttribute('aria-pressed', String(level.id === state.feedLevel));
+    button.onclick = () => {
+      state.feedLevel = level.id;
+      renderFeed();
+    };
+    bar.append(button);
+  }
+  const filters = document.createElement('wa-button');
+  filters.setAttribute('appearance', 'plain');
+  filters.setAttribute('size', 'small');
+  filters.textContent = 'FILTERS';
+  filters.setAttribute('aria-expanded', String(state.feedFiltersOpen));
+  filters.onclick = () => {
+    state.feedFiltersOpen = !state.feedFiltersOpen;
+    renderFeed();
+  };
+  bar.append(filters);
+  return bar;
 }
 
 function feedEventKey(agentId, event) {
@@ -1577,7 +1613,47 @@ function feedRow(entry) {
   }
   row.append(body);
   if (entry.attachments?.length) row.append(feedAttachments(entry.attachments));
+  const references = feedReferences(entry);
+  if (references) row.append(references);
   return row;
+}
+
+function feedReferences(entry) {
+  const refs = [...(entry.references ?? [])];
+  if (entry.checkpointId && !refs.some((ref) => ref.kind === 'checkpoint' && ref.id === entry.checkpointId)) {
+    refs.unshift({ kind: 'checkpoint', id: entry.checkpointId });
+  }
+  const visible = refs.filter((ref) => ref.kind !== 'attachment');
+  if (!visible.length) return null;
+  const nav = document.createElement('nav');
+  nav.className = 'feed-references';
+  nav.setAttribute('aria-label', 'Related work');
+  for (const ref of visible) {
+    if (ref.kind === 'checkpoint') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = `#${ref.label ?? ref.id}`;
+      button.onclick = () => openCheckpointThread(ref.id);
+      nav.append(button);
+    } else if (ref.kind === 'agent') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = `@${ref.label ?? ref.id}`;
+      button.onclick = () => {
+        focus(ref.id);
+        openWindow('crew');
+      };
+      nav.append(button);
+    } else if (ref.kind === 'file' || ref.kind === 'skill') {
+      const link = document.createElement('a');
+      link.textContent = ref.kind === 'skill' ? `/${ref.label ?? ref.id}` : `@${ref.label ?? ref.id}`;
+      link.href = `/repo-file?path=${encodeURIComponent(ref.id)}`;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      nav.append(link);
+    }
+  }
+  return nav.childElementCount ? nav : null;
 }
 
 function feedAttachments(files) {
@@ -1629,6 +1705,8 @@ function feedEntry(agent, event) {
       partial: payload.partial === true,
       final: payload.final === true,
       attachments,
+      checkpointId: payload.checkpointId ?? null,
+      references: payload.references ?? [],
       tone: '',
     };
   }
@@ -1638,6 +1716,8 @@ function feedEntry(agent, event) {
       at,
       who,
       text: `${payload.action.toUpperCase()} -> ${to}${payload.checkpointId ? ` · ${payload.checkpointId}` : ''}\n${payload.text}`,
+      checkpointId: payload.checkpointId ?? null,
+      references: payload.references ?? [],
       tone: 'tool',
     };
   }
@@ -1645,13 +1725,15 @@ function feedEntry(agent, event) {
     const stateLabel = payload.state === 'resolved' ? 'RESOLVED' : String(payload.needs ?? 'decision').toUpperCase();
     const details = [payload.checkpointId, payload.why, payload.receipt ? `<- ${payload.receipt}` : null]
       .filter(Boolean).join('\n');
-    return { at, who, text: `${stateLabel}\n${details}`, tone: payload.state === 'open' ? 'alert' : '' };
+    return { at, who, text: `${stateLabel}\n${details}`, checkpointId: payload.checkpointId ?? null,
+      references: payload.references ?? [], tone: payload.state === 'open' ? 'alert' : '' };
   }
   if (event.kind === EVENT_KINDS.LEASE) {
     return {
       at,
       who: '',
       text: `${payload.checkpointId ?? payload.workerId} ${payload.state}`,
+      checkpointId: payload.checkpointId ?? null,
       tone: payload.state === 'expired' ? 'alert' : 'tool',
     };
   }
@@ -1673,7 +1755,8 @@ function feedEntry(agent, event) {
   }
   if (event.kind === EVENT_KINDS.CLAIM) {
     const receipt = payload.receipt ? `  <- ${payload.receipt}` : '  <- no receipt';
-    return { at, who, text: `${payload.text}${receipt}`, tone: payload.receipt ? '' : 'alert' };
+    return { at, who, text: `${payload.text}${receipt}`, checkpointId: payload.checkpointId ?? null,
+      references: payload.references ?? [], tone: payload.receipt ? '' : 'alert' };
   }
   if (event.kind === EVENT_KINDS.BLOCKED) {
     const reason = String(payload.reason ?? '');

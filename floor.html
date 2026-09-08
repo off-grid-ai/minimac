@@ -723,6 +723,35 @@
   }
 
   .feed-controls { border-bottom: 1px solid var(--line); }
+  .feed-levels { display: flex; align-items: center; gap: var(--step); padding: var(--step) 0; }
+  .feed-levels wa-button:last-child { margin-left: auto; }
+  .feed-levels wa-button::part(base) {
+    min-height: 28px;
+    border-radius: 0;
+    color: var(--faint);
+    font: 9px var(--mono);
+    letter-spacing: .08em;
+  }
+  .feed-levels wa-button[aria-pressed="true"]::part(base) {
+    color: var(--accent);
+    box-shadow: inset 0 -1px 0 var(--accent);
+  }
+  .feed-references {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--step);
+    margin-top: var(--step);
+  }
+  .feed-references button,
+  .feed-references a {
+    padding: 1px 4px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--accent);
+    font: 8px var(--mono);
+    text-decoration: none;
+    cursor: pointer;
+  }
 
   .prayer-chat {
     position: relative;
