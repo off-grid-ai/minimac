@@ -2231,7 +2231,12 @@ async function executeAgentTool(principal, name, args) {
       .map((agent) => {
         const inUse = agent.sessionIds?.length || (agent.sessionId ? 1 : 0);
         const owned = checkpoints.filter((item) => item.owner === agent.id && !isDone(item));
-        const ready = owned.filter((item) => canWork(state.board, item, agent.id));
+        const active = owned.filter((item) =>
+          item.lease?.agentId === agent.id && item.lease.state === 'running');
+        const ready = readyCheckpoints(state.board, agent.id, {
+          limitMs: LEASE_LIMIT_MS,
+          capacity: owned.length,
+        });
         return {
           id: agent.id,
           role: agent.role,
@@ -2240,7 +2245,7 @@ async function executeAgentTool(principal, name, args) {
           capacity: agent.instances,
           inUse,
           free: Math.max(0, agent.instances - inUse),
-          activeCheckpointIds: agent.workItemIds ?? [],
+          activeCheckpointIds: active.map((item) => item.id),
           readyCheckpointIds: ready.map((item) => item.id),
           blockedCheckpointIds: owned
             .filter((item) => !canWork(state.board, item, agent.id))
