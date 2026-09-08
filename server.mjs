@@ -576,7 +576,7 @@ function harvestReport(event) {
     : null;
   const assignedIds = reportingWorker?.checkpointId
     ? [reportingWorker.checkpointId]
-    : state.agents[event.agentId]?.workItemIds ?? [];
+    : activeCheckpointIds(event.agentId);
   const assignedDone = assignedIds.length === 0 || assignedIds.every((id) => {
     const item = findItem(state.board, id);
     return item && isDone(item);
@@ -1732,7 +1732,9 @@ const COMMANDS = {
   },
 
   async moveCheckpoint({ id, direction }) {
-    const running = Object.values(state.agents).flatMap((agent) => agent.workItemIds ?? []);
+    const running = itemsOf(state.board)
+      .filter((item) => item.lease?.state === 'running')
+      .map((item) => item.id);
     const result = moveCheckpointItem(state.board, id, direction, running);
     if (result.error) throw new Error(result.error);
     state.board = result.board;
@@ -1793,7 +1795,7 @@ const COMMANDS = {
     if (unmetDeps(state.board, item).length > 0) {
       throw new Error('this checkpoint is waiting on another checkpoint');
     }
-    if ((state.agents[item.owner]?.workItemIds ?? []).includes(id)) {
+    if (item.lease?.state === 'running') {
       return { item, alreadyRunning: true };
     }
     if (freeWorkers(state.agents[item.owner]).length === 0) {
@@ -2104,8 +2106,16 @@ function snapshot() {
   };
 }
 
+function activeCheckpointIds(agentId) {
+  return itemsOf(state.board)
+    .filter((item) => item.lease?.state === 'running' && item.lease.agentId === agentId)
+    .map((item) => item.id);
+}
+
 function publicAgent(agent) {
-  return agent ? { ...agent, active: isActive(agent) } : agent;
+  return agent
+    ? { ...agent, workItemIds: activeCheckpointIds(agent.id), active: isActive(agent) }
+    : agent;
 }
 
 function publish(message) {
@@ -2327,8 +2337,7 @@ async function executeAgentTool(principal, name, args) {
   if (name === AGENT_TOOL.START) {
     state.agents = patchAgent(state.agents, args.agentId, { enabled: true });
     const result = await COMMANDS.start({ agentId: args.agentId });
-    const started = state.agents[args.agentId];
-    const checkpoint = findItem(state.board, started?.workItemIds?.[0]);
+    const checkpoint = findItem(state.board, activeCheckpointIds(args.agentId)[0]);
     orders(
       args.agentId,
       checkpoint ? `Start ${checkpoint.title}` : 'Start your next ready checkpoint',

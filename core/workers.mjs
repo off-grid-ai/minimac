@@ -51,7 +51,6 @@ export function projectWorkers(agent, workers = ensureWorkers(agent)) {
     sessionId: live[0]?.sessionId ?? null,
     sessionIds: live.map((worker) => worker.sessionId),
     resumeSessionId: workers.find((worker) => worker.resumeSessionId)?.resumeSessionId ?? null,
-    workItemIds: live.map((worker) => worker.checkpointId).filter(Boolean),
     status,
   };
 }
