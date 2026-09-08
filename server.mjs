@@ -67,6 +67,11 @@ import { createWorkerLeaseService } from './application/worker-leases.mjs';
 import { ORDER_ACTION } from './core/coordination.mjs';
 import { LEASE_LIMIT_MS, finishLease } from './core/leases.mjs';
 import { readyCheckpoints } from './core/scheduler.mjs';
+import {
+  conversationReferences,
+  createCheckpointMessage,
+  createReaction,
+} from './core/conversation.mjs';
 import { projectMissionFlows } from './core/mission-flows.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
 import {
@@ -1551,6 +1556,60 @@ const COMMANDS = {
       mentions: parsed,
       attachments,
     });
+  },
+
+  async commentCheckpoint({ id, text = '', attachments = [], replyToId = null, from = 'you' }) {
+    const item = findItem(state.board, id);
+    if (!item) throw new Error(`no checkpoint ${id}`);
+    if (!String(text).trim() && attachments.length === 0) {
+      throw new Error('a checkpoint message needs text or an attachment');
+    }
+    const owner = state.agents[item.owner];
+    if (!owner) throw new Error(`${id} has no owner`);
+    const parsed = parseMentions(text, { agents: Object.values(state.agents) });
+    const event = createCheckpointMessage({
+      id: randomUUID(),
+      checkpointId: id,
+      agentId: owner.id,
+      text,
+      from,
+      attachments,
+      replyToId,
+      references: conversationReferences({ checkpointId: id, parsed, attachments }),
+    });
+    ingest(event);
+    const body = [
+      `# Checkpoint thread: ${id}`,
+      item.title,
+      replyToId ? `Replying to message ${replyToId}` : null,
+      text,
+      attachments.length > 0 ? attachmentLines(attachments) : null,
+    ].filter(Boolean).join('\n\n');
+    if (owner.sessionId) {
+      await COMMANDS.steer({ agentId: owner.id, text: body, record: false });
+      return { messageId: event.payload.messageId, delivered: true };
+    }
+    if (!item.paused && canWork(state.board, item, owner.id)) {
+      await COMMANDS.start({ agentId: owner.id, task: body, checkpointIds: [id] });
+      return { messageId: event.payload.messageId, delivered: true };
+    }
+    return { messageId: event.payload.messageId, delivered: false };
+  },
+
+  async reactCheckpoint({ id, messageId, reaction, from = 'you' }) {
+    const item = findItem(state.board, id);
+    if (!item) throw new Error(`no checkpoint ${id}`);
+    const result = createReaction({
+      id: randomUUID(),
+      checkpointId: id,
+      agentId: item.owner ?? 'minimac',
+      messageId,
+      reaction,
+      from,
+    });
+    if (result.error) throw new Error(result.error);
+    ingest(result.event);
+    return { reactionId: result.event.payload.reactionId };
   },
 
   // Make the orchestrator say something to a hero. The floor walks him over.

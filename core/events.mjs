@@ -7,6 +7,7 @@ export const EVENT_KINDS = Object.freeze({
   TOOL: 'tool',         // a tool call: read, edit, run
   DIFF: 'diff',         // lines changed so far
   MESSAGE: 'message',   // assistant prose
+  REACTION: 'reaction', // acknowledgement attached to one checkpoint message
   CLAIM: 'claim',       // a factual assertion, with or without a receipt
   PING: 'ping',         // bounded inter-agent signal
   BLOCKED: 'blocked',   // needs a human or another agent
