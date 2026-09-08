@@ -3,7 +3,7 @@
 // room, the docked windows and the composer. No rules live here.
 
 import { EVENT_KINDS } from '../core/events.mjs';
-import { isDone } from '../core/board.mjs';
+import { stateOf as checkpointState } from '../core/board.mjs';
 import { crosstalkDelivery } from '../core/coordination.mjs';
 import {
   agentPose,
@@ -517,8 +517,7 @@ function rosterView(agents) {
       .map((item) => ({
         id: item.id,
         title: item.title || item.outcome,
-        state: item.lease?.state === 'running' ? 'running'
-          : item.paused ? 'paused' : isDone(item) ? 'done' : 'pending',
+        state: checkpointState({ items: state.board }, item),
       }));
     const messages = (state.eventsByAgent[agent.id] ?? [])
       .filter((event) => event.kind === EVENT_KINDS.MESSAGE && plainText(event.payload?.text ?? ''))

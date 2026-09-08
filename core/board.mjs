@@ -135,6 +135,7 @@ export function stateOf(board, item) {
   if (item.paused) return ITEM_STATE.PAUSED;
   if (unmetDeps(board, item).length > 0) return ITEM_STATE.BLOCKED;
   if (!item.owner) return ITEM_STATE.OPEN;
+  if (item.lease?.state === 'running') return ITEM_STATE.WORKING;
   const moved = Object.values(item.gates ?? {}).some((state) => state !== GATE_STATE.PENDING);
   return moved ? ITEM_STATE.WORKING : ITEM_STATE.ASSIGNED;
 }
