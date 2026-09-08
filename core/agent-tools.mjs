@@ -15,6 +15,8 @@ export const AGENT_TOOL = Object.freeze({
   INSPECT: 'inspect_avengers',
   ESCALATE: 'escalate_to_thor',
   MESSAGE: 'message_avenger',
+  COMMENT: 'comment_checkpoint',
+  REACT: 'react_to_checkpoint_message',
   ASSEMBLE: 'assemble_avengers',
   START: 'start_avenger',
   BENCH: 'bench_avenger',
@@ -68,6 +70,24 @@ const TOOLS = Object.freeze({
       text: { type: 'string', description: 'The work message. Use plain language and no more than four short lines.' },
       checkpointId: { type: 'string', description: 'The related checkpoint. The current worker checkpoint is used when omitted.' },
     }, ['agentId', 'text']),
+  },
+  [AGENT_TOOL.COMMENT]: {
+    name: AGENT_TOOL.COMMENT,
+    description: 'Add a reply to a checkpoint conversation. Use replyToId to keep a focused thread. This records discussion beside the work; use message_avenger only when another Avenger must act now.',
+    inputSchema: object({
+      id: { type: 'string', description: 'The related checkpoint id.' },
+      text: { type: 'string', description: 'A short, useful message for the checkpoint conversation.' },
+      replyToId: { type: 'string', description: 'The message id being answered, when applicable.' },
+    }, ['id', 'text']),
+  },
+  [AGENT_TOOL.REACT]: {
+    name: AGENT_TOOL.REACT,
+    description: 'React to a checkpoint message when acknowledgement is enough. A reaction does not wake an Avenger or change checkpoint state.',
+    inputSchema: object({
+      id: { type: 'string', description: 'The related checkpoint id.' },
+      messageId: { type: 'string', description: 'The message receiving the reaction.' },
+      reaction: { type: 'string', enum: ['acknowledge', 'watching', 'question', 'blocked'] },
+    }, ['id', 'messageId', 'reaction']),
   },
   [AGENT_TOOL.ASSEMBLE]: {
     name: AGENT_TOOL.ASSEMBLE,
@@ -161,6 +181,8 @@ const WORKER_TOOLS = Object.freeze([
   AGENT_TOOL.CHECKPOINT,
   AGENT_TOOL.ESCALATE,
   AGENT_TOOL.MESSAGE,
+  AGENT_TOOL.COMMENT,
+  AGENT_TOOL.REACT,
 ]);
 const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.REPORT,
@@ -176,6 +198,8 @@ const THOR_TOOLS = Object.freeze([
   AGENT_TOOL.RESUME,
   AGENT_TOOL.EXTEND,
   AGENT_TOOL.MESSAGE,
+  AGENT_TOOL.COMMENT,
+  AGENT_TOOL.REACT,
 ]);
 
 export function toolsForRole(role) {

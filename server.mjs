@@ -69,8 +69,10 @@ import { LEASE_LIMIT_MS, finishLease } from './core/leases.mjs';
 import { readyCheckpoints } from './core/scheduler.mjs';
 import {
   conversationReferences,
+  checkpointOf,
   createCheckpointMessage,
   createReaction,
+  messageIdOf,
 } from './core/conversation.mjs';
 import { projectMissionFlows } from './core/mission-flows.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
@@ -1160,6 +1162,75 @@ function patchAgent(agents, agentId, changes) {
   return { ...agents, [agentId]: { ...current, ...changes } };
 }
 
+// One application path owns checkpoint conversation writes. UI commands and
+// agent tools call this function; neither transport creates its own record.
+async function postCheckpointMessage({
+  id, text = '', attachments = [], replyToId = null, from = 'you', authorAgentId = null,
+}) {
+  const item = findItem(state.board, id);
+  if (!item) throw new Error(`no checkpoint ${id}`);
+  if (!String(text).trim() && attachments.length === 0) {
+    throw new Error('a checkpoint message needs text or an attachment');
+  }
+  const owner = state.agents[item.owner];
+  if (!owner) throw new Error(`${id} has no owner`);
+  const author = authorAgentId ?? owner.id;
+  const parsed = parseMentions(text, { agents: Object.values(state.agents) });
+  const event = createCheckpointMessage({
+    id: randomUUID(),
+    checkpointId: id,
+    agentId: author,
+    text,
+    from,
+    attachments,
+    replyToId,
+    references: conversationReferences({ checkpointId: id, parsed, attachments }),
+  });
+  ingest(event);
+
+  // A worker writing in its own thread is already present. Do not echo the
+  // message into the same engine session. User messages and cross-owner replies
+  // are delivered without creating a second event.
+  if (from !== 'you' && author === owner.id) {
+    return { messageId: event.payload.messageId, delivered: true };
+  }
+  const body = [
+    `# Checkpoint thread: ${id}`,
+    item.title,
+    replyToId ? `Replying to message ${replyToId}` : null,
+    text,
+    attachments.length > 0 ? attachmentLines(attachments) : null,
+  ].filter(Boolean).join('\n\n');
+  if (owner.sessionId) {
+    await COMMANDS.steer({ agentId: owner.id, text: body, record: false });
+    return { messageId: event.payload.messageId, delivered: true };
+  }
+  if (!item.paused && canWork(state.board, item, owner.id)) {
+    await COMMANDS.start({ agentId: owner.id, task: body, checkpointIds: [id] });
+    return { messageId: event.payload.messageId, delivered: true };
+  }
+  return { messageId: event.payload.messageId, delivered: false };
+}
+
+function postCheckpointReaction({ id, messageId, reaction, from = 'you', authorAgentId = null }) {
+  const item = findItem(state.board, id);
+  if (!item) throw new Error(`no checkpoint ${id}`);
+  const targetExists = state.events.some((event) =>
+    checkpointOf(event) === id && messageIdOf(event) === messageId && event.kind !== EVENT_KINDS.REACTION);
+  if (!targetExists) throw new Error(`no message ${messageId} on checkpoint ${id}`);
+  const result = createReaction({
+    id: randomUUID(),
+    checkpointId: id,
+    agentId: authorAgentId ?? item.owner ?? 'minimac',
+    messageId,
+    reaction,
+    from,
+  });
+  if (result.error) throw new Error(result.error);
+  ingest(result.event);
+  return { reactionId: result.event.payload.reactionId };
+}
+
 // ----------------------------------------------------------------- commands
 
 const COMMANDS = {
@@ -1559,57 +1630,11 @@ const COMMANDS = {
   },
 
   async commentCheckpoint({ id, text = '', attachments = [], replyToId = null, from = 'you' }) {
-    const item = findItem(state.board, id);
-    if (!item) throw new Error(`no checkpoint ${id}`);
-    if (!String(text).trim() && attachments.length === 0) {
-      throw new Error('a checkpoint message needs text or an attachment');
-    }
-    const owner = state.agents[item.owner];
-    if (!owner) throw new Error(`${id} has no owner`);
-    const parsed = parseMentions(text, { agents: Object.values(state.agents) });
-    const event = createCheckpointMessage({
-      id: randomUUID(),
-      checkpointId: id,
-      agentId: owner.id,
-      text,
-      from,
-      attachments,
-      replyToId,
-      references: conversationReferences({ checkpointId: id, parsed, attachments }),
-    });
-    ingest(event);
-    const body = [
-      `# Checkpoint thread: ${id}`,
-      item.title,
-      replyToId ? `Replying to message ${replyToId}` : null,
-      text,
-      attachments.length > 0 ? attachmentLines(attachments) : null,
-    ].filter(Boolean).join('\n\n');
-    if (owner.sessionId) {
-      await COMMANDS.steer({ agentId: owner.id, text: body, record: false });
-      return { messageId: event.payload.messageId, delivered: true };
-    }
-    if (!item.paused && canWork(state.board, item, owner.id)) {
-      await COMMANDS.start({ agentId: owner.id, task: body, checkpointIds: [id] });
-      return { messageId: event.payload.messageId, delivered: true };
-    }
-    return { messageId: event.payload.messageId, delivered: false };
+    return postCheckpointMessage({ id, text, attachments, replyToId, from });
   },
 
   async reactCheckpoint({ id, messageId, reaction, from = 'you' }) {
-    const item = findItem(state.board, id);
-    if (!item) throw new Error(`no checkpoint ${id}`);
-    const result = createReaction({
-      id: randomUUID(),
-      checkpointId: id,
-      agentId: item.owner ?? 'minimac',
-      messageId,
-      reaction,
-      from,
-    });
-    if (result.error) throw new Error(result.error);
-    ingest(result.event);
-    return { reactionId: result.event.payload.reactionId };
+    return postCheckpointReaction({ id, messageId, reaction, from });
   },
 
   // Make the orchestrator say something to a hero. The floor walks him over.
@@ -2389,6 +2414,24 @@ async function executeAgentTool(principal, name, args) {
       text: args.text,
     });
     return { delivered: true, to: message.toAgentId };
+  }
+  if (name === AGENT_TOOL.COMMENT) {
+    return postCheckpointMessage({
+      id: args.id,
+      text: args.text,
+      replyToId: args.replyToId ?? null,
+      from: callerId,
+      authorAgentId: callerId,
+    });
+  }
+  if (name === AGENT_TOOL.REACT) {
+    return postCheckpointReaction({
+      id: args.id,
+      messageId: args.messageId,
+      reaction: args.reaction,
+      from: callerId,
+      authorAgentId: callerId,
+    });
   }
   if (name === AGENT_TOOL.ASSEMBLE) {
     const result = await harvestGoals({
