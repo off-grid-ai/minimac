@@ -183,15 +183,27 @@ export const FEED_LEVELS = Object.freeze([
 ]);
 
 const SUMMARY_KINDS = new Set([
-  'message', 'order', 'escalation', 'claim', 'blocked', 'approval', 'result', 'prayer',
+  EVENT_KINDS.MESSAGE,
+  EVENT_KINDS.ORDER,
+  EVENT_KINDS.ESCALATION,
+  EVENT_KINDS.CLAIM,
+  EVENT_KINDS.BLOCKED,
+  EVENT_KINDS.APPROVAL,
+  EVENT_KINDS.RESULT,
+  EVENT_KINDS.PRAYER,
 ]);
-const DETAILED_KINDS = new Set([...SUMMARY_KINDS, 'ping', 'lease', 'tool']);
+const DETAILED_KINDS = new Set([
+  ...SUMMARY_KINDS,
+  EVENT_KINDS.PING,
+  EVENT_KINDS.LEASE,
+  EVENT_KINDS.TOOL,
+]);
 
 export function passesDetail(event, level = 'summary') {
   if (level === 'verbose') return true;
   if (level === 'detailed') {
     if (!DETAILED_KINDS.has(event?.kind)) return false;
-    return event.kind !== 'tool' || event.payload?.phase === 'completed';
+    return event.kind !== EVENT_KINDS.TOOL || event.payload?.phase === 'completed';
   }
   return SUMMARY_KINDS.has(event?.kind);
 }
@@ -203,8 +215,15 @@ export function isPreset(id) {
 // Things that change what happens next: an order, a ruling, a permission
 // request, a block, a finished turn, or a claim with a command behind it.
 const SIGNAL_KINDS = new Set([
-  'ping', 'blocked', 'approval', 'result', 'prayer', 'claim',
-  'order', 'escalation', 'lease',
+  EVENT_KINDS.PING,
+  EVENT_KINDS.BLOCKED,
+  EVENT_KINDS.APPROVAL,
+  EVENT_KINDS.RESULT,
+  EVENT_KINDS.PRAYER,
+  EVENT_KINDS.CLAIM,
+  EVENT_KINDS.ORDER,
+  EVENT_KINDS.ESCALATION,
+  EVENT_KINDS.LEASE,
 ]);
 
 export function passesPreset(event, preset = 'all') {
