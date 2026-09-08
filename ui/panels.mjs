@@ -16,6 +16,7 @@ import { compareQueueOrder, nextGate, isClosed, isDone, unmetDeps } from '../cor
 import { EFFORT_OPTIONS, ENGINES, MODEL_OPTIONS } from '../core/roster.mjs';
 import { checkpointThread, messageIdOf, REACTIONS } from '../core/conversation.mjs';
 import { renderMarkdown } from './markdown.mjs';
+import { createControlButton, createDisclosure, createRelativeTime } from './controls.mjs';
 
 const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
 
@@ -127,10 +128,7 @@ function agentConnections(agent, handlers) {
       row.type = 'button';
       row.onclick = () => handlers.openCheckpoint?.(message.checkpointId);
     }
-    const time = document.createElement('wa-relative-time');
-    time.setAttribute('date', new Date(message.ts).toISOString());
-    time.setAttribute('format', 'narrow');
-    time.setAttribute('sync', '');
+    const time = createRelativeTime(message.ts);
     row.append(time, el('span', '', message.text),
       message.checkpointId ? el('span', 'checkpoint-id', message.checkpointId) : document.createTextNode(''));
     messages.append(row);
@@ -608,9 +606,7 @@ function checkpointConversation(item, all, agents, handlers, events) {
   const running = item.lease?.state === 'running';
   const done = isDone(item);
   const top = el('header', 'checkpoint-thread-head');
-  const back = document.createElement('wa-button');
-  back.setAttribute('appearance', 'plain');
-  back.textContent = '← CHECKPOINTS';
+  const back = createControlButton('← CHECKPOINTS');
   back.onclick = () => handlers.closeThread?.();
   const identity = el('div', 'checkpoint-thread-identity');
   identity.append(
@@ -632,9 +628,8 @@ function checkpointConversation(item, all, agents, handlers, events) {
   ownerButton.onclick = () => owner && handlers.openAgent?.(owner.id);
   facts.append(status, checkpointTiming(item), ownerButton);
 
-  const details = document.createElement('wa-details');
-  details.className = 'checkpoint-thread-details';
-  details.setAttribute('summary', 'Plan and proof');
+  const details = createDisclosure('Plan and proof');
+  details.classList.add('checkpoint-thread-details');
   const detailBody = el('div', 'checkpoint-detail-body');
   detailBody.append(
     detailLine('PLAN', item.plan),
@@ -664,10 +659,7 @@ function checkpointMessage(event, agents, handlers) {
   article.dataset.messageId = messageId ?? '';
   if (payload.replyToId) article.dataset.replyTo = payload.replyToId;
   const head = el('header', 'checkpoint-message-head');
-  const time = document.createElement('wa-relative-time');
-  time.setAttribute('date', new Date(event.ts).toISOString());
-  time.setAttribute('format', 'narrow');
-  time.setAttribute('sync', '');
+  const time = createRelativeTime(event.ts);
   head.append(el('strong', '', author), time);
   if (payload.replyToId) head.append(el('span', 'checkpoint-reply-mark', `reply to ${shortId(payload.replyToId)}`));
 
@@ -678,16 +670,11 @@ function checkpointMessage(event, agents, handlers) {
   if (payload.references?.length) article.append(checkpointReferences(payload.references, handlers));
 
   const actions = el('div', 'checkpoint-message-actions');
-  const reply = document.createElement('wa-button');
-  reply.setAttribute('appearance', 'plain');
-  reply.setAttribute('size', 'small');
-  reply.textContent = 'Reply';
+  const reply = createControlButton('Reply');
   reply.onclick = () => handlers.reply?.(messageId, author);
   actions.append(reply);
   for (const [key, reaction] of Object.entries(REACTIONS)) {
-    const button = document.createElement('wa-button');
-    button.setAttribute('appearance', 'plain');
-    button.setAttribute('size', 'small');
+    const button = createControlButton('');
     button.title = reaction.label;
     const count = event.reactions?.[key] ?? 0;
     button.textContent = `${reaction.symbol}${count ? ` ${count}` : ''}`;

@@ -30,6 +30,7 @@ import { createSidePanel } from './sidepanel.mjs';
 import { createGoalStrip } from './goalstrip.mjs';
 import { createSound } from './sound.mjs';
 import { renderMarkdown, markdownReady } from './markdown.mjs';
+import { createControlButton } from './controls.mjs';
 import { captureScrollAnchor, restoreScrollAnchor } from './scroll-anchor.mjs';
 import { CUES, cueFor, keyOf, neglect, trackWaiting } from '../core/attention.mjs';
 import {
@@ -1440,10 +1441,7 @@ function feedLevelBar() {
   bar.setAttribute('role', 'group');
   bar.setAttribute('aria-label', 'Feed detail');
   for (const level of FEED_LEVELS) {
-    const button = document.createElement('wa-button');
-    button.setAttribute('appearance', 'plain');
-    button.setAttribute('size', 'small');
-    button.textContent = level.label.toUpperCase();
+    const button = createControlButton(level.label.toUpperCase());
     button.title = level.blurb;
     button.setAttribute('aria-pressed', String(level.id === state.feedLevel));
     button.onclick = () => {
@@ -1452,10 +1450,7 @@ function feedLevelBar() {
     };
     bar.append(button);
   }
-  const filters = document.createElement('wa-button');
-  filters.setAttribute('appearance', 'plain');
-  filters.setAttribute('size', 'small');
-  filters.textContent = 'FILTERS';
+  const filters = createControlButton('FILTERS');
   filters.setAttribute('aria-expanded', String(state.feedFiltersOpen));
   filters.onclick = () => {
     state.feedFiltersOpen = !state.feedFiltersOpen;
