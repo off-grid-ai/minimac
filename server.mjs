@@ -43,7 +43,7 @@ import {
   buildOutputSchema,
   workerDispatches,
   REPORT_FENCE,
-  GOALS_FENCE,
+  WORK_PLAN_FENCE,
   planningTask,
   EDITABLE_STEPS,
   defaultStepText,
@@ -62,6 +62,8 @@ import { createUploads } from './adapters/uploads.mjs';
 import { createGithubChecksPort } from './adapters/github-checks.mjs';
 import { createCiMonitor } from './application/ci-monitor.mjs';
 import { createWorkBoard } from './application/work-board.mjs';
+import { createWorkPlanningService } from './application/work-planning.mjs';
+import { createScheduler } from './application/scheduler.mjs';
 import { createFleetCoordination } from './application/fleet-coordination.mjs';
 import { createWorkerLeaseService } from './application/worker-leases.mjs';
 import { ORDER_ACTION } from './core/coordination.mjs';
@@ -253,7 +255,7 @@ if (adopted) {
       for (const item of adoptedItems) store.saveItem(item);
     }
   }
-  state.board = { items: adoptedItems };
+  state.board = { workUnits: store.workUnitsFor(adopted.id), items: adoptedItems };
   const adoptedAt = Date.now();
   state.cards = stampCards(
     state.cards,
@@ -420,11 +422,11 @@ async function reconcileAdoptedSessions() {
 // engines produce the same flows and claims without either CLI having to
 // support a schema flag.
 const REPORT_BLOCK = new RegExp('```' + REPORT_FENCE + '\\s*([\\s\\S]*?)```');
-const GOALS_BLOCK = new RegExp('```' + GOALS_FENCE + '\\s*([\\s\\S]*?)```');
+const WORK_PLAN_BLOCK = new RegExp('```' + WORK_PLAN_FENCE + '\\s*([\\s\\S]*?)```');
 
 // The orchestrator's answer to "what should each of them be doing".
-async function harvestGoals(event) {
-  const match = GOALS_BLOCK.exec(String(event.payload?.text ?? ''));
+async function harvestWorkPlan(event) {
+  const match = WORK_PLAN_BLOCK.exec(String(event.payload?.text ?? ''));
   if (!match) return { applied: false, error: 'no assemble payload' };
 
   let parsed;
@@ -490,18 +492,25 @@ async function harvestGoals(event) {
     }));
   }
 
-  // The work itself. Anything Thor names here becomes a real item every agent
-  // can see, with an owner and a gate chain nobody can walk out of order.
-  for (const spec of parsed.items ?? []) {
-    workBoard.add(spec, event.agentId);
+  const planned = workPlanning.publishInitialPlan(parsed.workUnits);
+  if (planned.error) {
+    ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+      text: `assemble refused: ${planned.error}; nobody was started`,
+      from: 'you',
+    }));
+    return { applied: false, error: planned.error };
   }
 
   let applied = 0;
-  for (const [agentId, objective] of Object.entries(parsed.goals ?? {})) {
-    if (!state.agents[agentId] || typeof objective !== 'string' || !objective.trim()) continue;
-    state.goals = setGoal(state.goals, agentId, objective.trim(), null, 'active', 'derived');
+  for (const agentId of expected) {
+    const outcomes = parsed.workUnits
+      .filter((unit) => unit.stages.some((stage) => stage.required !== false && stage.owner === agentId))
+      .map((unit) => unit.outcome);
+    if (outcomes.length === 0) continue;
+    const objective = `Done when your required stages pass for: ${outcomes.join('; ')}`;
+    state.goals = setGoal(state.goals, agentId, objective, null, 'active', 'derived');
     store.saveGoal(agentId, getGoal(state.goals, agentId));
-    orders(agentId, objective.trim(), ORDER_ACTION.GOAL);
+    orders(agentId, objective, ORDER_ACTION.GOAL);
     applied += 1;
   }
   if (named > 0) {
@@ -619,7 +628,7 @@ function harvestReport(event) {
 
 // Every fenced block an agent may emit. These are payload for the tool, never
 // speech: they are parsed here and stripped before anything is shown.
-const FENCES = [REPORT_FENCE, GOALS_FENCE, VERDICT_FENCE];
+const FENCES = [REPORT_FENCE, WORK_PLAN_FENCE, VERDICT_FENCE];
 
 // One reply arrives as several flushes. Splitting each flush on its own fails
 // the moment a chunk boundary lands inside the fence marker itself - which is
@@ -735,6 +744,24 @@ function ingest(rawIncoming) {
 // his goes through here, so a goal, an assignment and a ruling all look the
 // same on the floor.
 let coordination = null;
+let scheduler = null;
+let schedulerQueued = false;
+
+function scheduleReadyWork() {
+  if (!scheduler || schedulerQueued) return;
+  schedulerQueued = true;
+  queueMicrotask(() => {
+    schedulerQueued = false;
+    void scheduler.reconcile()
+      .then((started) => {
+        if (started.length > 0) publish({ type: 'state', state: snapshot() });
+      })
+      .catch((error) => ingest(createBlockedEvent('minimac', {
+        category: BLOCKED_REASONS.ERROR,
+        reason: `ready work could not start: ${error.message}`,
+      })));
+  });
+}
 
 function orders(toAgentId, text, action = ORDER_ACTION.STEER, checkpointId = null) {
   const boss = Object.values(state.agents).find((a) => a.role === ROLES.ORCHESTRATOR);
@@ -757,6 +784,15 @@ const workBoard = createWorkBoard({
   saveItem: (item) => store.saveItem(item),
   emit: ingest,
   order: orders,
+  onChange: scheduleReadyWork,
+  workerLimitMs: LEASE_LIMIT_MS,
+});
+
+const workPlanning = createWorkPlanningService({
+  getBoard: () => state.board,
+  setBoard: (board) => { state.board = board; },
+  getAgents: () => state.agents,
+  saveWorkPlan: (board) => store.saveWorkPlan(board),
   workerLimitMs: LEASE_LIMIT_MS,
 });
 
@@ -798,7 +834,7 @@ function harvestBlocks(event) {
   // Every parser reads the same normalised text, whichever envelope carried it.
   const carrying = { ...event, payload: { ...event.payload, text } };
   harvestReport(carrying);
-  void harvestGoals(carrying).catch(() => {});
+  void harvestWorkPlan(carrying).catch(() => {});
   harvestVerdicts(carrying);
 }
 
@@ -1139,6 +1175,7 @@ async function startCrew(note, assembled = true, desired = null) {
     }
   }
   await Promise.allSettled(changes);
+  scheduleReadyWork();
   publish({ type: 'state', state: snapshot() });
 }
 
@@ -1342,7 +1379,7 @@ const COMMANDS = {
     // The new run record continues the old work. Copy the checkpoints into the
     // new run before any worker starts, so the UI and every agent receive the
     // same queue instead of an empty one.
-    state.board = { items: savedItems };
+    state.board = { workUnits: store.workUnitsFor(Number(runId)), items: savedItems };
     for (const item of savedItems) store.saveItem(item);
 
     for (const row of savedGoals) {
@@ -1986,6 +2023,13 @@ const COMMANDS = {
   },
 };
 
+scheduler = createScheduler({
+  getBoard: () => state.board,
+  getAgents: () => state.agents,
+  start: (agentId, checkpointIds) => COMMANDS.start({ agentId, checkpointIds }),
+  limitMs: LEASE_LIMIT_MS,
+});
+
 coordination = createFleetCoordination({
   getEvents: () => state.events,
   emit: ingest,
@@ -2139,6 +2183,7 @@ async function handleCommand(cmd) {
   const command = COMMANDS[cmd.type];
   if (!command) throw new Error(`unknown command: ${cmd.type}`);
   const result = await command(cmd);
+  scheduleReadyWork();
   publish({ type: 'state', state: snapshot() });
   return result;
 }
@@ -2421,9 +2466,9 @@ async function executeAgentTool(principal, name, args) {
     });
   }
   if (name === AGENT_TOOL.ASSEMBLE) {
-    const result = await harvestGoals({
+    const result = await harvestWorkPlan({
       agentId: callerId,
-      payload: { text: `\`\`\`${GOALS_FENCE}\n${JSON.stringify(args)}\n\`\`\`` },
+      payload: { text: `\`\`\`${WORK_PLAN_FENCE}\n${JSON.stringify(args)}\n\`\`\`` },
     });
     if (!result?.applied) throw new Error(result?.error ?? 'assemble was not applied');
     return { assembled: true, ...result };

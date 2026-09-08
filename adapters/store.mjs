@@ -240,6 +240,7 @@ export function createStore({ file }) {
        updated_at = excluded.updated_at`,
   );
   const selectItems = db.prepare('SELECT payload FROM items WHERE run_id = ? ORDER BY rowid');
+  const clearItems = db.prepare('DELETE FROM items WHERE run_id = ?');
   const clearWorkUnits = db.prepare('DELETE FROM work_units WHERE run_id = ?');
   const upsertWorkUnit = db.prepare(
     `INSERT INTO work_units (run_id, id, payload, updated_at) VALUES (?, ?, ?, ?)
@@ -351,12 +352,20 @@ export function createStore({ file }) {
 
     saveWorkPlan(board) {
       if (runId === null) return;
-      clearWorkUnits.run(runId);
-      for (const workUnit of board?.workUnits ?? []) {
-        upsertWorkUnit.run(runId, workUnit.id, JSON.stringify(workUnit), Date.now());
-      }
-      for (const item of board?.items ?? []) {
-        upsertItem.run(runId, item.id, JSON.stringify(item), Date.now());
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        clearWorkUnits.run(runId);
+        clearItems.run(runId);
+        for (const workUnit of board?.workUnits ?? []) {
+          upsertWorkUnit.run(runId, workUnit.id, JSON.stringify(workUnit), Date.now());
+        }
+        for (const item of board?.items ?? []) {
+          upsertItem.run(runId, item.id, JSON.stringify(item), Date.now());
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
       }
     },
 

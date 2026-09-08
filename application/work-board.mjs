@@ -17,6 +17,7 @@ export function createWorkBoard({
   saveItem,
   emit,
   order,
+  onChange = () => {},
   workerLimitMs,
 }) {
   function add(spec, by) {
@@ -61,12 +62,27 @@ export function createWorkBoard({
         result.item.id,
       );
     }
+    onChange();
     return { ...result, board };
   }
 
   function updateCheckpoint(agentId, move, workerId = null) {
     const agent = getAgents()[agentId];
-    const result = advance(getBoard(), {
+    const current = getBoard();
+    const target = findItem(current, move?.item);
+    if (workerId && (
+      target?.lease?.state !== 'running'
+      || target.lease.workerId !== workerId
+      || target.lease.agentId !== agentId
+    )) {
+      const error = `${move?.item} is not leased to ${workerId}`;
+      emit(createEvent(agentId, EVENT_KINDS.STATUS, {
+        text: `gate refused: ${error}`,
+        from: 'you',
+      }));
+      return { board: current, error };
+    }
+    const result = advance(current, {
       id: move?.item,
       gate: move?.gate,
       state: move?.state,
@@ -84,14 +100,17 @@ export function createWorkBoard({
     }
     setBoard(result.board);
     const item = findItem(result.board, move.item);
-    saveItem(item);
-    emit(createEvent(agentId, EVENT_KINDS.STATUS, {
-      text: `${move.item} ${move.gate}: ${move.state}`,
-      from: 'you',
-      checkpointId: move.item,
-      gate: move.gate,
-      gateState: move.state,
-    }));
+    if (!result.duplicate) {
+      saveItem(item);
+      emit(createEvent(agentId, EVENT_KINDS.STATUS, {
+        text: `${move.item} ${move.gate}: ${move.state}`,
+        from: 'you',
+        checkpointId: move.item,
+        gate: move.gate,
+        gateState: move.state,
+      }));
+      onChange();
+    }
     return { ...result, item };
   }
 

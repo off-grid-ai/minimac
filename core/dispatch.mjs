@@ -456,7 +456,7 @@ function crewSection(agent, crew, team) {
 // The orchestrator writes the crew's goals. A template can only restate the
 // mission; Thor can read the repo, weigh what each role is actually for on
 // THIS mission, and say so in one sentence each.
-export const GOALS_FENCE = 'minimac-goals';
+export const WORK_PLAN_FENCE = 'minimac-work-plan';
 
 export function planningTask(mission, crew) {
   const members = crew.filter((member) => member.role !== 'orchestrator');
@@ -465,21 +465,22 @@ export function planningTask(mission, crew) {
       + `  [${member.enabled === false ? 'currently STOOD DOWN' : 'currently on'}]`
       + (member.instances > 1 ? `  — ${member.instances} workers share this seat` : ''))
     .join('\n');
-  const first = members[0]?.id ?? 'worker';
   const example = JSON.stringify({
-    crew: Object.fromEntries(members.map((member, index) => [member.id, index === 0])),
-    goals: { [first]: 'one sentence that says what done looks like' },
-    items: [{
+    crew: Object.fromEntries(members.map((member) => [member.id, true])),
+    workUnits: [{
       id: 'w1',
-      title: 'one necessary result on the path to the mission',
-      plan: 'read the failing result; make the smallest fix; run the proof check',
-      outcome: 'the required check is green on the changed head',
-      verify: 'the exact command or hosted check that proves the result',
+      title: 'one independent user-visible outcome',
+      outcome: 'the exact result a person can observe',
       scope: 'repo/area',
-      owner: first,
-      needs: ['coding', 'lint', 'test'],
       blockedBy: [],
-      estimateMs: 480000,
+      stages: [
+        { stage: 'pw', required: true, owner: 'pm', plan: 'define the contract',
+          verify: 'review the accepted contract', files: [], estimateMs: 240000 },
+        { stage: 'cw', required: true, owner: 'coder', plan: 'code, wire, lint, and commit',
+          verify: 'run the focused proof', files: ['core/example.mjs'], estimateMs: 480000 },
+        { stage: 'rw', required: true, owner: 'reviewer', plan: 'review the delivered outcome',
+          verify: 'record approve or request changes', files: [], estimateMs: 240000 },
+      ],
     }],
   }, null, 2);
 
@@ -496,12 +497,12 @@ export function planningTask(mission, crew) {
     '',
     'Look at the actual repository first if that changes your answer.',
     '',
-    'Use the MINIMAC assemble_avengers tool to apply the decision. Its crew object must '
-      + 'name every agent below. The tool starts selected Avengers and benches the rest.',
+    'Use the MINIMAC publish_work_plan tool. Its crew object must name every agent below. '
+      + 'The application rejects an invalid graph before any worker starts.',
     '',
-    'Only if assemble_avengers is unavailable, use this fallback block:',
+    'Only if publish_work_plan is unavailable, use this fallback block:',
     '',
-    '```' + GOALS_FENCE,
+    '```' + WORK_PLAN_FENCE,
     example,
     '```',
     '',
@@ -524,43 +525,18 @@ export function planningTask(mission, crew) {
       + 'their own work here.',
     '- Mission membership does not require a live worker. Keep a needed agent available '
       + 'but idle until a ready checkpoint needs that role.',
-    '- Only give a goal to an agent you set true.',
     '',
-    'Rules for the checkpoints ("items") - this is the shortest path to the mission:',
-    '- Start with the exact condition that makes the mission done. Work backward only '
-      + 'until every required state change has an owner.',
-    '- A checkpoint is a necessary result, not an activity. If removing an item would '
-      + 'still let the mission finish, do not create it.',
-    '- Do not create one checkpoint per role. Coding, lint, testing, review, commit, and '
-      + 'push are gates on one result unless they produce a separate result required by the mission.',
-    '- Use a short, direct title in the mission\'s own language. Write "Fix Mobile PR 635 CI", '
-      + 'not "A person opens the pull request and sees checks".',
-    '- Split only work that can run independently. Two parallel items must never need '
-      + 'the same file at the same time.',
-    '- Merge work on the same result and artifact into one checkpoint. Do not create a '
-      + 'second item only to observe or approve the first.',
-    '- Every item has exactly one owner from the crew you brought on.',
-    '- Every item is one task that finishes within eight minutes. Split anything larger.',
-    '- Give every item a unique short id such as w1. Use those ids in blockedBy.',
-    '- "plan" is the short execution order. "outcome" is the observable done state. '
-      + '"verify" is the exact command or real-surface check that proves it.',
-    '- "needs" lists only the gates this item really has. A docs change has no '
-      + 'test gate; inventing one makes an item nobody can ever finish.',
-    '- "blockedBy" names the item ids that must finish first. Use it - it is how '
-      + 'one hero waits on another without either of them guessing.',
-    '- Give each item an estimate in milliseconds, with a maximum of 480000.',
-    '- The gates are walked in order and a pass needs the command that proved it. '
-      + 'Nobody can report a push over untested code.',
-    '- Read the finished list once before you submit it. Each item must answer: '
-      + '"Why must this happen for the mission to finish?" Remove any item with no direct answer.',
-    '',
-    'Rules for the goals:',
-    '- One or two sentences each. A goal a person can hold in their head.',
-    '- Specific to this mission. Never restate the mission itself - they all have it.',
-    '- Say what DONE looks like for that agent, not how to do it.',
-    '- Use the agent ids above as the keys.',
-    '- Where a seat has more than one worker, say how the work SPLITS: give each '
-      + 'worker a disjoint slice, its own files, and its own verifiable outcome. '
-      + 'Two workers must never be able to touch the same file.',
+    'Rules for workUnits:',
+    '- A work unit is one independent user-visible outcome. Different work units may run in parallel.',
+    '- blockedBy names work-unit ids. Add a dependency only when the whole outcome must finish first.',
+    '- Split outcomes that can use separate files and separate proof. Never parallelize overlapping files.',
+    '- Each work unit declares pw, dw, cw, tw, aw, and rw as required or not required.',
+    '- Required stages run in that order. pw is product, dw design, cw coding, tw testing, aw audit, rw review.',
+    '- The stage owner must have the matching role. A stage is no longer than 480000ms.',
+    '- cw includes coding, wiring, linting, and a small meaningful commit.',
+    '- A failed tw, aw, or rw stage requests a correction; it does not quietly edit another role\'s work.',
+    '- Every required stage names its files, short plan, exact proof, and one owner.',
+    '- MINIMAC adds the final pre-push and GitHub push checkpoints. Do not add copies of them.',
+    '- Remove any work unit that is not necessary for the mission to finish.',
   ].join('\n');
 }

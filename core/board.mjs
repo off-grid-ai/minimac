@@ -292,6 +292,14 @@ export function advance(
 ) {
   const item = findItem(board, id);
   if (!item) return { board, error: `no item ${id}` };
+  const duplicateReceipt = item.evidence?.some((entry) =>
+    entry.gate === gate
+    && entry.state === state
+    && entry.receipt === receipt.trim()
+    && entry.by === evidenceBy);
+  if (item.gates?.[gate] === state && (!receipt.trim() || duplicateReceipt)) {
+    return { board, item, duplicate: true };
+  }
   if (isClosed(item)) return { board, error: `${id} is already closed` };
   if (!(gate in (item.gates ?? {}))) return { board, error: `${id} has no ${gate} gate` };
   if (!Object.values(GATE_STATE).includes(state)) return { board, error: `${state} is not a gate state` };

@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 
 import {
   expandWorkUnit,
+  createReleaseCheckpoints,
   releaseReady,
   stageCheckpointId,
   validateWorkPlan,
 } from '../core/work-units.mjs';
-import { createBoard, createItem } from '../core/board.mjs';
+import { advance, createBoard, createItem } from '../core/board.mjs';
 import { DEFAULT_ROSTER, createRoster } from '../core/roster.mjs';
 
 const agents = createRoster(DEFAULT_ROSTER);
@@ -62,8 +63,22 @@ test('invalid roles, oversized stages, and cycles are rejected before dispatch',
 test('release waits for every final stage receipt', () => {
   const board = createBoard();
   board.workUnits = [{ id: 'w1', stages: ['cw', 'rw'] }];
-  board.items = [createItem({ id: stageCheckpointId('w1', 'rw'), title: 'Review', needs: ['review'] })];
+  board.items = createReleaseCheckpoints(board.workUnits, agents).map((spec) => createItem(spec));
   assert.equal(releaseReady(board), false);
-  board.items[0].gates.review = 'pass';
+  board.items.find((item) => item.id === 'release.push').gates.push = 'pass';
   assert.equal(releaseReady(board), true);
+});
+
+test('the same checkpoint receipt is idempotent', () => {
+  const board = createBoard();
+  board.items = [createItem({ id: 'w1.cw', title: 'Code', needs: ['coding'], owner: 'coder' })];
+  const first = advance(board, {
+    id: 'w1.cw', gate: 'coding', state: 'pass', receipt: 'node --test', by: 'coder',
+  }, 10);
+  const second = advance(first.board, {
+    id: 'w1.cw', gate: 'coding', state: 'pass', receipt: 'node --test', by: 'coder',
+  }, 20);
+  assert.equal(second.duplicate, true);
+  assert.equal(second.board, first.board);
+  assert.equal(second.item.evidence.length, 1);
 });

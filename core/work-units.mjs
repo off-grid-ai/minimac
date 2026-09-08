@@ -121,6 +121,31 @@ export function expandWorkUnit(spec, workUnits, now = Date.now()) {
   }));
 }
 
+export function createReleaseCheckpoints(workUnits, agents, now = Date.now()) {
+  const tester = Object.values(agents).find((agent) => agent.role === ROLES.TESTER)?.id ?? null;
+  const coder = Object.values(agents).find((agent) => agent.role === ROLES.CODER)?.id ?? null;
+  const finalStages = workUnits.map((workUnit) =>
+    stageCheckpointId(workUnit.id, workUnit.stages.at(-1)));
+  return [
+    {
+      id: 'release.prepush', title: 'Prove the complete mission before push',
+      plan: 'Run the repository pre-push contract against the integrated work.',
+      outcome: 'The complete integrated mission passes its pre-push contract.',
+      verify: 'Run the repository pre-push command and record its result.',
+      scope: 'release', owner: tester, needs: ['prepush'], blockedBy: finalStages,
+      estimateMs: 480_000, files: [], createdAt: now,
+    },
+    {
+      id: 'release.push', title: 'Publish the verified mission to GitHub',
+      plan: 'Push the verified commits to the configured GitHub remote.',
+      outcome: 'The verified mission is available on GitHub.',
+      verify: 'Record the pushed branch and remote revision.',
+      scope: 'release', owner: coder, needs: ['push'], blockedBy: ['release.prepush'],
+      estimateMs: 240_000, files: [], createdAt: now,
+    },
+  ];
+}
+
 export function workUnitState(board, workUnit) {
   const stages = (board.items ?? []).filter((item) => item.workUnitId === workUnit.id);
   if (stages.length > 0 && stages.every(isDone)) return WORK_UNIT_STATE.DONE;
@@ -133,10 +158,6 @@ export function workUnitState(board, workUnit) {
 }
 
 export function releaseReady(board) {
-  const workUnits = board.workUnits ?? [];
-  return workUnits.length > 0 && workUnits.every((workUnit) => {
-    const finalId = stageCheckpointId(workUnit.id, workUnit.stages.at(-1));
-    const final = (board.items ?? []).find((item) => item.id === finalId);
-    return Boolean(final && isDone(final));
-  });
+  const release = (board.items ?? []).find((item) => item.id === 'release.push');
+  return Boolean(release && isDone(release));
 }

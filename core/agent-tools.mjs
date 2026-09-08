@@ -4,6 +4,7 @@
 
 import { ROLES } from './roster.mjs';
 import { GATES } from './flows.mjs';
+import { STAGE_ORDER } from './work-units.mjs';
 import {
   buildCheckpointUpdateSchema,
   buildOutputSchema,
@@ -17,7 +18,7 @@ export const AGENT_TOOL = Object.freeze({
   MESSAGE: 'message_avenger',
   COMMENT: 'comment_checkpoint',
   REACT: 'react_to_checkpoint_message',
-  ASSEMBLE: 'assemble_avengers',
+  ASSEMBLE: 'publish_work_plan',
   START: 'start_avenger',
   BENCH: 'bench_avenger',
   GOAL: 'set_avenger_goal',
@@ -91,30 +92,36 @@ const TOOLS = Object.freeze({
   },
   [AGENT_TOOL.ASSEMBLE]: {
     name: AGENT_TOOL.ASSEMBLE,
-    description: 'Apply the roster, goals, and shortest checkpoint path to the mission. A checkpoint is a necessary result, not a role activity. False benches an Avenger. True or 1 to 4 starts the seat.',
+    description: 'Publish parallel work units and their sequential role stages. The application validates role ownership, dependencies, and stage size before work starts.',
     inputSchema: object({
       crew: {
         type: 'object',
         description: 'Every non-Thor Avenger id mapped to false, true, or a worker count from 1 to 4.',
         additionalProperties: { oneOf: [{ type: 'boolean' }, { type: 'integer', minimum: 1, maximum: 4 }] },
       },
-      goals: { type: 'object', additionalProperties: { type: 'string' } },
-      items: {
+      workUnits: {
         type: 'array',
         items: object({
-          id: { type: 'string', description: 'A unique short id such as w1. Use it in blockedBy.' },
+          id: { type: 'string', description: 'A unique work-unit id such as w1.' },
           title: { type: 'string' },
-          plan: { type: 'string', description: 'A short ordered execution plan for this one task.' },
           outcome: { type: 'string', description: 'The result a person or reviewer can verify.' },
-          verify: { type: 'string', description: 'The command or real-surface check that proves the outcome.' },
           scope: { type: 'string' },
-          owner: { type: 'string' },
-          needs: { type: 'array', items: { type: 'string', enum: GATES } },
           blockedBy: { type: 'array', items: { type: 'string' } },
-          estimateMs: { type: 'integer', minimum: 1, maximum: 480000 },
-        }, ['id', 'title', 'plan', 'outcome', 'verify', 'scope', 'owner', 'needs', 'blockedBy', 'estimateMs']),
+          stages: {
+            type: 'array',
+            items: object({
+              stage: { type: 'string', enum: STAGE_ORDER },
+              required: { type: 'boolean' },
+              owner: { type: 'string' },
+              plan: { type: 'string' },
+              verify: { type: 'string' },
+              files: { type: 'array', items: { type: 'string' } },
+              estimateMs: { type: 'integer', minimum: 1, maximum: 480000 },
+            }, ['stage', 'required', 'owner', 'plan', 'verify', 'files', 'estimateMs']),
+          },
+        }, ['id', 'title', 'outcome', 'scope', 'blockedBy', 'stages']),
       },
-    }, ['crew', 'goals', 'items']),
+    }, ['crew', 'workUnits']),
   },
   [AGENT_TOOL.START]: {
     name: AGENT_TOOL.START,
