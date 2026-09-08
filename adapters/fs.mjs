@@ -29,17 +29,14 @@ export function createRepoIndex() {
     },
 
     async skills(repo) {
-      const roots = [
-        join(repo, '.claude', 'skills'),
-        join(repo, '.claude', 'commands'),
-        join(homedir(), '.claude', 'skills'),
-        join(homedir(), '.claude', 'commands'),
-      ];
-      const found = new Set();
+      const roots = skillRoots(repo);
+      const found = new Map();
       for (const root of roots) {
-        for (const name of await entries(root)) found.add(name);
+        for (const skill of await skillEntries(root.path, root.source)) {
+          if (!found.has(skill.label)) found.set(skill.label, skill);
+        }
       }
-      return [...found].sort();
+      return [...found.values()].sort((left, right) => left.label.localeCompare(right.label));
     },
 
     // A path typed or pasted into the composer is meant as a file. Only paths
@@ -96,12 +93,34 @@ async function gitFiles(repo) {
   }
 }
 
-async function entries(dir) {
+function skillRoots(repo) {
+  const home = homedir();
+  return [
+    { path: join(repo, '.agents', 'skills'), source: 'repository' },
+    { path: join(repo, '.codex', 'skills'), source: 'repository' },
+    { path: join(repo, '.claude', 'skills'), source: 'repository' },
+    { path: join(repo, '.claude', 'commands'), source: 'repository' },
+    { path: join(home, '.agents', 'skills'), source: 'personal' },
+    { path: join(home, '.codex', 'skills'), source: 'personal' },
+    { path: join(home, '.claude', 'skills'), source: 'personal' },
+    { path: join(home, '.claude', 'commands'), source: 'personal' },
+  ];
+}
+
+async function skillEntries(dir, source) {
   try {
     const items = await readdir(dir, { withFileTypes: true });
-    return items
-      .filter((item) => item.isDirectory() || item.name.endsWith('.md'))
-      .map((item) => item.name.replace(/\.md$/, ''));
+    const found = [];
+    for (const item of items) {
+      const path = item.isDirectory()
+        ? join(dir, item.name, 'SKILL.md')
+        : item.name.endsWith('.md') ? join(dir, item.name) : null;
+      if (!path) continue;
+      const info = await stat(path).catch(() => null);
+      if (!info?.isFile()) continue;
+      found.push({ id: path, label: item.name.replace(/\.md$/, ''), path, source });
+    }
+    return found;
   } catch {
     return [];
   }

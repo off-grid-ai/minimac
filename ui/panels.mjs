@@ -745,7 +745,9 @@ function checkpointReferences(references, handlers) {
       row.append(button);
     } else if (reference.kind === 'file' || reference.kind === 'skill') {
       const link = el('a', '', reference.kind === 'skill' ? `/${label}` : `@${label}`);
-      link.href = `/repo-file?path=${encodeURIComponent(reference.id)}`;
+      link.href = reference.kind === 'skill'
+        ? `/skill-file?id=${encodeURIComponent(reference.id)}`
+        : `/repo-file?path=${encodeURIComponent(reference.id)}`;
       link.target = '_blank';
       link.rel = 'noreferrer';
       row.append(link);

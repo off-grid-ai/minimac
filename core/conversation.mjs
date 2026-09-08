@@ -103,12 +103,12 @@ export function reactionActive(events, checkpointId, messageId, actorId, reactio
   return active;
 }
 
-export function conversationReferences({ checkpointId, parsed, attachments = [] }) {
+export function conversationReferences({ checkpointId, parsed, attachments = [], skills = [] }) {
   return [
     checkpointId ? { kind: 'checkpoint', id: checkpointId } : null,
     ...(parsed?.agents ?? []).map((id) => ({ kind: 'agent', id })),
     ...(parsed?.files ?? []).map((id) => ({ kind: 'file', id })),
-    ...(parsed?.skills ?? []).map((id) => ({ kind: 'skill', id })),
+    ...skills.map((skill) => ({ kind: 'skill', id: skill.id, label: skill.label })),
     ...attachments.map((file) => ({ kind: 'attachment', id: file.path, label: file.name })),
   ].filter(Boolean);
 }

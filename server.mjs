@@ -1164,7 +1164,7 @@ function patchAgent(agents, agentId, changes) {
 
 // One application path owns checkpoint conversation writes. UI commands and
 // agent tools call this function; neither transport creates its own record.
-function postCheckpointMessage({
+async function postCheckpointMessage({
   id, text = '', attachments = [], replyToId = null, from = 'you', authorAgentId = null,
 }) {
   const item = findItem(state.board, id);
@@ -1177,6 +1177,10 @@ function postCheckpointMessage({
   }
   const author = authorAgentId ?? item.owner ?? 'minimac';
   const parsed = parseMentions(text, { agents: Object.values(state.agents) });
+  const knownSkills = parsed.skills.length > 0 ? await repoIndex.skills(options.repo) : [];
+  const skills = parsed.skills
+    .map((name) => knownSkills.find((skill) => skill.label === name))
+    .filter(Boolean);
   const event = createCheckpointMessage({
     id: randomUUID(),
     checkpointId: id,
@@ -1185,7 +1189,7 @@ function postCheckpointMessage({
     from,
     attachments,
     replyToId,
-    references: conversationReferences({ checkpointId: id, parsed, attachments }),
+    references: conversationReferences({ checkpointId: id, parsed, attachments, skills }),
   });
   ingest(event);
   return { messageId: event.payload.messageId, recorded: true };
@@ -2246,7 +2250,24 @@ const server = createServer(async (req, res) => {
     });
   }
   if (url.pathname === '/skills') {
-    return json(res, 200, { skills: await repoIndex.skills(options.repo) });
+    const skills = await repoIndex.skills(options.repo);
+    return json(res, 200, { skills: skills.map((skill) => skill.label) });
+  }
+  if (url.pathname === '/skill-file') {
+    const id = String(url.searchParams.get('id') ?? '');
+    const skill = (await repoIndex.skills(options.repo)).find((candidate) => candidate.id === id);
+    if (!skill) return json(res, 404, { error: 'not found' });
+    try {
+      const body = await readFile(skill.path);
+      res.writeHead(200, {
+        'content-type': 'text/plain; charset=utf-8',
+        'content-length': body.length,
+        'cache-control': 'no-store',
+      });
+      return res.end(body);
+    } catch {
+      return json(res, 404, { error: 'not found' });
+    }
   }
   if (url.pathname === '/runs') {
     return json(res, 200, { runs: store.listRuns(Number(url.searchParams.get('limit') ?? 20)) });

@@ -1670,7 +1670,9 @@ function feedReferences(entry) {
     } else if (ref.kind === 'file' || ref.kind === 'skill') {
       const link = document.createElement('a');
       link.textContent = ref.kind === 'skill' ? `/${ref.label ?? ref.id}` : `@${ref.label ?? ref.id}`;
-      link.href = `/repo-file?path=${encodeURIComponent(ref.id)}`;
+      link.href = ref.kind === 'skill'
+        ? `/skill-file?id=${encodeURIComponent(ref.id)}`
+        : `/repo-file?path=${encodeURIComponent(ref.id)}`;
       link.target = '_blank';
       link.rel = 'noreferrer';
       nav.append(link);
