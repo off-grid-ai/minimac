@@ -13,10 +13,7 @@
 import { burnRatio } from '../core/derive.mjs';
 import { GATES, rollup, remaining } from '../core/flows.mjs';
 import { compareQueueOrder, nextGate, isClosed, isDone, unmetDeps } from '../core/board.mjs';
-import { EFFORT_OPTIONS, ENGINES, MODEL_OPTIONS } from '../core/roster.mjs';
 import { createControlButton, createDisclosure, createRelativeTime } from './controls.mjs';
-
-const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
 
 // The status ladder is ordered, so a checkpoint's position on it is a number.
 const LADDER = ['coded', 'wired', 'verified'];
@@ -83,56 +80,15 @@ function agentRow(agent, handlers) {
 
   const header = el('div', 'agent-header');
   header.append(ident, statusChip(agent));
-  if (!agent.readOnly) header.append(
-    crewSize(agent, handlers), engineToggle(agent, handlers),
-    runtimeControls(agent, handlers), enabledToggle(agent, handlers));
-  const details = el('button', 'agent-details-toggle', agent.selected ? '−' : '+');
+  const details = el('button', 'agent-details-toggle', '›');
   details.type = 'button';
-  details.title = agent.selected ? 'Hide connected work' : 'Show connected work';
-  details.setAttribute('aria-expanded', String(agent.selected));
-  details.onclick = () => handlers.select(agent.selected ? null : agent.id);
+  details.title = `Open ${nameOf(agent)}`;
+  details.setAttribute('aria-label', `Open ${nameOf(agent)} details`);
+  details.onclick = () => handlers.openChat?.(agent.id);
   header.append(details);
 
   row.append(header);
-  if (!agent.readOnly) row.append(goalEditor(agent, handlers));
-  if (agent.selected) row.append(agentConnections(agent, handlers));
   return row;
-}
-
-function agentConnections(agent, handlers) {
-  const section = el('section', 'agent-connections');
-  section.onclick = (event) => event.stopPropagation();
-  const checkpoints = el('div', 'agent-work-list');
-  checkpoints.append(el('h4', '', `CHECKPOINTS ${agent.checkpoints?.length ?? 0}`));
-  if (!agent.checkpoints?.length) checkpoints.append(el('p', 'agent-empty', 'No checkpoints assigned.'));
-  for (const item of agent.checkpoints ?? []) {
-    const button = el('button', 'agent-work-link');
-    button.type = 'button';
-    button.append(
-      el('span', 'checkpoint-id', item.id),
-      el('span', '', item.title),
-      el('span', 'agent-work-state', item.state),
-    );
-    button.onclick = () => handlers.openCheckpoint?.(item.id);
-    checkpoints.append(button);
-  }
-
-  const messages = el('div', 'agent-message-list');
-  messages.append(el('h4', '', 'RECENT MESSAGES'));
-  if (!agent.messages?.length) messages.append(el('p', 'agent-empty', 'No recent messages.'));
-  for (const message of agent.messages ?? []) {
-    const row = message.checkpointId ? el('button', 'agent-message-link') : el('div', 'agent-message-link');
-    if (message.checkpointId) {
-      row.type = 'button';
-      row.onclick = () => handlers.openCheckpoint?.(message.checkpointId);
-    }
-    const time = createRelativeTime(message.ts);
-    row.append(time, el('span', '', message.text),
-      message.checkpointId ? el('span', 'checkpoint-id', message.checkpointId) : document.createTextNode(''));
-    messages.append(row);
-  }
-  section.append(checkpoints, messages);
-  return section;
 }
 
 // The one word for where this seat stands. A benched agent is never dispatched,
@@ -158,160 +114,6 @@ function statusChip(agent) {
   chip.append(el('span', 'dot'));
   chip.setAttribute('aria-label', state);
   return chip;
-}
-
-function goalEditor(agent, handlers) {
-  const cell = el('div', `goal${agent.goal?.source === 'derived' ? ' is-default' : ''}`);
-
-  // A goal Thor has not written yet is a role template, not a plan for THIS
-  // mission. Showing it plain made six identical blurbs read as decisions
-  // somebody had made about the work.
-  const derived = agent.goal?.source === 'derived';
-  const label = el('div', 'goal-label', derived ? 'GOAL · default' : 'GOAL');
-  if (derived) {
-    label.title = 'a role default - Thor has not set this agent\'s goal for this mission yet';
-  }
-  const box = document.createElement('textarea');
-  box.className = 'goal-input';
-  box.rows = 2;
-  box.value = agent.goal?.objective ?? '';
-  box.placeholder = 'no goal - this agent would start blind';
-  box.setAttribute('aria-label', `${nameOf(agent)} goal`);
-
-  // The goal is the single most important editable thing in this panel, so it
-  // is a real multi-line field: the whole objective is visible and rewritable.
-  const commit = () => {
-    const next = box.value.trim();
-    if (next !== (agent.goal?.objective ?? '')) handlers.setGoal(agent.id, next);
-  };
-  box.onblur = commit;
-  box.onclick = (event) => event.stopPropagation();
-  box.onkeydown = (event) => {
-    event.stopPropagation();
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      commit();
-      box.blur();
-    }
-    if (event.key === 'Escape') {
-      box.value = agent.goal?.objective ?? '';
-      box.blur();
-    }
-  };
-
-  cell.append(label, box);
-  return cell;
-}
-
-// Not every mission needs every role. A disabled agent keeps its seat in this
-// list so it can be brought back, but it is never dispatched and never appears
-// on the floor.
-function enabledToggle(agent, handlers) {
-  const off = agent.enabled === false;
-  const button = el('button', 'switch');
-  button.type = 'button';
-  button.role = 'switch';
-  button.setAttribute('aria-checked', String(!off));
-  button.setAttribute('aria-label', `${nameOf(agent)} on this mission`);
-  button.title = off ? `Add ${nameOf(agent)} to this mission` : `Bench ${nameOf(agent)}`;
-  button.style.cssText = [
-    'flex:none', 'box-sizing:border-box', 'position:relative',
-    'width:26px', 'height:14px', 'min-width:26px', 'padding:0', 'margin:0',
-    'cursor:pointer', 'border-radius:9px',
-    `border:1px solid ${off ? 'var(--line)' : 'var(--accent)'}`,
-    `background:${off ? 'transparent' : 'var(--accent)'}`,
-  ].join(';');
-
-  const knob = el('span');
-  knob.style.cssText = [
-    'position:absolute', 'top:2px', 'width:8px', 'height:8px', 'border-radius:50%',
-    `left:${off ? '2px' : '14px'}`,
-    `background:${off ? 'var(--muted)' : 'var(--bg)'}`,
-    'transition:left 120ms ease-out',
-  ].join(';');
-  button.append(knob);
-
-  button.onclick = (event) => {
-    event.stopPropagation();
-    handlers.setActive(agent.id, off);
-  };
-  return button;
-}
-
-// How many of this hero are working. Three PRs to review is three Capt.
-// Marvels, each on its own slice - the server has spawned several workers to a
-// seat since the beginning and there has never been a way to ask for it.
-function crewSize(agent, handlers) {
-  const select = el('select', 'copies');
-  select.setAttribute('aria-label', `${nameOf(agent)} capacity`);
-  select.title = `${nameOf(agent)} capacity`;
-  const count = Math.max(1, agent.instances ?? 1);
-  for (let value = 1; value <= 4; value += 1) {
-    const option = el('option', '', String(value));
-    option.value = String(value);
-    option.selected = value === count;
-    select.append(option);
-  }
-  select.onclick = (event) => event.stopPropagation();
-  select.onchange = (event) => {
-    event.stopPropagation();
-    handlers.setInstances(agent.id, Number(select.value));
-  };
-  return select;
-}
-
-function engineToggle(agent, handlers) {
-  const group = el('div', 'engine');
-  group.setAttribute('role', 'group');
-  group.setAttribute('aria-label', `${nameOf(agent)} engine`);
-  for (const engine of ENGINE_LABELS) {
-    const button = el('button', '', engine.toUpperCase());
-    button.type = 'button';
-    button.setAttribute('aria-pressed', String(agent.engine === engine));
-    button.setAttribute('aria-label', `${nameOf(agent)} on ${engine}`);
-    button.onclick = (event) => {
-      event.stopPropagation();
-      handlers.assignEngine(agent.id, engine);
-    };
-    group.append(button);
-  }
-  return group;
-}
-
-function runtimeControls(agent, handlers) {
-  const group = el('div', 'runtime-controls');
-  const model = runtimeSelect(
-    `${nameOf(agent)} model`,
-    MODEL_OPTIONS[agent.engine] ?? [],
-    agent.model ?? '',
-    (value) => handlers.configureRuntime(agent.id, { model: value }),
-  );
-  const effort = runtimeSelect(
-    `${nameOf(agent)} effort`,
-    (EFFORT_OPTIONS[agent.engine] ?? []).map((value) => ({ value, label: value.toUpperCase() })),
-    agent.effort ?? 'medium',
-    (value) => handlers.configureRuntime(agent.id, { effort: value }),
-  );
-  group.append(model, effort);
-  return group;
-}
-
-function runtimeSelect(label, options, selected, change) {
-  const select = el('select');
-  select.setAttribute('aria-label', label);
-  select.title = label;
-  for (const option of options) {
-    const item = el('option', '', option.label);
-    item.value = option.value;
-    item.selected = option.value === selected;
-    select.append(item);
-  }
-  select.onclick = (event) => event.stopPropagation();
-  select.onchange = (event) => {
-    event.stopPropagation();
-    change(select.value);
-  };
-  return select;
 }
 
 // ---------------------------------------------------------- flow contract
@@ -1024,7 +826,6 @@ function observationCard(decision, handlers) {
     handlers.act('dismiss', decision, event.currentTarget.getBoundingClientRect());
   actions.append(dismiss);
   card.append(actions);
-  if (decision.actions.includes('steer')) card.append(steerRow(decision, handlers));
   return card;
 }
 
@@ -1076,8 +877,6 @@ function approvalCard(decision, handlers) {
   }
   card.append(answers);
 
-  // Prose is still a valid answer, so the steer line stays.
-  card.append(steerRow(decision, handlers));
   return card;
 }
 
@@ -1126,45 +925,6 @@ function actionRow(decision, handlers) {
     actions.append(button);
   }
   return actions;
-}
-
-function steerRow(decision, handlers) {
-  return createAgentChat(decision, handlers, {
-    placeholder: `tell ${nameOf(decision)} what to do instead`,
-  }).el;
-}
-
-// One message control everywhere an agent can be addressed. It always calls
-// the same handler, which sends through the server middleware whether the
-// agent is already running or must be started by this message.
-export function createAgentChat(agent, handlers, options = {}) {
-  const form = el('div', 'steer');
-  const input = el('input');
-  let target = null;
-
-  const setAgent = (next) => {
-    target = next ?? null;
-    const who = target ? nameOf(target) : 'an Avenger';
-    const agentId = target?.id ?? target?.agentId ?? 'none';
-    input.dataset.field = `chat:${agentId}`;
-    input.placeholder = options.placeholder ?? `talk to ${who}`;
-    input.setAttribute('aria-label', `talk to ${who}`);
-    input.disabled = !target;
-  };
-
-  form.onclick = (event) => event.stopPropagation();
-  input.onkeydown = (event) => {
-    event.stopPropagation();
-    if (event.key === 'Enter' && target && input.value.trim()) {
-      const agentId = target.id ?? target.agentId;
-      handlers.steer(agentId, input.value.trim(), input.getBoundingClientRect());
-      input.value = '';
-      handlers.openChat?.(agentId);
-    }
-  };
-  form.append(input, el('span', 'hint', '↵'));
-  setAgent(agent);
-  return { el: form, input, setAgent };
 }
 
 // An idle queue still says what it is for, as a quiet hollow card rather

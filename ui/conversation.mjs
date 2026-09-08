@@ -1,4 +1,4 @@
-import { REACTIONS, reactionsForMessage } from '../core/conversation.mjs';
+import { DELIVERY_STATE, REACTIONS, conversationOf, reactionsForMessage } from '../core/conversation.mjs';
 import { renderMarkdown } from './markdown.mjs';
 import { createControlButton, createRelativeTime } from './controls.mjs';
 
@@ -38,6 +38,18 @@ export function renderMessage(message, { events = [], onReply, onReact, onOpen }
   article.append(body);
   if (message.attachments.length) article.append(renderAttachments(message.attachments));
   if (message.references.length) article.append(renderReferences(message.references, onOpen));
+  const deliveries = Object.values(conversationOf(events).delivery)
+    .filter((delivery) => delivery.messageId === message.id);
+  const failed = deliveries.filter((delivery) => delivery.state === DELIVERY_STATE.FAILED);
+  const queued = deliveries.filter((delivery) => delivery.state === DELIVERY_STATE.QUEUED);
+  if (failed.length || queued.length) {
+    const delivery = document.createElement('p');
+    delivery.className = failed.length ? 'conversation-delivery is-failed' : 'conversation-delivery';
+    delivery.textContent = failed.length
+      ? `Not delivered to ${failed.map((item) => item.recipientId).join(', ')}: ${failed[0].error}`
+      : `Sending to ${queued.map((item) => item.recipientId).join(', ')}`;
+    article.append(delivery);
+  }
   const actions = document.createElement('div');
   actions.className = 'conversation-actions';
   if (onReply) {

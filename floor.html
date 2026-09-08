@@ -712,6 +712,20 @@
   .control-button:active { transform: scale(.98); }
   .control-button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
   .control-button:disabled { color: var(--faint); cursor: default; opacity: .45; }
+  .control-button.is-quiet,
+  .control-button.is-icon {
+    border-color: transparent;
+    background: transparent;
+    padding-inline: 4px;
+  }
+  .control-button.is-quiet:hover,
+  .control-button.is-icon:hover { border-color: transparent; background: var(--nested); }
+  .control-button.is-chip {
+    min-height: 20px;
+    padding: 1px 5px;
+    border-color: var(--line-soft);
+    background: transparent;
+  }
 
   .middleware-intro {
     overflow: hidden;
@@ -765,23 +779,6 @@
     gap: var(--step);
     padding-top: var(--step);
   }
-
-  .steer { display: flex; align-items: center; gap: calc(var(--step) * 1.5); margin-top: calc(var(--step) * 2); }
-
-  .steer input {
-    flex: 1;
-    min-width: 0;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    border-radius: 0;
-    color: var(--text);
-    font: inherit;
-    font-size: 11px;
-    padding: 4px 7px;
-  }
-
-  .steer input:focus { outline: none; border-color: var(--accent); }
-  .steer .hint { flex: 0 0 auto; font-size: 10px; color: var(--faint); letter-spacing: 0.1em; text-transform: none; }
 
   .feed-chat {
     position: relative;
@@ -905,20 +902,7 @@
     font: 400 9px/1.3 var(--mono);
     letter-spacing: .1em;
   }
-  .feed-row > .feed-references,
-  .feed-row > .feed-attachments,
-  .feed-message-actions { margin-left: 28px; }
-  .feed-message-actions { display: flex; align-items: center; gap: var(--step); }
-  .reaction-chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 20px;
-    padding: 0 5px;
-    border: 1px solid var(--line-soft);
-    background: var(--nested);
-    color: var(--muted);
-    font: 400 9px/1 var(--mono);
-  }
+  .feed-row > .feed-references { margin-left: 28px; }
 
   .panel-compose-row {
     display: grid;
@@ -1689,10 +1673,11 @@
   .agent {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "header" "goal" "connections";
-    gap: var(--step);
+    grid-template-areas: "header";
+    gap: 0;
     align-items: center;
-    padding: calc(var(--step) * 2) calc(var(--step) * 1.5);
+    min-height: 34px;
+    padding: var(--step) calc(var(--step) * 1.5);
     border-left: 2px solid transparent;
     border-bottom: 1px solid var(--line-soft);
     cursor: pointer;
@@ -1746,121 +1731,11 @@
      the toggle's own state, said in words next to everyone else's. */
   .status[data-status="benched"] .dot { background: var(--danger); box-shadow: none; }
 
-  .agent-header > .switch { margin-left: auto !important; }
   .agent-details-toggle {
     flex: 0 0 auto; border: 0; background: transparent; color: var(--faint);
     font: 12px var(--mono); line-height: 1; padding: 3px; cursor: pointer;
   }
   .agent-details-toggle:hover { color: var(--accent); }
-
-  .agent .goal { grid-area: goal; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-  .agent .steer { grid-area: chat; min-width: 0; }
-  .agent .goal-label {
-    font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint);
-  }
-
-  .agent .goal-input {
-    width: 100%;
-    min-height: 2.6em;
-    resize: vertical;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    color: var(--text);
-    font: inherit;
-    line-height: 1.45;
-    padding: 5px 7px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .agent .goal-input:hover { border-color: var(--muted); }
-  .agent .goal-input:focus { outline: none; border-color: var(--accent); }
-
-  .agent .goal-input::placeholder { color: var(--faint); }
-  .agent input.goal-input:hover { color: var(--text); border-bottom-color: var(--line); }
-  .agent input.goal-input:focus { outline: none; color: var(--text); border-bottom-color: var(--accent); }
-  .agent-connections {
-    grid-area: connections;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: calc(var(--step) * 3);
-    margin-top: var(--step);
-    padding-top: calc(var(--step) * 2);
-    border-top: 1px solid var(--line);
-    cursor: default;
-  }
-  .agent-connections h4 { margin: 0 0 var(--step); color: var(--faint); font: 9px var(--mono); letter-spacing: .12em; }
-  .agent-work-list, .agent-message-list { display: grid; align-content: start; gap: 1px; min-width: 0; }
-  .agent-work-link, .agent-message-link {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: calc(var(--step) * 1.5);
-    align-items: baseline;
-    min-width: 0;
-    padding: var(--step);
-    border: 0;
-    background: var(--surface);
-    color: var(--text);
-    font: 9px/1.4 var(--mono);
-    text-align: left;
-  }
-  button.agent-work-link, button.agent-message-link { cursor: pointer; }
-  button.agent-work-link:hover, button.agent-message-link:hover { background: var(--accent-soft); color: var(--accent); }
-  .agent-work-link > span:nth-child(2), .agent-message-link > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .agent-work-state { color: var(--faint); text-transform: uppercase; letter-spacing: .08em; }
-  .agent-empty { margin: 0; padding: var(--step); color: var(--faint); font-size: 9px; }
-
-  .copies {
-    width: 38px; border: 0; background: var(--surface); color: var(--text);
-    font: 9px var(--mono); padding: 3px 14px 3px 5px; cursor: pointer;
-  }
-
-  .engine { grid-area: engine; display: inline-flex; background: var(--sunk); padding: 1px; gap: 1px; }
-
-  .engine button {
-    background: transparent;
-    border: 0;
-    color: var(--faint);
-    font: inherit;
-    font-size: 9px;
-    letter-spacing: 0.14em;
-    padding: 2px 6px;
-    cursor: pointer;
-    transition: color 140ms ease-out, background-color 140ms ease-out;
-  }
-
-  .engine button:hover { color: var(--text); }
-  .engine button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1px var(--line); }
-
-  .agent[aria-selected="true"] .engine button[aria-pressed="true"] {
-    color: var(--accent);
-    box-shadow: inset 0 0 0 1px var(--accent-edge);
-  }
-
-  .runtime-controls {
-    display: inline-flex;
-    gap: 1px;
-    padding: 1px;
-    background: var(--sunk);
-  }
-
-  .runtime-controls select {
-    min-width: 76px;
-    max-width: 130px;
-    border: 0;
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    font-size: 9px;
-    letter-spacing: 0.1em;
-    padding: 3px 18px 3px 6px;
-  }
-
-  .runtime-controls select:focus { outline: 1px solid var(--accent); }
-
-  @media (max-width: 760px) {
-    .agent-header { flex-wrap: wrap; }
-    .agent-connections { grid-template-columns: minmax(0, 1fr); }
-  }
 
   /* --------------------------------------------------------------- console
      The composer is the console: same glass and brackets, dock buttons as

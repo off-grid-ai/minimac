@@ -30,8 +30,9 @@ import { createGoalStrip } from './goalstrip.mjs';
 import { createSound } from './sound.mjs';
 import { renderMarkdown, markdownReady } from './markdown.mjs';
 import { createControlButton } from './controls.mjs';
-import { CONTEXT_KIND, messagesForContext } from '../core/conversation.mjs';
-import { renderMessageGroup, renderThread } from './conversation.mjs';
+import { CONTEXT_KIND, messagesForContext, messagesForHero } from '../core/conversation.mjs';
+import { renderMessageGroup } from './conversation.mjs';
+import { renderEntityDetail } from './entity-detail.mjs';
 import { captureScrollAnchor, restoreScrollAnchor } from './scroll-anchor.mjs';
 import { CUES, cueFor, keyOf, neglect, trackWaiting } from '../core/attention.mjs';
 import {
@@ -158,6 +159,9 @@ async function send(type, payload = {}) {
       reason: `${type} refused: ${body.error}`,
     }));
     schedulePanels();
+  }
+  if (body.ok && ['postConversation', 'replyConversation', 'reactConversation', 'setInstances'].includes(type)) {
+    setTimeout(() => refreshOpenEntity(), 0);
   }
   return body;
 }
@@ -1156,13 +1160,6 @@ const handlers = {
   setActive: (agentId, active) => send('setActive', { agentId, active }),
   close: () => focus(null),
 
-  // Every steer is watched all the way to the desk: it leaves whatever you
-  // typed it into, crosses the room, and the agent answers when it lands.
-  steer: (agentId, text, from) => {
-    flyTo({ agentId, text, from, tone: 'neutral' });
-    return send('say', { target: agentId, text });
-  },
-
   approve: (agentId, approvalId, decision, from) => {
     flyTo({ agentId, text: 'answered', from, tone: 'ok' });
     return send('approve', { agentId, approvalId, decision });
@@ -1575,10 +1572,16 @@ function feedFilterPanel() {
   panel.append(
     select('Hero', state.feedFilter ?? '', orderedAgents().map((agent) => [agent.id, agent.label]),
       (value) => { state.feedFilter = value || null; }),
-    select('Work unit', state.feedWorkUnit, workUnits, (value) => { state.feedWorkUnit = value; }),
     select('Checkpoint', state.feedCheckpoint, checkpoints, (value) => { state.feedCheckpoint = value; }),
-    select('Stage', state.feedStage, stages, (value) => { state.feedStage = value; }),
   );
+  if (workUnits.length > 1) {
+    panel.append(select('Work unit', state.feedWorkUnit, workUnits,
+      (value) => { state.feedWorkUnit = value; }));
+  }
+  if (stages.length > 1) {
+    panel.append(select('Stage', state.feedStage, stages,
+      (value) => { state.feedStage = value; }));
+  }
   const clear = createControlButton('CLEAR');
   clear.onclick = () => {
     state.feedQuery = '';
@@ -1777,25 +1780,8 @@ function feedRow(entry) {
     body.innerHTML = renderMarkdown(entry.text);
   }
   row.append(body);
-  if (entry.attachments?.length) row.append(feedAttachments(entry.attachments));
   const references = feedReferences(entry);
   if (references) row.append(references);
-  if (entry.checkpointId) {
-    const actions = document.createElement('div');
-    actions.className = 'feed-message-actions';
-    for (const [key, reaction] of Object.entries(REACTIONS)) {
-      const actors = (entry.reactionActors?.[key] ?? [])
-        .filter((actor) => actor !== 'you' && actor !== entry.agentId);
-      if (!actors.length) continue;
-      const chip = document.createElement('span');
-      chip.className = 'reaction-chip';
-      chip.textContent = `${reaction.symbol} ${actors.length}`;
-      chip.title = `${reaction.label}: ${actors
-        .map((actor) => state.agents[actor]?.label ?? actor).join(', ')}`;
-      actions.append(chip);
-    }
-    if (actions.childElementCount) row.append(actions);
-  }
   return row;
 }
 
@@ -1835,81 +1821,28 @@ function feedReferences(entry) {
       button.textContent = `#${ref.id === entry.checkpointId ? entry.checkpointDisplayId ?? ref.id : ref.label ?? ref.id}`;
       button.onclick = () => openCheckpointThread(ref.id);
       nav.append(button);
-    } else if (ref.kind === 'agent') {
+    } else if (ref.kind === 'hero') {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = `@${ref.label ?? ref.id}`;
-      button.onclick = () => {
-        focus(ref.id);
-        openWindow('crew');
-      };
+      button.onclick = () => openConnectedEntity('hero', ref.id);
       nav.append(button);
     } else if (ref.kind === 'file' || ref.kind === 'skill') {
-      const link = document.createElement('a');
-      link.textContent = ref.kind === 'skill' ? `/${ref.label ?? ref.id}` : `@${ref.label ?? ref.id}`;
-      link.href = ref.kind === 'skill'
-        ? `/skill-file?id=${encodeURIComponent(ref.id)}`
-        : `/repo-file?path=${encodeURIComponent(ref.id)}`;
-      link.target = '_blank';
-      link.rel = 'noreferrer';
-      nav.append(link);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = ref.kind === 'skill' ? `/${ref.label ?? ref.id}` : `@${ref.label ?? ref.id}`;
+      button.onclick = () => openConnectedEntity(ref.kind, ref.id);
+      nav.append(button);
     }
   }
   return nav.childElementCount ? nav : null;
 }
-
-function feedAttachments(files) {
-  const gallery = document.createElement('div');
-  gallery.className = 'feed-attachments';
-  gallery.setAttribute('aria-label', 'message attachments');
-
-  for (const file of files) {
-    const href = `/attachment?path=${encodeURIComponent(file.path)}`;
-    const link = document.createElement('a');
-    link.className = 'feed-attachment';
-    link.href = href;
-    link.target = '_blank';
-    link.rel = 'noreferrer';
-    link.title = `open ${file.name}`;
-
-    if (String(file.type ?? '').startsWith('image/')) {
-      const image = document.createElement('img');
-      image.src = href;
-      image.alt = file.name;
-      image.loading = 'lazy';
-      link.append(image);
-    } else {
-      link.textContent = file.name;
-    }
-    gallery.append(link);
-  }
-  return gallery;
-}
-
-
 
 function feedEntry(agent, event) {
   const who = agent?.label ?? event.agentId;
   const at = new Date(event.ts).toLocaleTimeString([], { hour12: false });
   const payload = event.payload ?? {};
 
-  if (event.kind === EVENT_KINDS.CONVERSATION_MESSAGE) {
-    const message = payload.message ?? {};
-    const text = String(message.body ?? '');
-    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
-    if (plainText(text).length < 12 && attachments.length === 0) return null;
-    return {
-      at,
-      who,
-      suffix: message.from === 'you' ? ' (from you)' : '',
-      text,
-      message: true,
-      attachments,
-      checkpointId: message.context?.kind === 'checkpoint' ? message.context.id : null,
-      references: message.references ?? [],
-      tone: '',
-    };
-  }
   if (event.kind === EVENT_KINDS.ORDER) {
     const to = state.agents[payload.toAgentId]?.label ?? payload.toAgentId ?? 'Avenger';
     return {
@@ -2053,7 +1986,7 @@ function openCheckpointThread(id) {
   openConnectedEntity('checkpoint', id);
 }
 
-async function openConnectedEntity(kind, id) {
+async function openConnectedEntity(kind, id, { replace = false } = {}) {
   const events = Object.values(state.eventsByAgent).flat();
   let source = kind === 'hero'
     ? state.workspace?.heroes?.find((item) => item.id === id)
@@ -2069,140 +2002,56 @@ async function openConnectedEntity(kind, id) {
     source = response.result ?? null;
   }
   if (!source || !windows?.openEntity) return;
-  const content = document.createElement('div');
-  content.className = 'connected-entity-content';
-  const facts = document.createElement('div');
-  facts.className = 'connected-entity-facts';
-  if (kind === 'hero') facts.append(
-    contextFact('STATUS', source.status ?? 'idle'),
-    contextFact('CHECKPOINTS', source.checkpoints?.length ?? 0),
-    contextFact('ACTIVE', source.running?.length ?? 0),
-  );
-  if (kind === 'checkpoint') facts.append(
-    contextFact('STATUS', source.status?.state ?? 'pending'),
-    contextFact('OWNER', source.owner?.label ?? source.owner?.name ?? 'unassigned'),
-    contextFact('WORK UNIT', source.workUnitId ?? '—'),
-    contextFact('STAGE', source.stage ?? '—'),
-  );
-  if (kind === 'decision') facts.append(
-    contextFact('STATUS', source.resolved ? 'resolved' : 'open'),
-    contextFact('HERO', state.agents[source.agentId]?.label ?? source.agentId ?? '—'),
-  );
-  if (kind === 'file' || kind === 'skill') facts.append(
-    contextFact('TYPE', kind), contextFact('SOURCE', source.source ?? state.repo),
-  );
-  if (kind === 'message') facts.append(
-    contextFact('AUTHOR', state.agents[source.authorId]?.label ?? source.authorId),
-    contextFact('CONTEXT', `${source.context.kind}:${source.context.id}`),
-  );
-  content.append(facts);
-
-  if (kind === 'hero' && source.checkpoints?.length) {
-    content.append(contextLinks('CHECKPOINTS', source.checkpoints.map((checkpoint) => ({
-      label: `${checkpoint.id}  ${checkpoint.title ?? checkpoint.outcome}`, onClick: () => openConnectedEntity('checkpoint', checkpoint.id),
-    }))));
+  if (kind === 'hero') source = { ...source, messages: messagesForHero(events, id) };
+  if (kind === 'checkpoint' || kind === 'decision') {
+    source = { ...source, messages: messagesForContext(events, { kind, id }) };
   }
-  if (kind === 'checkpoint') {
-    content.append(contextCopy('OUTCOME', source.outcome), contextCopy('PLAN', source.plan), contextCopy('PROOF', source.verify));
-    if (source.dependencies?.length) content.append(contextLinks('DEPENDS ON', source.dependencies.map((checkpoint) => ({
-      label: `${checkpoint.id}  ${checkpoint.title ?? checkpoint.outcome}`, onClick: () => openConnectedEntity('checkpoint', checkpoint.id),
-    }))));
-  }
-  if (kind === 'decision') {
-    content.append(contextCopy('NEEDS YOU', source.reason ?? source.summary ?? source.detail));
-    if (source.kind === 'prayer' && !source.resolved) {
-      const settled = createControlButton('SETTLED');
-      settled.onclick = async () => {
-        await send('settlePrayer', { agentId: source.agentId });
-        windows?.open('decisions');
-      };
-      content.append(settled);
-    }
-  }
-  if (kind === 'file' || kind === 'skill') {
-    const resource = document.createElement('pre');
-    resource.className = 'connected-resource';
-    resource.textContent = source.content ?? '';
-    content.append(resource);
-  }
-  const thread = document.createElement('div');
-  thread.className = 'connected-entity-thread';
-  const messages = kind === 'message' ? [source] : source.messages ?? [];
-  if (messages.length || ['hero', 'checkpoint', 'decision'].includes(kind)) content.append(thread);
   let replyToMessageId = null;
-  const render = () => renderThread(thread, messages, {
-    agents: state.agents, events,
-    onReply: ['hero', 'checkpoint', 'decision'].includes(kind)
-      ? (message) => { replyToMessageId = message.id; input?.focus(); }
+  let detailComposer = null;
+  const conversational = ['hero', 'checkpoint', 'decision'].includes(kind);
+  const detail = renderEntityDetail({
+    kind, source, agents: state.agents, events,
+    onReply: conversational
+      ? (message) => { replyToMessageId = message.id; detailComposer?.focus(); }
       : null,
     onReact: (message, reaction) => send('reactConversation', {
       context: message.context, messageId: message.id, reaction,
     }),
     onOpen: (reference) => openConnectedEntity(reference.kind, reference.id),
+    onCapacity: kind === 'hero'
+      ? (instances) => send('setInstances', { agentId: id, instances })
+      : null,
   });
-  let input = null;
-  if (!['hero', 'checkpoint', 'decision'].includes(kind)) {
-    render();
-    windows.openEntity({ kind, id, title: source.label ?? source.title ?? source.name ?? id,
-      subtitle: source.role ?? source.stage ?? '', content });
-    return;
-  }
-  const composer = document.createElement('form');
-  composer.className = 'connected-entity-composer';
-  input = document.createElement('textarea');
-  input.rows = 2;
-  input.placeholder = 'Write a message';
-  const sendButton = createControlButton('SEND');
-  sendButton.type = 'submit';
-  composer.append(input, sendButton);
-  composer.onsubmit = async (event) => {
-    event.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
+  if (conversational) {
     const context = { kind: kind === 'hero' ? CONTEXT_KIND.MISSION : kind,
       id: kind === 'hero' ? String(state.runId) : id };
     const recipients = kind === 'hero' ? [id]
       : kind === 'checkpoint' && source.owner?.id ? [source.owner.id]
         : kind === 'decision' && source.agentId ? [source.agentId] : [];
-    await send(replyToMessageId ? 'replyConversation' : 'postConversation', {
-      context, text, recipients, replyToMessageId,
+    const host = document.createElement('footer');
+    host.className = 'connected-entity-composer';
+    detail.content.append(host);
+    detailComposer = mountPanelComposer(host, {
+      getTarget: () => kind === 'hero' ? id : context.id,
+      dispatch: ({ text, attachments }) => send(
+        replyToMessageId ? 'replyConversation' : 'postConversation', {
+          context, text, attachments, recipients, replyToMessageId,
+        },
+      ).then((result) => {
+        if (result.ok) replyToMessageId = null;
+        return result;
+      }),
     });
-    input.value = '';
-    replyToMessageId = null;
-  };
-  render();
-  content.append(composer);
-  windows.openEntity({ kind, id, title: source.label ?? source.title ?? source.name ?? id,
-    subtitle: source.role ?? source.stage ?? '', content });
+  }
+  const entity = { kind, id, ...detail };
+  if (replace) windows.replaceEntity(entity);
+  else windows.openEntity(entity);
 }
 
-function contextFact(label, value) {
-  const fact = document.createElement('span');
-  fact.innerHTML = `<small>${label}</small><b></b>`;
-  fact.querySelector('b').textContent = String(value ?? '—');
-  return fact;
-}
-
-function contextCopy(label, value) {
-  const section = document.createElement('section');
-  section.className = 'connected-copy';
-  const heading = document.createElement('h3');
-  heading.textContent = label;
-  const body = document.createElement('p');
-  body.textContent = value || '—';
-  section.append(heading, body);
-  return section;
-}
-
-function contextLinks(label, links) {
-  const section = contextCopy(label, '');
-  const body = section.querySelector('p');
-  body.replaceChildren(...links.map((link) => {
-    const button = createControlButton(link.label);
-    button.onclick = link.onClick;
-    return button;
-  }));
-  return section;
+function refreshOpenEntity() {
+  const current = windows?.currentEntity?.();
+  if (!current) return;
+  void openConnectedEntity(current.kind, current.id, { replace: true });
 }
 
 // The main console and both side-panel chats use createComposer. This shell
@@ -2765,17 +2614,6 @@ function mountMarkdownStyles() {
     .md table { width: 100%; border-collapse: collapse; margin: 6px 0; }
     .md th, .md td { border: 1px solid var(--line, #262626); padding: 4px 7px; text-align: left; }
     .md th { color: var(--accent, #34d399); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
-    .feed-attachments {
-      display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px;
-    }
-    .feed-attachment {
-      display: block; max-width: min(100%, 420px); color: var(--accent, #34d399);
-      border: 1px solid var(--line, #262626); background: var(--sunk, #151515);
-      overflow: hidden;
-    }
-    .feed-attachment img {
-      display: block; width: auto; max-width: 100%; max-height: 260px; object-fit: contain;
-    }
   `;
   document.head.append(style);
 }

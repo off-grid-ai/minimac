@@ -6,10 +6,10 @@ function available(name) {
   return Boolean(globalThis.customElements?.get(name));
 }
 
-export function createControlButton(text, { size = 'small' } = {}) {
+export function createControlButton(text, { size = 'small', variant = 'default' } = {}) {
   const button = document.createElement('button');
   button.type = 'button';
-  button.className = `control-button is-${size}`;
+  button.className = `control-button is-${size} is-${variant}`;
   button.textContent = text;
   return button;
 }

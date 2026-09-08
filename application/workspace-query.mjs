@@ -25,7 +25,7 @@ export function createWorkspaceQuery({ getState, resolveResource = async () => n
       running: checkpoints.filter((candidate) => candidate.lease?.state === 'running'),
       queued: checkpoints.filter((candidate) => !candidate.closedAt && candidate.lease?.state !== 'running'),
       completed: checkpoints.filter((candidate) => Boolean(candidate.closedAt)),
-      messages: messagesForHero(state.events, id, state.board),
+      messages: messagesForHero(state.events, id),
       decisions: state.cards.filter((card) => card.agentId === id) };
   }
   function checkpoint(id) {

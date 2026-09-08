@@ -92,7 +92,7 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
   function show(name) {
     if (!entries[name]?.el) return;
     active = name;
-    context.element.hidden = true;
+    context.reset();
     panel.hidden = false;
     for (const [key, entry] of Object.entries(entries)) {
       if (entry?.el) entry.el.hidden = key !== name;
@@ -153,12 +153,19 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
       missionContext.textContent = id ? `#${id}  ${title || 'No mission set'}` : 'NO MISSION SELECTED';
       missionContext.title = title || '';
     },
-    openEntity(entity) {
+    openEntity(entity, options) {
       panel.hidden = false;
       for (const entry of Object.values(entries)) if (entry?.el) entry.el.hidden = true;
-      context.openEntity(entity);
+      context.openEntity(entity, options);
       applyWidth();
     },
+    replaceEntity(entity) {
+      panel.hidden = false;
+      for (const entry of Object.values(entries)) if (entry?.el) entry.el.hidden = true;
+      context.replaceEntity(entity);
+      applyWidth();
+    },
+    currentEntity: () => context.current(),
     open: show,
     close: hide,
     toggle(name) {
@@ -261,45 +268,72 @@ function style() {
     .sidepanel-body .win-grip { display: none !important; }
 
     .connected-context {
-      width: 100%; min-height: 0; overflow: auto; padding: 12px 16px 20px 20px;
+      width: 100%; min-height: 0; overflow: auto; padding: 8px 12px 12px;
       background: var(--surface, #121212);
     }
     .connected-context-bar {
-      position: sticky; top: 0; z-index: 1; display: flex; align-items: center;
-      gap: 10px; padding: 0 0 10px; background: var(--surface, #121212);
+      position: sticky; top: 0; z-index: 2; display: grid;
+      grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center;
+      min-height: 36px; gap: 4px; padding: 0; background: var(--surface, #121212);
       border-bottom: 1px solid var(--line, #262626);
     }
     .connected-context-identity {
-      min-width: 0; display: flex; align-items: baseline; gap: 8px;
+      min-width: 0; display: flex; align-items: baseline; gap: 6px;
       overflow: hidden; white-space: nowrap;
     }
     .connected-context-identity span:first-child {
-      color: var(--accent, #34d399); font-size: 9px; letter-spacing: .12em;
-    }
-    .connected-context-identity span:nth-child(2) {
       overflow: hidden; color: var(--text, #e8e8e8); font-size: 12px;
       text-overflow: ellipsis;
     }
-    .connected-context-identity span:last-child {
+    .connected-context-identity span:nth-child(2) {
       color: var(--faint, #5a5a5a); font-size: 9px; letter-spacing: .1em;
+      text-transform: uppercase;
     }
-    .connected-context-body, .connected-entity-content { display: grid; gap: 12px; }
-    .connected-entity-facts { display: flex; flex-wrap: wrap; gap: 12px; }
-    .connected-entity-facts > span { display: grid; gap: 2px; }
-    .connected-entity-facts small,
-    .connected-copy h3 { color: var(--faint, #5a5a5a); font: 400 9px/1.2 Menlo, monospace; letter-spacing: .1em; }
-    .connected-entity-facts b { color: var(--text, #e8e8e8); font-weight: 400; }
-    .connected-copy { display: grid; gap: 5px; margin: 0; }
+    .connected-context-actions,
+    .connected-context-trailing { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .connected-context-trailing > span:last-child { color: var(--faint, #5a5a5a); font-size: 9px; }
+    .connected-context-trailing select {
+      min-height: 24px; border: 1px solid var(--line, #262626); background: var(--bg, #0a0a0a);
+      color: var(--muted, #8a8a8a); font: 9px Menlo, monospace; padding: 1px 4px;
+    }
+    .connected-status { display: inline-flex; align-items: center; gap: 4px; color: var(--faint, #5a5a5a); font-size: 9px; }
+    .connected-status i { width: 7px; height: 7px; border-radius: 50%; background: #d49a28; }
+    .connected-status[data-state="active"] i,
+    .connected-status[data-state="running"] i,
+    .connected-status[data-state="resolved"] i,
+    .connected-status[data-state="done"] i { background: var(--accent, #34d399); }
+    .connected-status[data-state="stopped"] i,
+    .connected-status[data-state="failed"] i,
+    .connected-status[data-state="blocked"] i { background: var(--danger, #f87171); }
+    .connected-context-body, .connected-entity-content { display: grid; gap: 8px; }
+    .connected-context-body { min-height: 0; }
+    .connected-entity-content { grid-template-rows: auto; }
+    .connected-entity-facts { display: flex; flex-wrap: wrap; gap: 16px; margin: 0; padding: 6px 0; }
+    .connected-entity-facts > div { display: grid; grid-template-columns: auto auto; gap: 5px; align-items: baseline; }
+    .connected-entity-facts dt,
+    .connected-copy h3,
+    .connected-links h3 { margin: 0; color: var(--faint, #5a5a5a); font: 400 9px/1.2 Menlo, monospace; letter-spacing: .1em; }
+    .connected-entity-facts dd { margin: 0; color: var(--text, #e8e8e8); font-size: 10px; }
+    .connected-copy, .connected-links { display: grid; gap: 4px; margin: 0; padding: 4px 0; }
     .connected-copy h3, .connected-copy p { margin: 0; }
-    .connected-copy p { color: var(--muted, #8a8a8a); font-size: 11px; line-height: 1.5; }
-    .connected-copy p:has(.control-button) { display: flex; flex-wrap: wrap; gap: 4px; }
+    .connected-copy p { color: var(--muted, #8a8a8a); font-size: 11px; line-height: 1.4; }
+    .connected-work-list { display: grid; border-top: 1px solid var(--line, #262626); }
+    .connected-work-row {
+      width: 100%; min-height: 30px !important; display: grid !important;
+      grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px;
+      padding: 3px 4px !important; text-align: left; border: 0 !important;
+      border-bottom: 1px solid var(--line, #262626) !important;
+    }
+    .connected-work-row b { color: var(--accent, #34d399); font-weight: 400; }
+    .connected-work-row span { overflow: hidden; color: var(--text, #e8e8e8); text-overflow: ellipsis; white-space: nowrap; }
+    .connected-work-row small { color: var(--faint, #5a5a5a); font-size: 9px; }
     .connected-resource {
       max-height: 55vh; overflow: auto; margin: 0; padding: 10px;
       background: var(--nested, #171717); border-left: 1px solid var(--line, #262626);
       color: var(--text, #e8e8e8); font: 10px/1.55 Menlo, monospace; white-space: pre-wrap;
     }
-    .connected-entity-thread { border-top: 1px solid var(--line, #262626); }
-    .conversation-group { padding: 10px 0; border-bottom: 1px solid var(--line, #262626); }
+    .connected-entity-thread { min-height: 0; border-top: 1px solid var(--line, #262626); }
+    .conversation-group { padding: 8px 0; border-bottom: 1px solid var(--line, #262626); }
     .conversation-group-head { display: flex; justify-content: space-between; gap: 8px; color: var(--faint, #5a5a5a); font-size: 9px; }
     .conversation-group-head span:first-child { color: var(--text, #e8e8e8); }
     .conversation-message { display: grid; gap: 5px; padding: 4px 0 0; }
@@ -310,19 +344,25 @@ function style() {
     .conversation-actions, .conversation-references, .conversation-attachments {
       display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
     }
+    .conversation-actions { opacity: 0; transition: opacity 120ms ease-out; }
+    .conversation-message:hover .conversation-actions,
+    .conversation-message:focus-within .conversation-actions { opacity: 1; }
     .conversation-references .control-button { min-height: 20px; padding: 1px 5px; }
     .conversation-thread-link { width: 22px; padding: 0 !important; }
     .conversation-thread-link svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.2; }
     .conversation-attachment { color: var(--accent, #34d399); font-size: 9px; text-decoration: none; }
     .conversation-attachment img { display: block; width: 112px; height: 72px; object-fit: cover; border: 1px solid var(--line, #262626); }
-    .conversation-empty { margin: 0; padding: 12px 0; color: var(--faint, #5a5a5a); font-size: 10px; }
-    .connected-entity-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; }
-    .connected-entity-composer textarea {
-      min-height: 52px; resize: vertical; padding: 7px; background: var(--bg, #0a0a0a);
-      border: 1px solid var(--line, #262626); border-radius: 0; color: var(--text, #e8e8e8);
-      font: 11px/1.5 Menlo, monospace;
+    .conversation-empty { margin: 0; padding: 8px 0; color: var(--faint, #5a5a5a); font-size: 10px; }
+    .connected-entity-composer {
+      position: sticky; bottom: -12px; z-index: 2; display: grid; gap: 4px;
+      padding: 6px 0 0; background: var(--surface, #121212); border-top: 1px solid var(--line, #262626);
     }
-    .connected-entity-composer textarea:focus { outline: 1px solid var(--accent, #34d399); outline-offset: -1px; }
+    .connected-entity-composer .panel-compose-row {
+      grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "actions input send";
+      gap: 4px; align-items: center;
+    }
+    .connected-entity-composer .panel-compose-input { min-height: 34px; padding: 6px 8px; font-size: 11px; }
+    .connected-entity-composer .panel-compose-actions { align-items: center; }
 
     /* The panel takes real space: the room and the console live in what is
        left, rather than sliding underneath it. */
