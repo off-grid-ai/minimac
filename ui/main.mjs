@@ -2387,12 +2387,12 @@ function row(label, onPick) {
 // the reason is on screen.
 function boot() {
   try {
-    // Clicking a desk selects the agent AND opens their side of the story -
-    // the feed, filtered to them. Selecting in silence was the complaint.
+    // Clicking a desk walks the camera to that hero. Hero links inside the
+    // side panel open the connected detail view instead.
     scene = createScene({
       canvas: dom.floor,
       palette,
-      onSelect: (agentId) => openConnectedEntity('hero', agentId),
+      onSelect: focus,
       onHover: (id) => {
         if (state.hovered === id) return;
         state.hovered = id;
