@@ -497,7 +497,7 @@ export function createSimDriver() {
       if (session.finished) return;
       workflowEvent(session, EVENT_KINDS.STATUS, { state: 'running' });
       if (agent.id === 'minimac' && prompt.includes('# First job: assemble the crew')) {
-        workflowEvent(session, EVENT_KINDS.MESSAGE, {
+        workflowEvent(session, EVENT_KINDS.ENGINE_OUTPUT, {
           text: `\`\`\`minimac-work-plan\n${JSON.stringify(workflowPlan())}\n\`\`\``,
         });
         return;
@@ -529,7 +529,7 @@ export function createSimDriver() {
         receipt: 'simulated focused check: one reproducible failure',
         files: ['sim/w1/cw.txt'],
       }] : [];
-      workflowEvent(session, EVENT_KINDS.MESSAGE, {
+      workflowEvent(session, EVENT_KINDS.ENGINE_OUTPUT, {
         text: `\`\`\`minimac\n${JSON.stringify({ claims: [], discoveries, gates })}\n\`\`\``,
       });
     }, 40);
@@ -566,7 +566,7 @@ export function createSimDriver() {
       if (!arc || arc.finished) return;
       const now = Date.now();
 
-      emit(createEvent(agentId, EVENT_KINDS.MESSAGE, { text: `acknowledged: ${text}` }));
+      emit(createEvent(agentId, EVENT_KINDS.ENGINE_OUTPUT, { text: `acknowledged: ${text}`, final: true }));
 
       if (arc.blocked) {
         unblock(arc, 'accept', 'steer', now);

@@ -101,7 +101,7 @@ export function createCodexDriver({
     clearTimeout(entry.timer);
     buffers.delete(threadId);
     if (entry.text.trim()) {
-      emit(createEvent(entry.agentId, EVENT_KINDS.MESSAGE, {
+      emit(createEvent(entry.agentId, EVENT_KINDS.ENGINE_OUTPUT, {
         text: entry.text,
         partial: !final,
         sessionId: threadId,
@@ -456,7 +456,7 @@ export function createCodexDriver({
       });
     }
     if (item.type === 'agentMessage' && phase === 'completed' && item.text) {
-      return at(EVENT_KINDS.MESSAGE, { text: item.text, final: item.phase === 'final_answer' });
+      return at(EVENT_KINDS.ENGINE_OUTPUT, { text: item.text, final: item.phase === 'final_answer' });
     }
     return undefined;
   }

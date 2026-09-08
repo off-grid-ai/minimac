@@ -117,7 +117,7 @@ export function createClaudeDriver({
 
     if (message.type === 'assistant') {
       for (const block of message.message?.content ?? []) {
-        if (block.type === 'text' && block.text) at(EVENT_KINDS.MESSAGE, { text: block.text });
+        if (block.type === 'text' && block.text) at(EVENT_KINDS.ENGINE_OUTPUT, { text: block.text, final: true });
         if (block.type === 'tool_use') normalizeToolUse(at, block);
       }
       return;

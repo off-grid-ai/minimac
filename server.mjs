@@ -68,17 +68,16 @@ import { createWorkBoard } from './application/work-board.mjs';
 import { createWorkPlanningService } from './application/work-planning.mjs';
 import { createScheduler } from './application/scheduler.mjs';
 import { createFleetCoordination } from './application/fleet-coordination.mjs';
+import { createConversationService } from './application/conversations.mjs';
+import { createWorkspaceQuery } from './application/workspace-query.mjs';
 import { createWorkerLeaseService } from './application/worker-leases.mjs';
 import { createRuntimeSupervisor } from './application/runtime-supervisor.mjs';
 import { ORDER_ACTION } from './core/coordination.mjs';
 import { LEASE_LIMIT_MS, finishLease } from './core/leases.mjs';
 import { readyCheckpoints } from './core/scheduler.mjs';
 import {
-  checkpointMessageExists,
-  conversationReferences,
-  createCheckpointMessage,
-  createReaction,
-  reactionActive,
+  CONTEXT_KIND,
+  messagesForContext,
 } from './core/conversation.mjs';
 import { projectMissionFlows } from './core/mission-flows.mjs';
 import {
@@ -336,8 +335,8 @@ function eventTranscript(agentId) {
   const lines = [];
   for (const event of eventsFor(state.events, agentId)) {
     const payload = event.payload ?? {};
-    if (event.kind === EVENT_KINDS.MESSAGE && payload.text) {
-      lines.push(`${payload.from === 'you' ? 'USER' : 'ASSISTANT'}\n${payload.text}`);
+    if (event.kind === EVENT_KINDS.CONVERSATION_MESSAGE && payload.message?.body) {
+      lines.push(`${payload.message.from === 'you' ? 'USER' : 'ASSISTANT'}\n${payload.message.body}`);
     } else if (event.kind === EVENT_KINDS.TOOL) {
       lines.push(`TOOL\n${payload.action ?? 'tool'} ${payload.target ?? ''} ${payload.phase ?? ''}`.trim());
     } else if (event.kind === EVENT_KINDS.CLAIM && payload.text) {
@@ -684,8 +683,8 @@ const FENCES = [REPORT_FENCE, WORK_PLAN_FENCE, VERDICT_FENCE];
 // same, because there is no per-chunk state to get out of step.
 const wire = new Map();
 
-function partition(event) {
-  if (event.kind !== EVENT_KINDS.MESSAGE) return { event, raw: null };
+function partitionAgentOutput(event) {
+  if (event.kind !== EVENT_KINDS.ENGINE_OUTPUT) return { event, raw: null };
 
   const wireKey = event.payload?.workerId ?? event.payload?.sessionId ?? event.agentId;
   const held = wire.get(wireKey) ?? { buffer: '', shown: 0 };
@@ -825,10 +824,17 @@ function ingest(rawIncoming) {
     return;
   }
 
-  const { event, raw } = partition(incoming);
+  const { event, raw } = partitionAgentOutput(incoming);
   // Payload with no prose still has to be parsed - it just is not said aloud.
   if (!event) {
     if (raw) harvestBlocks({ ...incoming, payload: { ...incoming.payload, text: raw } });
+    return;
+  }
+  if (event.kind === EVENT_KINDS.ENGINE_OUTPUT) {
+    if (raw) harvestBlocks({ ...event, payload: { ...event.payload, text: raw } });
+    conversations?.acceptAgentOutput(event, event.payload?.checkpointId
+      ? { kind: CONTEXT_KIND.CHECKPOINT, id: event.payload.checkpointId }
+      : { kind: CONTEXT_KIND.MISSION, id: String(store.runId) });
     return;
   }
   if (raw !== null) event.payload = { ...event.payload, raw };
@@ -856,6 +862,8 @@ function ingest(rawIncoming) {
 // his goes through here, so a goal, an assignment and a ruling all look the
 // same on the floor.
 let coordination = null;
+let conversations = null;
+let workspaceQuery = null;
 let scheduler = null;
 let runtimeSupervisor = null;
 let schedulerQueued = false;
@@ -1378,57 +1386,13 @@ function patchAgent(agents, agentId, changes) {
 
 // One application path owns checkpoint conversation writes. UI commands and
 // agent tools call this function; neither transport creates its own record.
-async function postCheckpointMessage({
-  id, text = '', attachments = [], replyToId = null, from = 'you', authorAgentId = null,
+async function writeConversation({
+  context, text = '', attachments = [], replyToMessageId = null, from = 'you',
+  authorId = 'you', recipients = [], wake = false,
 }) {
-  const item = findItem(state.board, id);
-  if (!item) throw new Error(`no checkpoint ${id}`);
-  if (!String(text).trim() && attachments.length === 0) {
-    throw new Error('a checkpoint message needs text or an attachment');
-  }
-  if (replyToId && !checkpointMessageExists(state.events, id, replyToId)) {
-    throw new Error(`no message ${replyToId} on checkpoint ${id}`);
-  }
-  const author = authorAgentId ?? item.owner ?? 'minimac';
-  const parsed = parseMentions(text, { agents: Object.values(state.agents) });
-  const knownSkills = parsed.skills.length > 0 ? await repoIndex.skills(options.repo) : [];
-  const skills = parsed.skills
-    .map((name) => knownSkills.find((skill) => skill.label === name))
-    .filter(Boolean);
-  const event = createCheckpointMessage({
-    id: randomUUID(),
-    checkpointId: id,
-    agentId: author,
-    text,
-    from,
-    attachments,
-    replyToId,
-    references: conversationReferences({ checkpointId: id, parsed, attachments, skills }),
+  return conversations.post({
+    authorId, context, recipients, body: text, attachments, replyToMessageId, from, wake,
   });
-  ingest(event);
-  return { messageId: event.payload.messageId, recorded: true };
-}
-
-function postCheckpointReaction({ id, messageId, reaction, from = 'you', authorAgentId = null }) {
-  const item = findItem(state.board, id);
-  if (!item) throw new Error(`no checkpoint ${id}`);
-  if (!checkpointMessageExists(state.events, id, messageId)) {
-    throw new Error(`no message ${messageId} on checkpoint ${id}`);
-  }
-  const actorId = from === 'you' ? 'you' : authorAgentId;
-  const active = !reactionActive(state.events, id, messageId, actorId, reaction);
-  const result = createReaction({
-    id: randomUUID(),
-    checkpointId: id,
-    agentId: authorAgentId ?? item.owner ?? 'minimac',
-    messageId,
-    reaction,
-    actorId,
-    active,
-  });
-  if (result.error) throw new Error(result.error);
-  ingest(result.event);
-  return { reactionId: result.event.payload.reactionId, active };
 }
 
 // ----------------------------------------------------------------- commands
@@ -1473,13 +1437,10 @@ const COMMANDS = {
     }
     for (const [agentId, goal] of Object.entries(state.goals)) store.saveGoal(agentId, goal);
     // Say it out loud on the floor, so a submit is never silent.
-    ingest(
-      createEvent('minimac', EVENT_KINDS.MESSAGE, {
-        text: `mission set: ${mission}`,
-        attachments,
-        from: 'you',
-      }),
-    );
+    await writeConversation({
+      context: { kind: CONTEXT_KIND.MISSION, id: String(store.runId) },
+      text: `mission set: ${mission}`, attachments, from: 'you', authorId: 'you',
+    });
     // A new mission is a new crew. Setting a goal on Thor lands here too, so
     // every route into "here is the work" assembles - there is one assemble
     // path, not a copy of it inlined per caller.
@@ -1746,6 +1707,11 @@ const COMMANDS = {
     });
     context.tasks = tasks;
     context.workItems = assignedItems;
+    context.conversations = agent.role === ROLES.ORCHESTRATOR
+      ? [messagesForContext(state.events, { kind: CONTEXT_KIND.MISSION, id: String(store.runId) })]
+      : assignedItems.map((item) => messagesForContext(state.events, {
+        kind: CONTEXT_KIND.CHECKPOINT, id: item.id,
+      }));
     let startedWorkers;
     try {
       startedWorkers = await startWorkers(agent, cwd, context);
@@ -1802,7 +1768,9 @@ const COMMANDS = {
   // The composer's single verb. One line of text, whatever it names, ends up
   // in exactly one place: the mission, or one agent.
   async say({ target, text, attachments = [], from = 'you' }) {
-    const parsed = parseMentions(text, { agents: Object.values(state.agents) });
+    const parsed = parseMentions(text, {
+      agents: Object.values(state.agents), checkpoints: itemsOf(state.board), decisions: state.cards,
+    });
     const namesAgent = parsed.agents.length > 0;
     const routedTarget = routeOf(parsed, target);
     // A pasted path is an attachment, so dragging a file in and pasting its
@@ -1857,30 +1825,26 @@ const COMMANDS = {
     const agentId = routedTarget;
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
-    const body = attachments.length > 0 ? `${text}\n\n${attachmentLines(attachments)}` : text;
-    if (hasLiveWorker(agent)) {
-      return COMMANDS.steer({
-        agentId,
-        text: body,
-        event: { text, attachments, from },
-      });
-    }
-    ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, { text, from, attachments }));
-    return COMMANDS.setActive({
-      agentId,
-      active: true,
-      task: text,
-      mentions: parsed,
-      attachments,
+    return writeConversation({
+      context: { kind: CONTEXT_KIND.MISSION, id: String(store.runId) },
+      text, attachments, from, authorId: 'you', recipients: [agentId], wake: true,
     });
   },
 
-  async commentCheckpoint({ id, text = '', attachments = [], replyToId = null, from = 'you' }) {
-    return postCheckpointMessage({ id, text, attachments, replyToId, from });
+  async postConversation({ context, text = '', attachments = [], recipients = [], from = 'you' }) {
+    return writeConversation({ context, text, attachments, recipients, from });
   },
 
-  async reactCheckpoint({ id, messageId, reaction, from = 'you' }) {
-    return postCheckpointReaction({ id, messageId, reaction, from });
+  async replyConversation({ context, text = '', attachments = [], replyToMessageId, recipients = [], from = 'you' }) {
+    return writeConversation({ context, text, attachments, replyToMessageId, recipients, from });
+  },
+
+  async reactConversation({ context, messageId, reaction, from = 'you' }) {
+    return conversations.react({ authorId: from, context, messageId, reaction });
+  },
+
+  async resolveResource({ reference }) {
+    return workspaceQuery.resource(reference);
   },
 
   // Make the orchestrator say something to a hero. The floor walks him over.
@@ -1956,7 +1920,7 @@ const COMMANDS = {
     return { dismissed: true };
   },
 
-  async steer({ agentId, text, event = null, record = true }) {
+  async steer({ agentId, text }) {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`no agent ${agentId}`);
     // A reply does NOT close the question. You asked to be able to go back and
@@ -1981,13 +1945,6 @@ const COMMANDS = {
       throw new Error(
         `${agent.label ?? agentId} did not take that: ${sent.failures[0] ?? 'the engine is gone'}`,
       );
-    }
-    if (record) {
-      ingest(createEvent(agentId, EVENT_KINDS.MESSAGE, {
-        text: event?.text ?? text,
-        attachments: event?.attachments ?? [],
-        from: event?.from ?? 'you',
-      }));
     }
     return { delivered: sent.delivered };
   },
@@ -2297,6 +2254,38 @@ coordination = createFleetCoordination({
   },
 });
 
+conversations = createConversationService({
+  getEvents: () => state.events,
+  emit: ingest,
+  id: randomUUID,
+  missionId: () => String(store.runId),
+  resolveMentions: async (text) => parseMentions(text, {
+    agents: Object.values(state.agents), checkpoints: itemsOf(state.board), decisions: state.cards,
+  }),
+  resolveSkills: async (names) => {
+    if (!names.length) return [];
+    const skills = await repoIndex.skills(options.repo);
+    return names.map((name) => skills.find((skill) => skill.label === name)).filter(Boolean);
+  },
+  deliver: async (agentId, text, { wake = false } = {}) => {
+    const agent = state.agents[agentId];
+    if (!agent) throw new Error(`unknown agent: ${agentId}`);
+    if (hasLiveWorker(agent)) return COMMANDS.steer({ agentId, text });
+    if (!wake) throw new Error(`${agent.label ?? agentId} has no live session`);
+    return COMMANDS.setActive({ agentId, active: true, task: text });
+  },
+});
+
+workspaceQuery = createWorkspaceQuery({
+  getState: () => ({
+    ...state, runId: store.runId, board: itemsOf(state.board),
+    progress: projectMissionProgress(state.board, state.acceptance),
+    contradictions: missionContradictions(state.board,
+      Object.values(state.agents).flatMap((agent) => ensureWorkers(agent)), state.acceptance),
+  }),
+  resolveResource: (reference) => repoIndex.resource(options.repo, reference),
+});
+
 workerLeases = createWorkerLeaseService({
   schedule: (action, delay) => {
     const timer = setTimeout(action, delay);
@@ -2557,6 +2546,15 @@ function snapshot() {
       crew: crewRoster(),
       attachments: state.attachments,
     }),
+    workspace: workspaceQuery ? {
+      mission: workspaceQuery.mission(),
+      heroes: Object.keys(state.agents).map((id) => workspaceQuery.hero(id)).filter(Boolean),
+      checkpoints: itemsOf(state.board).map((item) => workspaceQuery.checkpoint(item.id)).filter(Boolean),
+      decisions: state.cards.map((card) => workspaceQuery.decision(card.key ?? card.id)).filter(Boolean),
+    } : null,
+    missionConversation: messagesForContext(state.events, {
+      kind: CONTEXT_KIND.MISSION, id: String(store.runId),
+    }),
     schema: buildOutputSchema(),
   };
 }
@@ -2791,38 +2789,17 @@ async function executeAgentTool(principal, name, args) {
     });
     return { escalated: true, to: escalation.toAgentId, id: escalation.id };
   }
-  if (name === AGENT_TOOL.MESSAGE) {
-    const target = state.agents[args.agentId];
-    if (!target || args.agentId === callerId) {
-      throw new Error(`unknown peer Avenger: ${args.agentId}`);
-    }
-    const worker = ensureWorkers(caller).find((candidate) => candidate.id === workerId);
-    const message = await coordination.message({
-      fromAgentId: callerId,
-      fromWorkerId: workerId,
-      toAgentId: args.agentId,
-      checkpointId: args.checkpointId ?? worker?.checkpointId ?? null,
-      text: args.text,
-    });
-    return { delivered: true, to: message.toAgentId };
-  }
-  if (name === AGENT_TOOL.COMMENT) {
-    return postCheckpointMessage({
-      id: args.id,
-      text: args.text,
-      replyToId: args.replyToId ?? null,
-      from: callerId,
-      authorAgentId: callerId,
+  if (name === AGENT_TOOL.POST || name === AGENT_TOOL.REPLY) {
+    return writeConversation({
+      context: { kind: args.contextKind, id: args.contextId }, text: args.text,
+      replyToMessageId: args.replyToMessageId ?? null, recipients: args.recipients ?? [],
+      from: callerId, authorId: callerId,
     });
   }
   if (name === AGENT_TOOL.REACT) {
-    return postCheckpointReaction({
-      id: args.id,
-      messageId: args.messageId,
-      reaction: args.reaction,
-      from: callerId,
-      authorAgentId: callerId,
-    });
+    return conversations.react({ authorId: callerId,
+      context: { kind: args.contextKind, id: args.contextId },
+      messageId: args.messageId, reaction: args.reaction });
   }
   if (name === AGENT_TOOL.SPLIT) {
     const result = workBoard.requestSplit(callerId, args.id, args.parts, workerId);

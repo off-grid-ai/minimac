@@ -3,9 +3,9 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 const run = promisify(execFile);
 
@@ -80,6 +80,30 @@ export function createRepoIndex() {
       } catch {
         return { ok: true, git: false };
       }
+    },
+
+    async resource(repo, reference) {
+      if (reference?.kind === 'file') {
+        const path = isAbsolute(reference.id) ? resolve(reference.id) : resolve(repo, reference.id);
+        const rel = relative(resolve(repo), path);
+        if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('file is outside the mission repository');
+        const info = await stat(path).catch(() => null);
+        if (!info?.isFile()) throw new Error(`file does not exist: ${reference.id}`);
+        return {
+          kind: 'file', id: rel, label: rel, bytes: info.size,
+          content: (await readFile(path, 'utf8')).slice(0, 200_000),
+        };
+      }
+      if (reference?.kind === 'skill') {
+        const skill = (await this.skills(repo)).find((candidate) =>
+          candidate.id === reference.id || candidate.label === reference.id);
+        if (!skill) throw new Error(`skill does not exist: ${reference.id}`);
+        return {
+          kind: 'skill', id: skill.id, label: skill.label, source: skill.source,
+          content: (await readFile(skill.path, 'utf8')).slice(0, 200_000),
+        };
+      }
+      throw new Error(`unsupported resource: ${reference?.kind ?? 'unknown'}`);
     },
   };
 }
