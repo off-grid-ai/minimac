@@ -66,6 +66,7 @@ import { createFleetCoordination } from './application/fleet-coordination.mjs';
 import { createWorkerLeaseService } from './application/worker-leases.mjs';
 import { ORDER_ACTION } from './core/coordination.mjs';
 import { LEASE_LIMIT_MS, finishLease } from './core/leases.mjs';
+import { readyCheckpoints } from './core/scheduler.mjs';
 import { projectMissionFlows } from './core/mission-flows.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
 import {
@@ -1034,15 +1035,11 @@ function crewRoster() {
 }
 
 function readyWork(agentId) {
-  const active = new Set(state.agents[agentId]?.workItemIds ?? []);
-  return itemsFor(state.board, agentId).filter((candidate) =>
-    !active.has(candidate.id)
-      && canWork(state.board, candidate, agentId)
-      && candidate.plan
-      && candidate.outcome
-      && candidate.verify
-      && Number.isFinite(candidate.estimateMs)
-      && candidate.estimateMs <= LEASE_LIMIT_MS);
+  const agent = state.agents[agentId];
+  return readyCheckpoints(state.board, agentId, {
+    limitMs: LEASE_LIMIT_MS,
+    capacity: freeWorkers(agent).length,
+  });
 }
 
 function checkpointTask(item) {
