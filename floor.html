@@ -1398,6 +1398,10 @@
   }
   .checkpoint-message-actions wa-button:hover::part(base),
   .checkpoint-thread-head wa-button:hover::part(base) { color: var(--accent); background: var(--nested); }
+  .checkpoint-message-actions wa-button[aria-pressed="true"]::part(base) {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
   .checkpoint-attachments { display: flex; flex-wrap: wrap; gap: calc(var(--step) * 2); margin-top: calc(var(--step) * 2); }
   .checkpoint-attachment img { display: block; width: 112px; height: 72px; object-fit: cover; border: 1px solid var(--line); }
   .checkpoint-references { display: flex; flex-wrap: wrap; gap: var(--step); margin-top: calc(var(--step) * 1.5); }

@@ -691,6 +691,7 @@ function checkpointMessage(event, agents, handlers) {
     button.title = reaction.label;
     const count = event.reactions?.[key] ?? 0;
     button.textContent = `${reaction.symbol}${count ? ` ${count}` : ''}`;
+    button.setAttribute('aria-pressed', String(event.reactionActors?.[key]?.includes('you') ?? false));
     button.onclick = () => handlers.react?.(payload.checkpointId, messageId, key);
     actions.append(button);
   }

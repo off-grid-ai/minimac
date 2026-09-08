@@ -40,7 +40,7 @@ export function createCheckpointMessage({
 }
 
 export function createReaction({
-  id, checkpointId, agentId, messageId, reaction, from = 'you', now = Date.now(),
+  id, checkpointId, agentId, messageId, reaction, actorId, active, now = Date.now(),
 }) {
   if (!REACTIONS[reaction]) return { error: `unknown reaction: ${reaction}` };
   return {
@@ -49,7 +49,8 @@ export function createReaction({
       checkpointId,
       messageId,
       reaction,
-      from,
+      actorId,
+      active: active === true,
     }, now),
   };
 }
@@ -71,14 +72,35 @@ export function checkpointThread(events, checkpointId) {
   const reactions = new Map();
   for (const event of related) {
     if (event.kind !== EVENT_KINDS.REACTION || !event.payload?.messageId) continue;
-    const key = event.payload.messageId;
-    const counts = reactions.get(key) ?? {};
-    counts[event.payload.reaction] = (counts[event.payload.reaction] ?? 0) + 1;
-    reactions.set(key, counts);
+    const key = `${event.payload.messageId}:${event.payload.reaction}`;
+    const actors = reactions.get(key) ?? new Set();
+    if (event.payload.active) actors.add(event.payload.actorId);
+    else actors.delete(event.payload.actorId);
+    reactions.set(key, actors);
   }
   return related
     .filter((event) => event.kind !== EVENT_KINDS.REACTION)
-    .map((event) => ({ ...event, reactions: reactions.get(messageIdOf(event)) ?? {} }));
+    .map((event) => {
+      const messageId = messageIdOf(event);
+      const counts = {};
+      const actors = {};
+      for (const reaction of Object.keys(REACTIONS)) {
+        const values = [...(reactions.get(`${messageId}:${reaction}`) ?? [])];
+        counts[reaction] = values.length;
+        actors[reaction] = values;
+      }
+      return { ...event, reactions: counts, reactionActors: actors };
+    });
+}
+
+export function reactionActive(events, checkpointId, messageId, actorId, reaction) {
+  let active = false;
+  for (const event of events) {
+    if (event.kind !== EVENT_KINDS.REACTION || checkpointOf(event) !== checkpointId) continue;
+    if (event.payload?.messageId !== messageId || event.payload?.actorId !== actorId) continue;
+    if (event.payload?.reaction === reaction) active = event.payload.active === true;
+  }
+  return active;
 }
 
 export function conversationReferences({ checkpointId, parsed, attachments = [] }) {

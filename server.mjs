@@ -72,6 +72,7 @@ import {
   conversationReferences,
   createCheckpointMessage,
   createReaction,
+  reactionActive,
 } from './core/conversation.mjs';
 import { projectMissionFlows } from './core/mission-flows.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
@@ -1196,17 +1197,20 @@ function postCheckpointReaction({ id, messageId, reaction, from = 'you', authorA
   if (!checkpointMessageExists(state.events, id, messageId)) {
     throw new Error(`no message ${messageId} on checkpoint ${id}`);
   }
+  const actorId = from === 'you' ? 'you' : authorAgentId;
+  const active = !reactionActive(state.events, id, messageId, actorId, reaction);
   const result = createReaction({
     id: randomUUID(),
     checkpointId: id,
     agentId: authorAgentId ?? item.owner ?? 'minimac',
     messageId,
     reaction,
-    from,
+    actorId,
+    active,
   });
   if (result.error) throw new Error(result.error);
   ingest(result.event);
-  return { reactionId: result.event.payload.reactionId };
+  return { reactionId: result.event.payload.reactionId, active };
 }
 
 // ----------------------------------------------------------------- commands
