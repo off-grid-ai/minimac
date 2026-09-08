@@ -68,11 +68,10 @@ import { ORDER_ACTION } from './core/coordination.mjs';
 import { LEASE_LIMIT_MS, finishLease } from './core/leases.mjs';
 import { readyCheckpoints } from './core/scheduler.mjs';
 import {
+  checkpointMessageExists,
   conversationReferences,
-  checkpointOf,
   createCheckpointMessage,
   createReaction,
-  messageIdOf,
 } from './core/conversation.mjs';
 import { projectMissionFlows } from './core/mission-flows.mjs';
 import { parseMentions, routeOf } from './core/mentions.mjs';
@@ -1164,7 +1163,7 @@ function patchAgent(agents, agentId, changes) {
 
 // One application path owns checkpoint conversation writes. UI commands and
 // agent tools call this function; neither transport creates its own record.
-async function postCheckpointMessage({
+function postCheckpointMessage({
   id, text = '', attachments = [], replyToId = null, from = 'you', authorAgentId = null,
 }) {
   const item = findItem(state.board, id);
@@ -1172,9 +1171,10 @@ async function postCheckpointMessage({
   if (!String(text).trim() && attachments.length === 0) {
     throw new Error('a checkpoint message needs text or an attachment');
   }
-  const owner = state.agents[item.owner];
-  if (!owner) throw new Error(`${id} has no owner`);
-  const author = authorAgentId ?? owner.id;
+  if (replyToId && !checkpointMessageExists(state.events, id, replyToId)) {
+    throw new Error(`no message ${replyToId} on checkpoint ${id}`);
+  }
+  const author = authorAgentId ?? item.owner ?? 'minimac';
   const parsed = parseMentions(text, { agents: Object.values(state.agents) });
   const event = createCheckpointMessage({
     id: randomUUID(),
@@ -1187,37 +1187,15 @@ async function postCheckpointMessage({
     references: conversationReferences({ checkpointId: id, parsed, attachments }),
   });
   ingest(event);
-
-  // A worker writing in its own thread is already present. Do not echo the
-  // message into the same engine session. User messages and cross-owner replies
-  // are delivered without creating a second event.
-  if (from !== 'you' && author === owner.id) {
-    return { messageId: event.payload.messageId, delivered: true };
-  }
-  const body = [
-    `# Checkpoint thread: ${id}`,
-    item.title,
-    replyToId ? `Replying to message ${replyToId}` : null,
-    text,
-    attachments.length > 0 ? attachmentLines(attachments) : null,
-  ].filter(Boolean).join('\n\n');
-  if (owner.sessionId) {
-    await COMMANDS.steer({ agentId: owner.id, text: body, record: false });
-    return { messageId: event.payload.messageId, delivered: true };
-  }
-  if (!item.paused && canWork(state.board, item, owner.id)) {
-    await COMMANDS.start({ agentId: owner.id, task: body, checkpointIds: [id] });
-    return { messageId: event.payload.messageId, delivered: true };
-  }
-  return { messageId: event.payload.messageId, delivered: false };
+  return { messageId: event.payload.messageId, recorded: true };
 }
 
 function postCheckpointReaction({ id, messageId, reaction, from = 'you', authorAgentId = null }) {
   const item = findItem(state.board, id);
   if (!item) throw new Error(`no checkpoint ${id}`);
-  const targetExists = state.events.some((event) =>
-    checkpointOf(event) === id && messageIdOf(event) === messageId && event.kind !== EVENT_KINDS.REACTION);
-  if (!targetExists) throw new Error(`no message ${messageId} on checkpoint ${id}`);
+  if (!checkpointMessageExists(state.events, id, messageId)) {
+    throw new Error(`no message ${messageId} on checkpoint ${id}`);
+  }
   const result = createReaction({
     id: randomUUID(),
     checkpointId: id,

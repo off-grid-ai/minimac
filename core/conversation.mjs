@@ -17,6 +17,13 @@ export function messageIdOf(event) {
   return `${event.agentId}:${event.ts}:${event.kind}`;
 }
 
+export function checkpointMessageExists(events, checkpointId, messageId) {
+  return events.some((event) =>
+    checkpointOf(event) === checkpointId
+    && messageIdOf(event) === messageId
+    && event.kind !== EVENT_KINDS.REACTION);
+}
+
 export function createCheckpointMessage({
   id, checkpointId, agentId, text = '', from = 'you', attachments = [],
   replyToId = null, references = [], now = Date.now(),
