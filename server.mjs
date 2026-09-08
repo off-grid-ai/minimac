@@ -270,9 +270,9 @@ const agentsByToken = new Map();
 function mcpServerFor(agent) {
   const principalId = agent.workerId ?? agent.id;
   let token = agentTokens.get(principalId);
-  // Driver setup can ask for the same configuration more than once while one
-  // engine process is alive. Reuse that principal until lifecycle teardown
-  // revokes it; rotating here strands the live MCP process on an invalid token.
+  // One worker is one local tool principal for this server process. Engine
+  // turns and resumable sessions can keep the MCP child that received this
+  // environment, so activity changes must never rotate its identity.
   if (!token || !agentsByToken.has(token)) {
     token = randomUUID();
     agentTokens.set(principalId, token);
@@ -287,12 +287,6 @@ function mcpServerFor(agent) {
       MINIMAC_AGENT_ROLE: agent.role,
     },
   };
-}
-
-function revokeWorkerPrincipal(workerId) {
-  const token = agentTokens.get(workerId);
-  if (token) agentsByToken.delete(token);
-  agentTokens.delete(workerId);
 }
 // How this fleet is told to work. Survives runs and restarts.
 const middleware = store.middleware();
@@ -704,7 +698,6 @@ function ingest(rawIncoming) {
       : workerForSession(state.agents[incoming.agentId], incoming.payload?.sessionId);
     if (isCurrentSessionEvent(worker, incoming.payload)) {
       workerLeases?.clear(worker.id);
-      revokeWorkerPrincipal(worker.id);
       settleEventLease(incoming);
     }
   }
@@ -2084,7 +2077,6 @@ async function interruptWorker(
   const worker = ensureWorkers(agent).find((candidate) => candidate.id === workerId);
   const sessionId = worker?.sessionId;
   if (!sessionId) return false;
-  revokeWorkerPrincipal(workerId);
   await getDriver(agent.engine).interrupt(sessionId);
   workerLeases?.clear(workerId);
   const next = patchWorker(state.agents[agentId], workerId, {
@@ -2289,6 +2281,9 @@ async function agentTool(req, res) {
   const token = String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
   const principal = agentsByToken.get(token);
   if (!principal) return json(res, 401, { ok: false, error: 'invalid agent tool token' });
+  if (!principalIsActive(principal)) {
+    return json(res, 401, { ok: false, error: 'inactive agent tool principal' });
+  }
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   try {
@@ -2299,6 +2294,13 @@ async function agentTool(req, res) {
   } catch (error) {
     return json(res, 400, { ok: false, error: error.message });
   }
+}
+
+function principalIsActive({ agentId, workerId }) {
+  const agent = state.agents[agentId];
+  if (!agent) return false;
+  if (!workerId) return Boolean(agent.sessionId);
+  return ensureWorkers(agent).some((worker) => worker.id === workerId && Boolean(worker.sessionId));
 }
 
 async function executeAgentTool(principal, name, args) {
