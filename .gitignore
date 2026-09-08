@@ -5,5 +5,4 @@ roster.json
 assets/characters/
 
 # macOS finder droppings
-.DS_Store
 **/.DS_Store
