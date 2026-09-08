@@ -597,7 +597,7 @@ function renderPanels() {
   if (dom.flows && windows?.isOpen('flows')) {
     const missionFlow = { id: 'mission', name: 'mission', steps: state.flows };
     renderChanged('flows', dom.flows, state.flows, () => {
-      renderFlows(dom.flows, missionFlow);
+      renderFlows(dom.flows, missionFlow, { openCheckpoint: openCheckpointThread });
     });
   }
   if (dom.checkpoints && windows?.isOpen('checkpoints')) {

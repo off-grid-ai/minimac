@@ -1,10 +1,10 @@
 // Mission Flows are a projection of the checkpoint board, never a second
 // progress record. Checkpoints own the outcome, scope, gates, evidence, and
 // lifecycle. This module only changes that canonical model into the quieter
-// user-journey view used by the Flow panel.
+// user-journey view used by the Flow panel. A row is a work unit, and its
+// children are the canonical checkpoints that deliver it.
 
 import {
-  compareQueueOrder,
   isDone,
   itemsOf,
   stateOf,
@@ -32,22 +32,39 @@ function deliveryStatus(board, item) {
 }
 
 export function projectMissionFlows(board, now = Date.now()) {
-  return itemsOf(board)
-    .filter((item) => !['cancelled', 'superseded'].includes(item.disposition))
-    .sort(compareQueueOrder)
-    .map((item) => ({
-      id: item.id,
-      checkpointId: item.id,
-      step: item.title,
-      user_visible_result: item.outcome || item.title,
-      scope: item.scope,
-      status: deliveryStatus(board, item),
-      estimateMs: item.estimateMs,
-      actualMs: item.closedAt
+  const checkpoints = itemsOf(board)
+    .filter((item) => !['cancelled', 'superseded'].includes(item.disposition));
+  return (board?.workUnits ?? []).map((workUnit) => {
+    const stages = checkpoints.filter((item) => item.workUnitId === workUnit.id);
+    const failed = stages.find((item) =>
+      Object.values(item.gates ?? {}).includes(GATE_STATE.FAIL));
+    const current = stages.find((item) => !isDone(item));
+    const status = failed
+      ? 'blocked'
+      : current
+        ? deliveryStatus(board, current)
+        : stages.length > 0
+          ? 'verified'
+          : 'pending';
+    return {
+      id: workUnit.id,
+      workUnitId: workUnit.id,
+      title: workUnit.title,
+      user_visible_result: workUnit.outcome || workUnit.title,
+      scope: workUnit.scope,
+      status,
+      estimateMs: stages.reduce((sum, item) => sum + (item.estimateMs ?? 0), 0),
+      actualMs: stages.reduce((sum, item) => sum + (item.closedAt
         ? Math.max(0, item.closedAt - item.createdAt)
         : item.lease?.startedAt
           ? Math.max(0, now - item.lease.startedAt)
-          : 0,
-      evidence: item.evidence,
-    }));
+          : 0), 0),
+      checkpoints: stages.map((item) => ({
+        id: item.id,
+        stage: item.stage,
+        owner: item.owner,
+        status: deliveryStatus(board, item),
+      })),
+    };
+  });
 }

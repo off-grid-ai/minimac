@@ -20,7 +20,7 @@ import { createControlButton, createDisclosure, createRelativeTime } from './con
 
 const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
 
-// The status ladder is ordered, so a step's position on it is a number.
+// The status ladder is ordered, so a checkpoint's position on it is a number.
 const LADDER = ['coded', 'wired', 'verified'];
 const FLOW_STATES = new Set(['pending', 'running', 'blocked', ...LADDER]);
 
@@ -42,7 +42,7 @@ const GRADE_MEANING = [
 const DECISION_TRIGGERS = [
   ['approval', 'an engine is parked, asking your permission'],
   ['loop', 'the same file or command, three times over'],
-  ['overrun', 'a step past twice its own estimate'],
+  ['overrun', 'a checkpoint past twice its own estimate'],
   ['blocked', 'an agent is waiting on your answer'],
   ['silent', 'no output at all for two minutes'],
 ];
@@ -325,7 +325,7 @@ function runtimeSelect(label, options, selected, change) {
 
 // ---------------------------------------------------------- flow contract
 
-// Zoomed out is the group; zoomed in is one step. Same row shape at every
+// Zoomed out is the group; zoomed in is one work unit. Same row shape at every
 // altitude, so a repo reads exactly like the step inside it and you can scan a
 // column of gates straight down a multi-repo mission.
 //
@@ -335,12 +335,12 @@ const opened = new Map();
 
 // How far in you are standing. Zooming out is not "collapse everything" - it is
 // a question about altitude: the whole mission, one repo, one feature in it, or
-// the steps themselves.
+// the work units and their checkpoint chains.
 export const ZOOM = Object.freeze([
   { id: 'group', label: 'group', depth: 0, blurb: 'the whole mission, one row' },
   { id: 'repo', label: 'repo', depth: 1, blurb: 'one row per repository' },
   { id: 'feature', label: 'feature', depth: 2, blurb: 'the areas inside each repo' },
-  { id: 'step', label: 'step', depth: 9, blurb: 'every step, all the way down' },
+  { id: 'checkpoint', label: 'checkpoint', depth: 9, blurb: 'every work unit and checkpoint chain' },
 ]);
 
 const zoomOf = new Map(); // agentId -> zoom id
@@ -372,12 +372,6 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}, v
   const activeIds = new Set(running.map((item) => item.id));
   const pending = ordered.filter((item) => !activeIds.has(item.id));
   const done = items.filter(isDone).sort(compareQueueOrder);
-  const slots = workers
-    .filter((agent) => agent.enabled !== false)
-    .reduce((sum, agent) => sum + Math.max(1, agent.instances ?? 1), 0);
-  const inUse = workers.reduce((sum, agent) =>
-    sum + (agent.sessionIds?.length || (agent.sessionId ? 1 : 0)), 0);
-
   const summary = el('div', 'checkpoint-summary');
   summary.setAttribute('role', 'group');
   summary.setAttribute('aria-label', 'Filter checkpoints');
@@ -386,7 +380,6 @@ export function renderBoard(root, board, velocity, agents = [], handlers = {}, v
     summaryFilter(running.length, 'running', 'running', redraw),
     summaryFilter(pending.length, 'pending', 'pending', redraw),
     summaryFilter(done.length, 'done', 'done', redraw),
-    summaryCount(Math.max(0, slots - inUse), 'free'),
   );
   const toolbar = el('div', 'checkpoint-toolbar');
   const add = el('button', 'btn primary checkpoint-add', '+ CHECKPOINT');
@@ -489,12 +482,6 @@ function checkpointOwnerInput(agents) {
   }
   field.append(el('span', '', 'OWNER'), control);
   return { field, control };
-}
-
-function summaryCount(value, label) {
-  const count = el('span', 'checkpoint-count');
-  count.append(el('strong', '', String(value)), document.createTextNode(` ${label}`));
-  return count;
 }
 
 function summaryFilter(value, label, filter, redraw) {
@@ -868,7 +855,7 @@ function checkpointDetails(item) {
     detailLine('TASK', item.title),
     detailLine('PLAN', item.plan),
     detailLine('PROOF', item.verify),
-    detailLine('STEP', nextGate(item) ?? 'done'),
+    detailLine('GATE', nextGate(item) ?? 'done'),
   );
   details.append(body);
   return details;
@@ -890,22 +877,22 @@ function emptyBoard() {
   return card;
 }
 
-export function renderFlows(root, view) {
+export function renderFlows(root, view, handlers = {}) {
   if (!view?.steps?.length) {
     root.replaceChildren(emptyFlows(view));
     return;
   }
-  const redraw = () => renderFlows(root, view);
+  const redraw = () => renderFlows(root, view, handlers);
   const tree = rollup(view.steps);
   const left = remaining(view.steps);
   const frag = document.createDocumentFragment();
   frag.append(zoomBar(view, redraw), leftLine(left));
   const top = tree.children.length ? tree.children : [tree];
-  for (const child of top) frag.append(...scopeRows(view, child, 0, redraw));
+  for (const child of top) frag.append(...scopeRows(view, child, 0, redraw, handlers));
   root.replaceChildren(frag);
 }
 
-// Zoom out to the mission, in to the steps. Changing it forgets every row you
+// Zoom out to the mission, in to the checkpoints. Changing it forgets every row you
 // opened by hand - you asked for an altitude, not for your clicks preserved.
 function zoomBar(agent, redraw) {
   const bar = el('div', 'zoom');
@@ -932,13 +919,13 @@ function leftLine(left) {
   const line = el('div', 'flow-left');
   line.append(
     el('span', 'flow-left-label', 'left'),
-    el('span', 'flow-left-value', `${left.steps} of ${left.total} steps`),
+    el('span', 'flow-left-value', `${left.steps} of ${left.total} work units`),
     el('span', 'flow-left-pct', left.percentDone === null ? '' : `${left.percentDone}% done`),
   );
   return line;
 }
 
-function scopeRows(agent, node, depth, redraw) {
+function scopeRows(agent, node, depth, redraw, handlers) {
   const rows = [];
   // A leaf is not automatically open. Treating it as open made the altitude
   // buttons do nothing whenever a mission had no scopes: every step showed at
@@ -953,7 +940,7 @@ function scopeRows(agent, node, depth, redraw) {
   head.append(
     el('span', 'flow-caret', open ? '▾' : '▸'),
     el('span', 'flow-scope-name', node.name || 'all'),
-    el('span', 'flow-scope-count', open ? '' : `${node.totals.steps} steps`),
+    el('span', 'flow-scope-count', open ? '' : `${node.totals.steps} work units`),
     el('span', 'flow-scope-pct', node.percentDone === null ? '' : `${node.percentDone}%`),
   );
   head.onclick = () => {
@@ -964,22 +951,41 @@ function scopeRows(agent, node, depth, redraw) {
   rows.push(row);
 
   if (!open) return rows;
-  for (const child of node.children) rows.push(...scopeRows(agent, child, depth + 1, redraw));
+  for (const child of node.children) rows.push(...scopeRows(agent, child, depth + 1, redraw, handlers));
   for (const step of node.steps) {
-    const stepRow = flowRow(step);
+    const stepRow = flowRow(step, handlers);
     stepRow.style.paddingLeft = `${(depth + 1) * 14}px`;
     rows.push(stepRow);
   }
   return rows;
 }
 
-// One step: what a person will see, how far it has got, and its time.
-function flowRow(step) {
+// One work unit: the outcome, its checkpoint chain, its state, and its time.
+function flowRow(step, handlers) {
   const status = FLOW_STATES.has(step.status) ? step.status : 'pending';
   const row = el('div', `flow${status === 'verified' ? ' is-verified' : ''}`);
   const head = el('div', 'flow-head');
-  head.append(el('div', 'flow-result', step.user_visible_result ?? step.step), ladder(status));
-  row.append(head, burn(step));
+  const identity = el('div', 'flow-identity');
+  identity.append(
+    el('span', 'flow-work-unit-id', step.workUnitId ?? step.id),
+    el('strong', 'flow-work-unit-title', step.title ?? step.user_visible_result),
+    el('p', 'flow-result', step.user_visible_result ?? step.title),
+  );
+  head.append(identity, ladder(status));
+  const checkpoints = el('div', 'flow-checkpoints');
+  for (const checkpoint of step.checkpoints ?? []) {
+    const button = el('button', `flow-checkpoint is-${checkpoint.status}`);
+    button.type = 'button';
+    button.title = `Open ${checkpoint.id}`;
+    button.setAttribute('aria-label', `Open checkpoint ${checkpoint.id}`);
+    button.append(
+      el('span', 'flow-checkpoint-stage', String(checkpoint.stage ?? '').toUpperCase()),
+      el('span', 'flow-checkpoint-owner', checkpoint.owner ?? 'unassigned'),
+    );
+    button.onclick = () => handlers.openCheckpoint?.(checkpoint.id);
+    checkpoints.append(button);
+  }
+  row.append(head, checkpoints, burn(step));
   return row;
 }
 

@@ -7,7 +7,7 @@
 
 const MIN_W = 320;
 const MAX_W = 900;
-const DEFAULT_W = 460;
+const DEFAULT_W = 560;
 const STORE_KEY = 'minimac.panel';
 
 export function createSidePanel({ entries, labels = {}, onChange }) {
@@ -163,7 +163,7 @@ function style() {
       z-index: 40; display: flex; flex-direction: column;
       background: var(--surface, #121212);
       border-left: 1px solid var(--line, #262626);
-      font: 12px/1.5 Menlo, monospace; color: var(--text, #e8e8e8);
+      font: 12px/1.55 Menlo, monospace; color: var(--text, #e8e8e8);
     }
     .sidepanel-grip {
       position: absolute; left: -3px; top: 0; bottom: 0; width: 7px;
@@ -171,17 +171,20 @@ function style() {
     }
     .sidepanel-grip:hover { background: var(--accent, #34d399); opacity: .35; }
     .sidepanel-close {
-      position: absolute; top: 6px; right: 8px; z-index: 3;
+      position: absolute; top: 12px; right: 14px; z-index: 3;
       background: transparent; border: 0; color: var(--muted, #8a8a8a);
       font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
     }
     .sidepanel-tabs {
-      display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 34px 6px 8px;
+      display: flex; flex-wrap: nowrap; gap: 0; padding: 10px 40px 10px 16px;
       border-bottom: 1px solid var(--line, #262626); flex: none;
+      overflow-x: auto; scrollbar-width: none;
     }
+    .sidepanel-tabs::-webkit-scrollbar { display: none; }
     .sidepanel-tab {
-      background: transparent; border: 1px solid transparent; color: var(--muted, #8a8a8a);
-      font: inherit; font-size: 10px; letter-spacing: .12em; padding: 3px 8px; cursor: pointer;
+      flex: 0 0 auto; background: transparent; border: 0; border-bottom: 1px solid transparent;
+      color: var(--muted, #8a8a8a); font: inherit; font-size: 9px;
+      letter-spacing: .1em; padding: 5px 8px; cursor: pointer;
     }
     .sidepanel-tab:hover { color: var(--text, #e8e8e8); }
     .sidepanel-count {
@@ -190,7 +193,7 @@ function style() {
       background: var(--danger, #f87171); color: #fff;
     }
     .sidepanel-tab[aria-selected="true"] {
-      color: var(--accent, #34d399); border-color: var(--accent, #34d399);
+      color: var(--accent, #34d399); border-bottom-color: var(--accent, #34d399);
     }
     .sidepanel-bodies { flex: 1; min-height: 0; display: flex; }
     .sidepanel-body {
@@ -202,6 +205,10 @@ function style() {
     }
     .sidepanel-body .win-body,
     .sidepanel-body > div:last-child { flex: 1; min-height: 0; overflow: auto; }
+    .sidepanel-body .win-body {
+      padding: 16px 24px 28px 28px;
+      background-position: 12px 0;
+    }
     .sidepanel-body .win-grip { display: none !important; }
 
     /* The panel takes real space: the room and the console live in what is
