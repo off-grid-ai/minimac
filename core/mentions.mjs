@@ -6,17 +6,27 @@
 //
 // Pure: it classifies against a roster it is given and never touches disk.
 
-const TOKEN = /(^|\s)([@/])([\w./~-]*[\w/-])/g;
+const TOKEN = /(^|\s)([@/#])([\w./~-]*[\w/-])/g;
 
-export function parseMentions(text, { agents = [] } = {}) {
+export function parseMentions(text, { agents = [], checkpoints = [], decisions = [] } = {}) {
   const files = [];
   const skills = [];
   const mentionedAgents = [];
+  const mentionedCheckpoints = [];
+  const mentionedDecisions = [];
   const aliases = agentMentionAliases(agents);
+  const checkpointIds = new Set(checkpoints.map((item) => String(item.id).toLowerCase()));
+  const decisionIds = new Set(decisions.map((item) => String(item.key ?? item.id).toLowerCase()));
 
   for (const [, , sigil, name] of text.matchAll(TOKEN)) {
     if (sigil === '/') {
       push(skills, name);
+      continue;
+    }
+    if (sigil === '#') {
+      const key = name.toLowerCase();
+      if (checkpointIds.has(key)) push(mentionedCheckpoints, name);
+      else if (decisionIds.has(key)) push(mentionedDecisions, name);
       continue;
     }
     const agentId = aliases.get(name.toLowerCase());
@@ -24,7 +34,10 @@ export function parseMentions(text, { agents = [] } = {}) {
     else push(files, name);
   }
 
-  return { text, files, skills, agents: mentionedAgents };
+  return {
+    text, files, skills, agents: mentionedAgents,
+    checkpoints: mentionedCheckpoints, decisions: mentionedDecisions,
+  };
 }
 
 // One alias codec for autocomplete and routing. Stable ids always win. A
@@ -59,7 +72,7 @@ function mentionAlias(name) {
 // inside a mention, so the menu stays closed.
 export function activeMention(text, caret = text.length) {
   const before = text.slice(0, caret);
-  const match = before.match(/(^|\s)([@/])([\w./~-]*)$/);
+  const match = before.match(/(^|\s)([@/#])([\w./~-]*)$/);
   if (!match) return null;
   return {
     sigil: match[2],

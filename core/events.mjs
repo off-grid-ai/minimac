@@ -6,8 +6,10 @@ export const EVENT_KINDS = Object.freeze({
   PLAN: 'plan',         // the agent's declared flow steps
   TOOL: 'tool',         // a tool call: read, edit, run
   DIFF: 'diff',         // lines changed so far
-  MESSAGE: 'message',   // assistant prose
-  REACTION: 'reaction', // acknowledgement attached to one checkpoint message
+  ENGINE_OUTPUT: 'engine-output', // temporary or completed engine prose
+  CONVERSATION_MESSAGE: 'conversation-message', // one durable message in one context
+  REACTION: 'reaction', // passive change attached to one durable message
+  DELIVERY: 'delivery', // queued, delivered, failed, or stale delivery state
   CLAIM: 'claim',       // a factual assertion, with or without a receipt
   PING: 'ping',         // bounded inter-agent signal
   BLOCKED: 'blocked',   // needs a human or another agent

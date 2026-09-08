@@ -3,8 +3,6 @@
 // and the decision cards all ask this module - there is one answer to "what
 // does this event say", and it is the same wherever it is shown.
 
-import { EVENT_KINDS } from './events.mjs';
-import { isBoardActivityEvent, isCrosstalkEvent } from './coordination.mjs';
 
 // A shell command is not a sentence. Say what was run in a few words; the exact
 // command stays available wherever the surface can afford it.
@@ -158,93 +156,6 @@ export function isMachineNoise(text) {
   if (MACHINE_ONLY.test(value)) return true;
   // Real prose does not end on a closing brace or bracket.
   return JSON_TAIL.test(value) && /[{}[\]"]/.test(value);
-}
-
-// ------------------------------------------------------------ feed presets
-
-// Three altitudes for the same stream. ALL is everything; CROSSTALK is only
-// heroes talking to one another; SIGNAL is that plus the things that change
-// what happens next - orders, verdicts, decisions and proof.
-//
-// Pure: given an event, does this preset let it through.
-export const FEED_PRESETS = Object.freeze([
-  { id: 'all', label: 'all', blurb: 'every line, in the order it happened' },
-  { id: 'crosstalk', label: 'crosstalk', blurb: 'only the heroes talking to each other' },
-  { id: 'signal', label: 'signal', blurb: 'crosstalk, plus anything that changes what happens next' },
-  { id: 'evidence', label: 'evidence', blurb: 'only what was claimed, and the command behind it' },
-]);
-
-// Detail changes how much of one event stream is shown. It never creates a
-// second feed or changes what is stored.
-export const FEED_LEVELS = Object.freeze([
-  { id: 'summary', label: 'summary', blurb: 'messages, decisions, blocks, and evidence' },
-  { id: 'detailed', label: 'detailed', blurb: 'summary plus completed operations and work changes' },
-  { id: 'verbose', label: 'verbose', blurb: 'every stored event that the feed can display' },
-]);
-
-const SUMMARY_KINDS = new Set([
-  EVENT_KINDS.MESSAGE,
-  EVENT_KINDS.ORDER,
-  EVENT_KINDS.ESCALATION,
-  EVENT_KINDS.CLAIM,
-  EVENT_KINDS.BLOCKED,
-  EVENT_KINDS.APPROVAL,
-  EVENT_KINDS.RESULT,
-  EVENT_KINDS.PRAYER,
-]);
-const DETAILED_KINDS = new Set([
-  ...SUMMARY_KINDS,
-  EVENT_KINDS.PING,
-  EVENT_KINDS.LEASE,
-  EVENT_KINDS.TOOL,
-]);
-
-export function passesDetail(event, level = 'summary') {
-  if (level === 'verbose') return true;
-  if (level === 'detailed') {
-    if (!DETAILED_KINDS.has(event?.kind)) return false;
-    return event.kind !== EVENT_KINDS.TOOL || event.payload?.phase === 'completed';
-  }
-  return SUMMARY_KINDS.has(event?.kind);
-}
-
-export function isPreset(id) {
-  return id === 'board' || FEED_PRESETS.some((preset) => preset.id === id);
-}
-
-// Things that change what happens next: an order, a ruling, a permission
-// request, a block, a finished turn, or a claim with a command behind it.
-const SIGNAL_KINDS = new Set([
-  EVENT_KINDS.PING,
-  EVENT_KINDS.BLOCKED,
-  EVENT_KINDS.APPROVAL,
-  EVENT_KINDS.RESULT,
-  EVENT_KINDS.PRAYER,
-  EVENT_KINDS.CLAIM,
-  EVENT_KINDS.ORDER,
-  EVENT_KINDS.ESCALATION,
-  EVENT_KINDS.LEASE,
-]);
-
-export function passesPreset(event, preset = 'all') {
-  if (preset === 'all' || !isPreset(preset)) return true;
-
-  // Only what was claimed, with its command. A claim without a receipt is a
-  // guess, and a wall of guesses is the opposite of evidence.
-  if (preset === 'evidence') {
-    return event?.kind === 'claim' && Boolean(event.payload?.receipt);
-  }
-
-  // Only the work moving.
-  if (preset === 'board' || preset === 'checkpoints') {
-    return isBoardActivityEvent(event);
-  }
-
-  if (isCrosstalkEvent(event)) return true;
-  if (preset === 'crosstalk') return false;
-  if (!SIGNAL_KINDS.has(event?.kind)) return false;
-  if (event.kind === 'claim') return Boolean(event.payload?.receipt);
-  return true;
 }
 
 // --------------------------------------------------- what a hero is doing

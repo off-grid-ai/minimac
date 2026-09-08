@@ -1,5 +1,18 @@
 import { createEvent, EVENT_KINDS } from './events.mjs';
 
+export const CONTEXT_KIND = Object.freeze({
+  MISSION: 'mission', CHECKPOINT: 'checkpoint', DECISION: 'decision',
+});
+
+export const DELIVERY_STATE = Object.freeze({
+  QUEUED: 'queued', DELIVERED: 'delivered', FAILED: 'failed', STALE: 'stale',
+});
+
+export const REFERENCE_KIND = Object.freeze({
+  HERO: 'hero', CHECKPOINT: 'checkpoint', WORK_UNIT: 'work-unit', DECISION: 'decision',
+  FILE: 'file', SKILL: 'skill', MESSAGE: 'message', ATTACHMENT: 'attachment',
+});
+
 export const REACTIONS = Object.freeze({
   acknowledge: { symbol: '✅', label: 'acknowledged' },
   watching: { symbol: '👀', label: 'investigating' },
@@ -7,108 +20,142 @@ export const REACTIONS = Object.freeze({
   blocked: { symbol: '⛔', label: 'blocked or disagrees' },
 });
 
-export function checkpointOf(event) {
-  return event?.payload?.checkpointId ?? null;
+export function normalizeContext(context, missionId = null) {
+  const kind = context?.kind ?? CONTEXT_KIND.MISSION;
+  if (!Object.values(CONTEXT_KIND).includes(kind)) return null;
+  const id = String(context?.id ?? missionId ?? '').trim();
+  return id ? { kind, id } : null;
 }
 
-export function messageIdOf(event) {
-  if (event?.payload?.messageId) return event.payload.messageId;
-  if (!event?.agentId || !Number.isFinite(event?.ts)) return null;
-  return `${event.agentId}:${event.ts}:${event.kind}`;
+export function referenceKey(reference) {
+  return `${reference?.kind ?? ''}:${reference?.id ?? ''}`;
 }
 
-export function checkpointMessageExists(events, checkpointId, messageId) {
-  return events.some((event) =>
-    checkpointOf(event) === checkpointId
-    && messageIdOf(event) === messageId
-    && event.kind !== EVENT_KINDS.REACTION);
+export function normalizeReferences(references = []) {
+  const values = new Map();
+  for (const reference of references) {
+    if (!Object.values(REFERENCE_KIND).includes(reference?.kind)
+      || !String(reference?.id ?? '').trim()) continue;
+    const value = { kind: String(reference.kind), id: String(reference.id) };
+    if (reference.label) value.label = String(reference.label);
+    values.set(referenceKey(value), value);
+  }
+  return [...values.values()];
 }
 
-export function createCheckpointMessage({
-  id, checkpointId, agentId, text = '', from = 'you', attachments = [],
-  replyToId = null, references = [], now = Date.now(),
+export function createMessage({
+  id, authorId, context, recipients = [], replyToMessageId = null, body = '',
+  attachments = [], references = [], from = 'agent', createdAt = Date.now(),
 }) {
-  return createEvent(agentId, EVENT_KINDS.MESSAGE, {
-    messageId: id,
-    checkpointId,
-    replyToId,
-    text: String(text ?? ''),
-    from,
-    attachments,
-    references,
-  }, now);
+  const primary = normalizeContext(context);
+  if (!id || !authorId || !primary) return { error: 'a message needs id, author, and context' };
+  if (!String(body).trim() && attachments.length === 0) return { error: 'a message needs text or an attachment' };
+  const message = {
+    id: String(id), authorId: String(authorId), context: primary,
+    recipients: [...new Set(recipients.filter(Boolean).map(String))],
+    replyToMessageId: replyToMessageId ? String(replyToMessageId) : null,
+    body: String(body), attachments: [...attachments], references: normalizeReferences([
+      ...references,
+      replyToMessageId ? { kind: REFERENCE_KIND.MESSAGE, id: String(replyToMessageId) } : null,
+    ].filter(Boolean)),
+    from, createdAt,
+  };
+  return { message, event: createEvent(message.authorId, EVENT_KINDS.CONVERSATION_MESSAGE, { message }, createdAt) };
 }
 
-export function createReaction({
-  id, checkpointId, agentId, messageId, reaction, actorId, active, now = Date.now(),
-}) {
+export function createReaction({ id, authorId, context, messageId, reaction, active = true, createdAt = Date.now() }) {
   if (!REACTIONS[reaction]) return { error: `unknown reaction: ${reaction}` };
+  const primary = normalizeContext(context);
+  if (!id || !authorId || !primary || !messageId) return { error: 'a reaction needs message context' };
+  return { event: createEvent(authorId, EVENT_KINDS.REACTION, {
+    id: String(id), context: primary, messageId: String(messageId), reaction, active: active === true,
+  }, createdAt) };
+}
+
+export function createDelivery({ id, authorId, messageId, recipientId, state, error = null, createdAt = Date.now() }) {
+  if (!Object.values(DELIVERY_STATE).includes(state)) return { error: `unknown delivery state: ${state}` };
+  return { event: createEvent(authorId, EVENT_KINDS.DELIVERY, { id, messageId, recipientId, state, error }, createdAt) };
+}
+
+export function messageContext(event) { return event?.payload?.message?.context ?? event?.payload?.context ?? null; }
+
+export function applyConversationEvent(projection = {}, event) {
+  const next = {
+    messages: [...(projection.messages ?? [])],
+    reactions: { ...(projection.reactions ?? {}) },
+    delivery: { ...(projection.delivery ?? {}) },
+  };
+  if (event?.kind === EVENT_KINDS.CONVERSATION_MESSAGE && event.payload?.message
+    && !next.messages.some((message) => message.id === event.payload.message.id)) {
+    next.messages.push(event.payload.message);
+  }
+  if (event?.kind === EVENT_KINDS.REACTION) {
+    const payload = event.payload ?? {};
+    next.reactions[payload.messageId] = { ...(next.reactions[payload.messageId] ?? {}) };
+    next.reactions[payload.messageId][payload.reaction] = {
+      ...(next.reactions[payload.messageId][payload.reaction] ?? {}),
+      [event.agentId]: payload.active === true,
+    };
+  }
+  if (event?.kind === EVENT_KINDS.DELIVERY) {
+    const payload = event.payload ?? {};
+    next.delivery[`${payload.messageId}:${payload.recipientId}`] = payload;
+  }
+  return next;
+}
+
+export function conversationOf(events = []) {
+  return events.reduce(applyConversationEvent, { messages: [], reactions: {}, delivery: {} });
+}
+
+export function messagesForContext(events, context) {
+  const primary = normalizeContext(context);
+  if (!primary) return [];
+  return conversationOf(events).messages
+    .filter((message) => referenceKey(message.context) === referenceKey(primary))
+    .sort((left, right) => left.createdAt - right.createdAt);
+}
+
+export function messagesForHero(events, heroId, board = []) {
+  const owned = new Set(board.filter((item) => item.owner === heroId).map((item) => item.id));
+  return conversationOf(events).messages.filter((message) =>
+    message.authorId === heroId || message.recipients.includes(heroId)
+    || message.references.some((reference) => reference.kind === 'hero' && reference.id === heroId)
+    || (message.context.kind === CONTEXT_KIND.CHECKPOINT && owned.has(message.context.id)));
+}
+
+export function reactionsForMessage(events, messageId) {
+  const active = conversationOf(events).reactions[messageId] ?? {};
+  return Object.fromEntries(Object.keys(REACTIONS).map((reaction) => [reaction,
+    Object.entries(active[reaction] ?? {}).filter(([, value]) => value).map(([actor]) => actor)]));
+}
+
+export function messageExists(events, context, messageId) {
+  return messagesForContext(events, context).some((message) => message.id === messageId);
+}
+
+export function reactionActive(events, messageId, actorId, reaction) {
+  return reactionsForMessage(events, messageId)[reaction]?.includes(actorId) ?? false;
+}
+
+export function threadSummary(events, context) {
+  const messages = messagesForContext(events, context);
   return {
-    event: createEvent(agentId, EVENT_KINDS.REACTION, {
-      reactionId: id,
-      checkpointId,
-      messageId,
-      reaction,
-      actorId,
-      active: active === true,
-    }, now),
+    count: messages.length,
+    replyCount: messages.filter((message) => message.replyToMessageId).length,
+    participants: [...new Set(messages.flatMap((message) => [message.authorId, ...message.recipients]))],
+    latestAt: messages.at(-1)?.createdAt ?? null,
   };
 }
 
-export function checkpointThread(events, checkpointId) {
-  const visibleKinds = new Set([
-    EVENT_KINDS.MESSAGE,
-    EVENT_KINDS.ORDER,
-    EVENT_KINDS.ESCALATION,
-    EVENT_KINDS.CLAIM,
-    EVENT_KINDS.BLOCKED,
-    EVENT_KINDS.APPROVAL,
-    EVENT_KINDS.PING,
-    EVENT_KINDS.REACTION,
-  ]);
-  const related = events
-    .filter((event) => checkpointOf(event) === checkpointId && visibleKinds.has(event.kind))
-    .sort((left, right) => left.ts - right.ts);
-  const reactions = new Map();
-  for (const event of related) {
-    if (event.kind !== EVENT_KINDS.REACTION || !event.payload?.messageId) continue;
-    const key = `${event.payload.messageId}:${event.payload.reaction}`;
-    const actors = reactions.get(key) ?? new Set();
-    if (event.payload.active) actors.add(event.payload.actorId);
-    else actors.delete(event.payload.actorId);
-    reactions.set(key, actors);
-  }
-  return related
-    .filter((event) => event.kind !== EVENT_KINDS.REACTION)
-    .map((event) => {
-      const messageId = messageIdOf(event);
-      const counts = {};
-      const actors = {};
-      for (const reaction of Object.keys(REACTIONS)) {
-        const values = [...(reactions.get(`${messageId}:${reaction}`) ?? [])];
-        counts[reaction] = values.length;
-        actors[reaction] = values;
-      }
-      return { ...event, reactions: counts, reactionActors: actors };
-    });
-}
-
-export function reactionActive(events, checkpointId, messageId, actorId, reaction) {
-  let active = false;
-  for (const event of events) {
-    if (event.kind !== EVENT_KINDS.REACTION || checkpointOf(event) !== checkpointId) continue;
-    if (event.payload?.messageId !== messageId || event.payload?.actorId !== actorId) continue;
-    if (event.payload?.reaction === reaction) active = event.payload.active === true;
-  }
-  return active;
-}
-
-export function conversationReferences({ checkpointId, parsed, attachments = [], skills = [] }) {
-  return [
-    checkpointId ? { kind: 'checkpoint', id: checkpointId } : null,
-    ...(parsed?.agents ?? []).map((id) => ({ kind: 'agent', id })),
+export function conversationReferences({ context, parsed, attachments = [], skills = [] }) {
+  return normalizeReferences([
+    context ? { kind: context.kind, id: context.id } : null,
+    ...(parsed?.agents ?? []).map((id) => ({ kind: 'hero', id })),
+    ...(parsed?.checkpoints ?? []).map((id) => ({ kind: 'checkpoint', id })),
+    ...(parsed?.decisions ?? []).map((id) => ({ kind: 'decision', id })),
     ...(parsed?.files ?? []).map((id) => ({ kind: 'file', id })),
     ...skills.map((skill) => ({ kind: 'skill', id: skill.id, label: skill.label })),
     ...attachments.map((file) => ({ kind: 'attachment', id: file.path, label: file.name })),
-  ].filter(Boolean);
+  ].filter(Boolean));
 }

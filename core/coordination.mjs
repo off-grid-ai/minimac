@@ -47,18 +47,6 @@ export function createEscalationEvent({
   }, ts);
 }
 
-export function createPeerMessageEvent({
-  fromAgentId, fromWorkerId = null, toAgentId, checkpointId = null, text,
-}, ts = Date.now()) {
-  return createEvent(fromAgentId, EVENT_KINDS.MESSAGE, {
-    fromAgentId,
-    fromWorkerId,
-    toAgentId,
-    checkpointId,
-    text: String(text ?? '').trim(),
-  }, ts);
-}
-
 export function createLeaseEvent(agentId, payload, ts = Date.now()) {
   return createEvent(agentId, EVENT_KINDS.LEASE, payload, ts);
 }
@@ -78,8 +66,8 @@ export function crosstalkDelivery(event) {
   if (event?.kind === EVENT_KINDS.ESCALATION && payload.state === ESCALATION_STATE.OPEN) {
     return delivery(payload.fromAgentId ?? event.agentId, payload.toAgentId, payload.why);
   }
-  if (event?.kind === EVENT_KINDS.MESSAGE && payload.fromAgentId && payload.toAgentId) {
-    return delivery(payload.fromAgentId, payload.toAgentId, payload.text);
+  if (event?.kind === EVENT_KINDS.CONVERSATION_MESSAGE && payload.message?.recipients?.length) {
+    return delivery(event.agentId, payload.message.recipients[0], payload.message.body);
   }
   return null;
 }

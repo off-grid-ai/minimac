@@ -2,7 +2,6 @@ import {
   createEscalationEvent,
   createLeaseEvent,
   createOrderEvent,
-  createPeerMessageEvent,
   ESCALATION_STATE,
 } from '../core/coordination.mjs';
 
@@ -32,13 +31,6 @@ export function createFleetCoordination({ getEvents, emit, deliver, orchestrator
     return event.payload;
   }
 
-  async function message(spec) {
-    const event = createPeerMessageEvent(spec);
-    await deliver(event.payload.toAgentId, event.payload.text, { wake: false });
-    emit(event);
-    return event.payload;
-  }
-
   function resolve(id, resolution) {
     const raised = [...getEvents()].reverse().find(
       (event) => event.kind === 'escalation' && event.payload?.id === id,
@@ -59,7 +51,7 @@ export function createFleetCoordination({ getEvents, emit, deliver, orchestrator
     return event.payload;
   }
 
-  return Object.freeze({ order, escalate, message, resolve, lease });
+  return Object.freeze({ order, escalate, resolve, lease });
 }
 
 function escalationBrief(item) {

@@ -317,7 +317,10 @@ export function workerDispatches(context) {
       : null;
     return {
       instance,
-      prompt: composeDispatch({ ...context, task: tasks[index], instance }),
+      prompt: composeDispatch({
+        ...context, task: tasks[index], instance,
+        conversation: context.conversations?.[index] ?? context.conversation,
+      }),
     };
   });
 }
@@ -390,6 +393,13 @@ export function dispatchPipeline(extraSteps = []) {
         : null)),
 
     defineStep('checkpoints', ({ board, agent }) => boardBrief(board, agent?.id)),
+
+    defineStep('conversation', ({ conversation = [] }) => {
+      if (!conversation.length) return null;
+      const lines = conversation.slice(-12).map((message) =>
+        `- ${message.authorId}: ${String(message.body ?? '').trim()}`);
+      return `# Relevant conversation\n\n${lines.join('\n')}`;
+    }),
 
     defineStep('prior-steps', ({ steps }) => priorSteps(steps)),
 
