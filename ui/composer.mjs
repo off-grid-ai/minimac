@@ -23,6 +23,7 @@ export function createComposer({
   dom,
   send,
   getAgents,
+  getReferences = () => [],
   getTarget,
   getHistory = () => [],
   setTarget,
@@ -50,7 +51,7 @@ export function createComposer({
 
   async function fetchSuggestions(mention) {
     const mine = ++token;
-    const list = await lookup(mention, agentNames());
+    const list = await lookup(mention, agentNames(), getReferences());
     if (mine !== token) return; // a later keystroke already won
     suggestions = list;
     highlighted = 0;
@@ -408,12 +409,12 @@ export function createComposer({
       const targetAgent = agents.find((candidate) => candidate.id === target);
       const toMission = target === MISSION_TARGET;
       editor.setPlaceholder(toMission
-        ? 'set the mission · @file /skill @agent'
+        ? 'set the mission · @file /skill @agent #checkpoint'
         : target === POLICY_TARGET
           ? 'a rule every agent obeys, on every message, from now on'
           : target === ROUTE_TARGET
             ? 'say it once - Thor decides who needs to hear it'
-            : `talk to ${targetAgent?.label ?? target} · @file /skill @agent`);
+            : `talk to ${targetAgent?.label ?? target} · @file /skill @agent #checkpoint`);
 
       const typing = document.activeElement === dom.input;
       if (typing) return;
@@ -432,15 +433,23 @@ export function createComposer({
       editor.focus();
     },
     parse(text) {
-      return parseMentions(text, { agents: getAgents() });
+      const references = getReferences();
+      return parseMentions(text, {
+        agents: getAgents(),
+        checkpoints: references.filter((item) => item.kind === 'checkpoint'),
+        decisions: references.filter((item) => item.kind === 'decision'),
+      });
     },
   };
 }
 
-async function lookup(mention, agentNames) {
+async function lookup(mention, agentNames, references) {
   if (mention.sigil === '/') {
     const { skills } = await getJson('/skills');
     return filter(skills, mention.query);
+  }
+  if (mention.sigil === '#') {
+    return filter(references.map((item) => item.id), mention.query);
   }
   const named = filter(agentNames, mention.query);
   const { files } = await getJson(`/files?q=${encodeURIComponent(mention.query)}`);

@@ -5,6 +5,8 @@
 // It adopts the existing window elements as its tab bodies, so the panels do
 // not know they moved.
 
+import { createContextPanel } from './context-panel.mjs';
+
 const MIN_W = 320;
 const MAX_W = 900;
 const DEFAULT_W = 560;
@@ -42,6 +44,7 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
 
   const bodies = document.createElement('div');
   bodies.className = 'sidepanel-bodies';
+  const context = createContextPanel({ host: bodies, onClose: () => active && show(active) });
 
   const close = document.createElement('button');
   close.type = 'button';
@@ -89,6 +92,7 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
   function show(name) {
     if (!entries[name]?.el) return;
     active = name;
+    context.element.hidden = true;
     panel.hidden = false;
     for (const [key, entry] of Object.entries(entries)) {
       if (entry?.el) entry.el.hidden = key !== name;
@@ -148,6 +152,12 @@ export function createSidePanel({ entries, labels = {}, onChange }) {
     setMissionContext({ id = null, title = '' } = {}) {
       missionContext.textContent = id ? `#${id}  ${title || 'No mission set'}` : 'NO MISSION SELECTED';
       missionContext.title = title || '';
+    },
+    openEntity(entity) {
+      panel.hidden = false;
+      for (const entry of Object.values(entries)) if (entry?.el) entry.el.hidden = true;
+      context.openEntity(entity);
+      applyWidth();
     },
     open: show,
     close: hide,
@@ -249,6 +259,70 @@ function style() {
       background-position: 12px 0;
     }
     .sidepanel-body .win-grip { display: none !important; }
+
+    .connected-context {
+      width: 100%; min-height: 0; overflow: auto; padding: 12px 16px 20px 20px;
+      background: var(--surface, #121212);
+    }
+    .connected-context-bar {
+      position: sticky; top: 0; z-index: 1; display: flex; align-items: center;
+      gap: 10px; padding: 0 0 10px; background: var(--surface, #121212);
+      border-bottom: 1px solid var(--line, #262626);
+    }
+    .connected-context-identity {
+      min-width: 0; display: flex; align-items: baseline; gap: 8px;
+      overflow: hidden; white-space: nowrap;
+    }
+    .connected-context-identity span:first-child {
+      color: var(--accent, #34d399); font-size: 9px; letter-spacing: .12em;
+    }
+    .connected-context-identity span:nth-child(2) {
+      overflow: hidden; color: var(--text, #e8e8e8); font-size: 12px;
+      text-overflow: ellipsis;
+    }
+    .connected-context-identity span:last-child {
+      color: var(--faint, #5a5a5a); font-size: 9px; letter-spacing: .1em;
+    }
+    .connected-context-body, .connected-entity-content { display: grid; gap: 12px; }
+    .connected-entity-facts { display: flex; flex-wrap: wrap; gap: 12px; }
+    .connected-entity-facts > span { display: grid; gap: 2px; }
+    .connected-entity-facts small,
+    .connected-copy h3 { color: var(--faint, #5a5a5a); font: 400 9px/1.2 Menlo, monospace; letter-spacing: .1em; }
+    .connected-entity-facts b { color: var(--text, #e8e8e8); font-weight: 400; }
+    .connected-copy { display: grid; gap: 5px; margin: 0; }
+    .connected-copy h3, .connected-copy p { margin: 0; }
+    .connected-copy p { color: var(--muted, #8a8a8a); font-size: 11px; line-height: 1.5; }
+    .connected-copy p:has(.control-button) { display: flex; flex-wrap: wrap; gap: 4px; }
+    .connected-resource {
+      max-height: 55vh; overflow: auto; margin: 0; padding: 10px;
+      background: var(--nested, #171717); border-left: 1px solid var(--line, #262626);
+      color: var(--text, #e8e8e8); font: 10px/1.55 Menlo, monospace; white-space: pre-wrap;
+    }
+    .connected-entity-thread { border-top: 1px solid var(--line, #262626); }
+    .conversation-group { padding: 10px 0; border-bottom: 1px solid var(--line, #262626); }
+    .conversation-group-head { display: flex; justify-content: space-between; gap: 8px; color: var(--faint, #5a5a5a); font-size: 9px; }
+    .conversation-group-head span:first-child { color: var(--text, #e8e8e8); }
+    .conversation-message { display: grid; gap: 5px; padding: 4px 0 0; }
+    .conversation-message[data-reply-to] { padding-left: 10px; border-left: 1px solid var(--line, #262626); }
+    .conversation-body { color: var(--text, #e8e8e8); font-size: 11px; line-height: 1.5; }
+    .conversation-body > :first-child { margin-top: 0; }
+    .conversation-body > :last-child { margin-bottom: 0; }
+    .conversation-actions, .conversation-references, .conversation-attachments {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+    }
+    .conversation-references .control-button { min-height: 20px; padding: 1px 5px; }
+    .conversation-thread-link { width: 22px; padding: 0 !important; }
+    .conversation-thread-link svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+    .conversation-attachment { color: var(--accent, #34d399); font-size: 9px; text-decoration: none; }
+    .conversation-attachment img { display: block; width: 112px; height: 72px; object-fit: cover; border: 1px solid var(--line, #262626); }
+    .conversation-empty { margin: 0; padding: 12px 0; color: var(--faint, #5a5a5a); font-size: 10px; }
+    .connected-entity-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; }
+    .connected-entity-composer textarea {
+      min-height: 52px; resize: vertical; padding: 7px; background: var(--bg, #0a0a0a);
+      border: 1px solid var(--line, #262626); border-radius: 0; color: var(--text, #e8e8e8);
+      font: 11px/1.5 Menlo, monospace;
+    }
+    .connected-entity-composer textarea:focus { outline: 1px solid var(--accent, #34d399); outline-offset: -1px; }
 
     /* The panel takes real space: the room and the console live in what is
        left, rather than sliding underneath it. */

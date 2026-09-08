@@ -30,7 +30,8 @@ import { createGoalStrip } from './goalstrip.mjs';
 import { createSound } from './sound.mjs';
 import { renderMarkdown, markdownReady } from './markdown.mjs';
 import { createControlButton } from './controls.mjs';
-import { checkpointThread, messageIdOf, REACTIONS } from '../core/conversation.mjs';
+import { CONTEXT_KIND, messagesForContext } from '../core/conversation.mjs';
+import { renderMessageGroup, renderThread } from './conversation.mjs';
 import { captureScrollAnchor, restoreScrollAnchor } from './scroll-anchor.mjs';
 import { CUES, cueFor, keyOf, neglect, trackWaiting } from '../core/attention.mjs';
 import {
@@ -40,12 +41,12 @@ import {
   shortenDetail,
   summariseCommand,
   isMachineNoise,
-  FEED_LEVELS,
-  FEED_PRESETS,
-  passesDetail,
-  passesPreset,
   doingWords,
 } from '../core/readable.mjs';
+import {
+  DETAIL_LEVELS as FEED_LEVELS, ACTIVITY_FILTERS as FEED_PRESETS,
+  missionNarrative,
+} from '../core/activity.mjs';
 
 const PULSE_MS = 900;
 const PING_MS = 700;
@@ -68,6 +69,7 @@ const state = {
   quality: [],
   contradictions: [],
   tokenEstimate: null,
+  workspace: null,
   // Orders being carried across the floor, one at a time.
   errands: createErrands(),
   errandPhase: null,
@@ -79,11 +81,7 @@ const state = {
   feedCheckpoint: '',
   feedWorkUnit: '',
   feedStage: '',
-  checkpointThreadId: null,
-  checkpointReplyTo: null,
-  // Which hero's question you are answering. A prayer is a conversation, not
-  // a one-line reply typed into a card that then vanishes.
-  prayerWith: null,
+  feedReplyTo: null,
   repo: '',
   eventsByAgent: {},
   focus: null,
@@ -138,11 +136,13 @@ const ACTION_WORDS = Object.freeze({
 async function send(type, payload = {}) {
   const who = payload.agentId ?? payload.target;
   const label = ACTION_WORDS[type] ?? type;
-  ingest(createLocalEvent(who && state.agents[who] ? who : 'minimac', EVENT_KINDS.STATUS, {
-    text: `you: ${label}${who && state.agents[who] ? ` → ${state.agents[who].label}` : ''}`,
-    from: 'you',
-  }));
-  schedulePanels();
+  if (type !== 'resolveResource') {
+    ingest(createLocalEvent(who && state.agents[who] ? who : 'minimac', EVENT_KINDS.STATUS, {
+      text: `you: ${label}${who && state.agents[who] ? ` → ${state.agents[who].label}` : ''}`,
+      from: 'you',
+    }));
+    schedulePanels();
+  }
 
   const response = await fetch('/cmd', {
     method: 'POST',
@@ -187,6 +187,7 @@ function applySnapshot(snapshot) {
   state.quality = snapshot.quality ?? state.quality;
   state.contradictions = snapshot.contradictions ?? state.contradictions;
   state.tokenEstimate = snapshot.tokenEstimate ?? state.tokenEstimate;
+  state.workspace = snapshot.workspace ?? state.workspace;
   state.runId = snapshot.runId;
   if (!state.selectedRunId || state.selectedRunId === snapshot.runId) {
     state.selectedMissionView = null;
@@ -304,7 +305,7 @@ function moveTrigger(agent, event) {
   }
   switch (agent.role) {
     case 'orchestrator':
-      return event.kind === EVENT_KINDS.MESSAGE ? { tone: 'neutral' } : null;
+      return event.kind === EVENT_KINDS.CONVERSATION_MESSAGE ? { tone: 'neutral' } : null;
     case 'tester':
       if (event.kind === EVENT_KINDS.PING && payload.kind === 'verified') {
         return { tone: 'ok', toAgentId: payload.to ?? null };
@@ -505,12 +506,12 @@ function rosterView(agents, board = state.board, readOnly = false) {
         state: checkpointState({ items: board }, item),
       }));
     const messages = (state.eventsByAgent[agent.id] ?? [])
-      .filter((event) => event.kind === EVENT_KINDS.MESSAGE && plainText(event.payload?.text ?? ''))
+      .filter((event) => event.kind === EVENT_KINDS.CONVERSATION_MESSAGE && plainText(event.payload?.message?.body ?? ''))
       .slice(-3)
       .map((event) => ({
-        id: event.payload?.messageId ?? `${agent.id}:${event.ts}`,
-        text: firstLine(plainText(event.payload?.text ?? '')),
-        checkpointId: event.payload?.checkpointId ?? null,
+        id: event.payload?.message?.id ?? `${agent.id}:${event.ts}`,
+        text: firstLine(plainText(event.payload?.message?.body ?? '')),
+        checkpointId: event.payload?.message?.context?.kind === 'checkpoint' ? event.payload.message.context.id : null,
         ts: event.ts,
       }));
     return {
@@ -591,10 +592,6 @@ function renderPanels() {
     });
   }
   if (dom.checkpoints && windows?.isOpen('checkpoints')) {
-    const conversationEvents = Object.values(state.eventsByAgent).flat();
-    const threadEvents = state.checkpointThreadId
-      ? conversationEvents.filter((event) => event.payload?.checkpointId === state.checkpointThreadId)
-      : [];
     const workState = agents.map((agent) => [
       agent.id,
       agent.status,
@@ -605,7 +602,7 @@ function renderPanels() {
       agent.workItemIds,
     ]);
     renderChanged('checkpoints', dom.checkpoints, [
-      board, progress, workState, state.checkpointThreadId, threadEvents,
+      board, progress, workState,
     ], () => {
       panels.renderBoard(dom.checkpoints, board, progress, agents, {
         readOnly: !readingLiveMission,
@@ -615,38 +612,21 @@ function renderPanels() {
         reassign: (id, owner) => send('reassignCheckpoint', { id, owner }),
         add: (checkpoint) => send('assignWork', checkpoint),
         openThread: openCheckpointThread,
-        closeThread: closeCheckpointThread,
-        reply: (messageId, author) => {
-          state.checkpointReplyTo = { messageId, author };
-          renderCheckpointReply();
-          checkpointChat?.focus();
-        },
-        react: (id, messageId, reaction) => send('reactCheckpoint', { id, messageId, reaction }),
         openAgent: (agentId) => {
-          closeCheckpointThread();
           focus(agentId);
           openWindow('crew');
         },
-      }, { selectedId: state.checkpointThreadId, events: conversationEvents, readOnly: !readingLiveMission });
+      }, { readOnly: !readingLiveMission });
     });
-    if (readingLiveMission) renderCheckpointComposer();
-    else if (checkpointChatHost) checkpointChatHost.hidden = true;
   }
   // The focused name still identifies the chat target. It does not own Flow.
   if (dom.focusName) dom.focusName.textContent = focused?.name ?? '';
   // One queue. A hero's question is a decision like any other, so answering it
   // happens here rather than behind a second tab that counted the same things.
   if (dom.queue && windows?.isOpen('decisions')) {
-    const prayer = state.prayerWith
-      ? state.eventsByAgent[state.prayerWith] ?? []
-      : null;
-    renderChanged('decisions', dom.queue, [queue, state.prayerWith, prayer], () => {
+    renderChanged('decisions', dom.queue, queue, () => {
       keepingField(dom.queue, () => {
-        if (state.prayerWith && prayerThread(state.prayerWith)) renderPrayer(dom.queue);
-        else {
-          clearPrayerChrome();
-          renderQueue(dom.queue, queue, handlers);
-        }
+        renderQueue(dom.queue, queue, handlers);
       });
     }, { deferWhileEditing: false });
   }
@@ -664,7 +644,6 @@ function renderPanels() {
   windows?.setCount?.('checkpoints', String(runningCheckpoints));
   windows?.setCount?.('crew', String(activeAvengers));
   windows?.setCount?.('decisions', queue.length);
-  windows?.setCount?.('prayer', orderedAgents().filter((a) => prayerThread(a.id)).length);
   composer?.setTarget(state.target, agents, state.mission ?? '');
   renderBubbles(queue);
   renderStrip(agents, queue);
@@ -682,7 +661,6 @@ function renderPanels() {
     ]);
     renderChanged('crew-bar', dom.crewBar, crewBar, () => renderCrewBar(agents));
   }
-  renderPrayer();
   if (dom.runs && windows?.isOpen('runs')) {
     const missionDetail = readingLiveMission ? {
       acceptance: state.acceptance,
@@ -743,7 +721,7 @@ function setDockMetric(button, value) {
 function lastAction(agentId) {
   const events = state.eventsByAgent[agentId] ?? [];
   return [...events].reverse().find((event) =>
-    event.kind === EVENT_KINDS.TOOL || event.kind === EVENT_KINDS.MESSAGE) ?? null;
+    event.kind === EVENT_KINDS.TOOL || event.kind === EVENT_KINDS.CONVERSATION_MESSAGE) ?? null;
 }
 
 function agoWords(ts) {
@@ -794,7 +772,7 @@ function renderCrewBar(agents) {
     cell.title = `${agent.label ?? agent.name} - ${doingNow(agent)}`;
     // The top strip and the scene are two handles for the same action.
     // Both open this Avenger's feed and apply the same chat filter.
-    cell.onclick = () => openAgentFeed(agent.id);
+    cell.onclick = () => openConnectedEntity('hero', agent.id);
     return cell;
   });
   dom.crewBar.replaceChildren(...cells);
@@ -860,7 +838,7 @@ function renderActivity(agents, covered = new Set()) {
       x: at.x,
       y: at.y,
       tone: 'live',
-      onClick: () => openAgentFeed(order.agentId),
+      onClick: () => openConnectedEntity('hero', order.agentId),
     })];
   }
 
@@ -882,7 +860,7 @@ function renderActivity(agents, covered = new Set()) {
       // it outranks the command it happens to be running right now.
       const last = [...events].reverse().find((event) =>
         event.kind === EVENT_KINDS.TOOL
-        || event.kind === EVENT_KINDS.MESSAGE
+        || event.kind === EVENT_KINDS.CONVERSATION_MESSAGE
         || event.kind === EVENT_KINDS.CLAIM);
       if (!last) return null;
       const at = scene?.screenPos?.(agent.id);
@@ -895,7 +873,7 @@ function renderActivity(agents, covered = new Set()) {
         x: at.x,
         y: at.y,
         tone: agent.status === 'running' ? 'live' : 'quiet',
-        onClick: () => openAgentFeed(agent.id),
+        onClick: () => openConnectedEntity('hero', agent.id),
       });
     })
     .filter(Boolean);
@@ -1008,7 +986,7 @@ function renderBubbles(queue) {
         x: at.x,
         y: at.y,
         tone: 'alert',
-        onClick: () => openAgentFeed(decision.agentId),
+        onClick: () => openConnectedEntity('hero', decision.agentId),
       });
       return bubble;
     })
@@ -1168,8 +1146,9 @@ function closeTopWindow() {
 
 const handlers = {
   select: focus,
-  openChat: openAgentFeed,
+  openChat: (id) => openConnectedEntity('hero', id),
   openCheckpoint: openCheckpointThread,
+  openDecision: (id) => openConnectedEntity('decision', id),
   setGoal: (agentId, objective) => send('setGoal', { agentId, objective }),
   assignEngine: (agentId, engine) => send('assignEngine', { agentId, engine }),
   configureRuntime: (agentId, runtime) => send('configureRuntime', { agentId, ...runtime }),
@@ -1269,7 +1248,7 @@ const handlers = {
       });
     }
     if (action === 'answer' || decision.kind === 'prayer') {
-      return openPrayer(decision.agentId);
+      return openConnectedEntity('decision', decision.key ?? decision.id);
     }
     return focus(decision.agentId);
   },
@@ -1468,13 +1447,6 @@ function wireChrome() {
 // has to go looking for the log is not in the loop.
 // Clicking an agent's bubble opens the feed showing only that agent, which is
 // what "let me read what Thor actually said" means.
-function openAgentFeed(agentId) {
-  focus(agentId);
-  state.feedFilter = agentId;
-  windows?.open('feed');
-  renderPanels();
-}
-
 function clearFeedFilter() {
   state.feedFilter = null;
   renderPanels();
@@ -1484,9 +1456,9 @@ function sentHistoryFor(target) {
   const missionHistory = target === MISSION_TARGET;
   const agentId = state.agents[target] ? target : orchestratorId();
   return (state.eventsByAgent[agentId] ?? [])
-    .filter((event) => event.kind === EVENT_KINDS.MESSAGE && event.payload?.from === 'you')
+    .filter((event) => event.kind === EVENT_KINDS.CONVERSATION_MESSAGE && event.payload?.message?.from === 'you')
     .sort((a, b) => a.ts - b.ts)
-    .map((event) => String(event.payload?.text ?? ''))
+    .map((event) => String(event.payload?.message?.body ?? ''))
     .filter((text) => missionHistory === text.startsWith('mission set: '))
     .map((text) => missionHistory ? text.slice('mission set: '.length) : text);
 }
@@ -1507,70 +1479,14 @@ function renderFeed() {
     : state.agents[orchestratorId()];
   feedChat?.setTarget(talkTo?.id ?? null, orderedAgents(), state.selectedMission ?? '');
 
-  const lines = [];
   const allMissionEvents = Object.values(state.eventsByAgent).flat();
-  const threads = new Map();
-  const threadMessages = new Map();
-  for (const item of feedBoard ?? []) {
-    const thread = checkpointThread(allMissionEvents, item.id);
-    threads.set(item.id, thread);
-    for (const event of thread) {
-      threadMessages.set(messageIdOf(event), event);
-    }
-  }
-  for (const [agentId, events] of Object.entries(state.eventsByAgent)) {
-    if (state.feedFilter && agentId !== state.feedFilter) continue;
-    const agent = state.agents[agentId];
-    for (const event of events.slice(-300)) {
-      // The preset decides the altitude: everything, only the heroes talking
-      // to each other, or that plus whatever changes what happens next.
-      if (!passesDetail(event, state.feedLevel) || !passesPreset(event, state.feedPreset)) continue;
-      const entry = feedEntry(agent, event);
-      if (!entry) continue;
-      // Checkpoint messages live in their checkpoint thread. The mission Feed
-      // contains the assignment root plus messages about the mission itself.
-      if (entry.checkpointId && entry.kind !== 'assignment') continue;
-      const item = entry.checkpointId
-        ? feedBoard.find((candidate) => candidate.id === entry.checkpointId)
-        : null;
-      const workUnit = feedFlows.find((candidate) => candidate.workUnitId === item?.workUnitId);
-      const checkpoint = workUnit?.checkpoints?.find((candidate) => candidate.id === item?.id);
-      if (state.feedCheckpoint && entry.checkpointId !== state.feedCheckpoint) continue;
-      if (state.feedWorkUnit && item?.workUnitId !== state.feedWorkUnit) continue;
-      if (state.feedStage && item?.stage !== state.feedStage) continue;
-      const searchable = [entry.who, entry.text, entry.full, entry.checkpointId, item?.workUnitId, item?.stage]
-        .filter(Boolean).join(' ').toLowerCase();
-      if (state.feedQuery && !searchable.includes(state.feedQuery.toLowerCase())) continue;
-      const enriched = threadMessages.get(messageIdOf(event));
-      lines.push({
-        ...entry,
-        agentId,
-        messageId: messageIdOf(event),
-        workUnitId: item?.workUnitId ?? null,
-        workUnitDisplayId: workUnit?.displayId ?? item?.workUnitId ?? null,
-        checkpointDisplayId: checkpoint?.displayId ?? item?.id ?? null,
-        stage: item?.stage ?? null,
-        assignmentTo: entry.kind === 'assignment'
-          ? state.agents[event.payload?.toAgentId]?.label ?? event.payload?.toAgentId
-          : null,
-        threadCount: entry.checkpointId
-          ? Math.max(0, (threads.get(entry.checkpointId)?.length ?? 0) - 1)
-          : 0,
-        reactions: enriched?.reactions ?? {},
-        reactionActors: enriched?.reactionActors ?? {},
-        ts: event.ts,
-        key: feedEventKey(agentId, event),
-      });
-    }
-  }
-  lines.sort((a, b) => a.ts - b.ts);
-  const grouped = coalesceFeedLines(lines);
-  // Codex streams a message in pieces and then repeats it whole. A line that
-  // is merely the start of the next line from the same agent is that stream
-  // catching up, not something new to read.
-  const deduped = grouped.filter((line, index) => {
-    const next = grouped[index + 1];
-    return !(next && next.who === line.who && next.text.startsWith(line.text));
+  const narrative = missionNarrative({
+    events: allMissionEvents, missionId: String(state.selectedRunId), board: feedBoard,
+    filters: {
+      detail: state.feedLevel, type: state.feedPreset, heroId: state.feedFilter,
+      checkpointId: state.feedCheckpoint, workUnitId: state.feedWorkUnit,
+      stage: state.feedStage, query: state.feedQuery,
+    },
   });
 
   const feedView = JSON.stringify([
@@ -1580,7 +1496,41 @@ function renderFeed() {
   const position = feedView === renderedFeedView
     ? captureScrollAnchor(feedBody)
     : { mode: 'tail' };
-  const rows = deduped.slice(-400).map(feedRow);
+  const rows = narrative.slice(-400).map((entry) => {
+    if (entry.kind === 'message') {
+      return renderMessageGroup([entry.message], {
+        agents: state.agents,
+        events: allMissionEvents,
+        onReply: (message) => { state.feedReplyTo = message.id; feedChat?.focus(); },
+        onReact: (message, reaction) => send('reactConversation', {
+          context: message.context, messageId: message.id, reaction,
+        }),
+        onOpen: (reference) => openConnectedEntity(reference.kind, reference.id),
+      });
+    }
+    const event = entry.event;
+    const view = feedEntry(state.agents[event.agentId], event);
+    if (!view) return null;
+    const checkpointId = view.checkpointId ?? event.payload?.checkpointId ?? null;
+    const item = checkpointId ? feedBoard.find((candidate) => candidate.id === checkpointId) : null;
+    const workUnit = feedFlows.find((candidate) => candidate.workUnitId === item?.workUnitId);
+    const checkpoint = workUnit?.checkpoints?.find((candidate) => candidate.id === item?.id);
+    return feedRow({
+      ...view, agentId: event.agentId, checkpointId,
+      workUnitId: item?.workUnitId ?? null,
+      workUnitDisplayId: workUnit?.displayId ?? item?.workUnitId ?? null,
+      checkpointDisplayId: checkpoint?.displayId ?? item?.id ?? null,
+      stage: item?.stage ?? null,
+      assignmentTo: view.kind === 'assignment'
+        ? state.agents[event.payload?.toAgentId]?.label ?? event.payload?.toAgentId
+        : null,
+      threadCount: checkpointId
+        ? messagesForContext(allMissionEvents, { kind: CONTEXT_KIND.CHECKPOINT, id: checkpointId }).length
+        : 0,
+      reactions: {}, reactionActors: {}, ts: event.ts,
+      key: feedEventKey(event.agentId, event),
+    });
+  }).filter(Boolean);
   const header = [missionFeedContext(), feedLevelBar(), state.feedFiltersOpen ? feedFilterPanel() : null,
     readingLiveMission ? checkpointCard() : null, ...(state.feedFilter ? [filterChip()] : [])]
     .filter(Boolean);
@@ -1703,37 +1653,6 @@ function rememberFeedRow(key, open) {
   } else {
     expandedFeedRows.delete(key);
   }
-}
-
-// Codex sends prose as deltas and can finish with the full message. Join only
-// fragments from the same live session. Normal messages remain separate.
-function coalesceFeedLines(lines) {
-  const grouped = [];
-  const operations = new Map();
-  for (const line of lines) {
-    if (line.operationId) {
-      const previousIndex = operations.get(line.operationId);
-      if (previousIndex !== undefined) {
-        grouped[previousIndex] = line;
-        continue;
-      }
-      operations.set(line.operationId, grouped.length);
-    }
-    const previous = grouped.at(-1);
-    const sameStream = line.message && previous?.message
-      && line.streamId && line.streamId === previous.streamId;
-    const streamed = previous?.partial || line.partial || line.final;
-    if (!sameStream || !streamed) {
-      grouped.push(line);
-      continue;
-    }
-    if (line.text.startsWith(previous.text)) previous.text = line.text;
-    else if (!previous.text.endsWith(line.text)) previous.text += line.text;
-    previous.ts = line.ts;
-    previous.partial = line.partial;
-    previous.final = line.final;
-  }
-  return grouped;
 }
 
 // A compact status card stays in Feed. The full checkpoint list has its own
@@ -1974,22 +1893,20 @@ function feedEntry(agent, event) {
   const at = new Date(event.ts).toLocaleTimeString([], { hour12: false });
   const payload = event.payload ?? {};
 
-  if (event.kind === EVENT_KINDS.MESSAGE) {
-    const text = String(payload.text ?? '');
-    const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
-    if (payload.partial !== true && plainText(text).length < 12 && attachments.length === 0) return null;
+  if (event.kind === EVENT_KINDS.CONVERSATION_MESSAGE) {
+    const message = payload.message ?? {};
+    const text = String(message.body ?? '');
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    if (plainText(text).length < 12 && attachments.length === 0) return null;
     return {
       at,
       who,
-      suffix: payload.from === 'you' ? ' (from you)' : '',
+      suffix: message.from === 'you' ? ' (from you)' : '',
       text,
       message: true,
-      streamId: payload.sessionId ? `${event.agentId}:${payload.sessionId}` : null,
-      partial: payload.partial === true,
-      final: payload.final === true,
       attachments,
-      checkpointId: payload.checkpointId ?? null,
-      references: payload.references ?? [],
+      checkpointId: message.context?.kind === 'checkpoint' ? message.context.id : null,
+      references: message.references ?? [],
       tone: '',
     };
   }
@@ -2063,11 +1980,7 @@ let feedBody = null;
 let feedControls = null;
 let feedChat = null;
 let feedChatHost = null;
-let prayerComposer = null;
 let checkpointsBody = null;
-let checkpointChat = null;
-let checkpointChatHost = null;
-let checkpointReply = null;
 
 // The feed is a window like any other: same chrome, same dock switch, same
 // dragging and resizing. Building it here rather than in the markup only means
@@ -2092,6 +2005,16 @@ function mountFeed() {
   feedChatHost = talk;
   feedChat = mountPanelComposer(talk, {
     getTarget: () => state.feedFilter ?? orchestratorId(),
+    dispatch: ({ text, attachments }) => send(
+      state.feedReplyTo ? 'replyConversation' : 'postConversation', {
+        context: { kind: CONTEXT_KIND.MISSION, id: String(state.runId) },
+        text, attachments, recipients: state.feedFilter ? [state.feedFilter] : [],
+        replyToMessageId: state.feedReplyTo,
+      },
+    ).then((result) => {
+      if (result.ok) state.feedReplyTo = null;
+      return result;
+    }),
   });
 
   win.append(bar, feedControls, feedBody, talk);
@@ -2111,32 +2034,7 @@ function mountCheckpoints() {
   checkpointsBody = document.createElement('div');
   checkpointsBody.className = 'win-body';
   checkpointsBody.id = 'checkpoints';
-  checkpointChatHost = document.createElement('footer');
-  checkpointChatHost.className = 'checkpoint-chat';
-  checkpointChatHost.hidden = true;
-  const note = document.createElement('p');
-  note.className = 'checkpoint-compose-note';
-  note.textContent = 'Notes stay with this checkpoint. Use @hero in the main input when action is required.';
-  checkpointReply = document.createElement('div');
-  checkpointReply.className = 'checkpoint-compose-reply';
-  checkpointReply.hidden = true;
-  checkpointChatHost.append(note, checkpointReply);
-  checkpointChat = mountPanelComposer(checkpointChatHost, {
-    getTarget: () => state.board.find((item) => item.id === state.checkpointThreadId)?.owner ?? orchestratorId(),
-    dispatch: ({ text, attachments }) => send('commentCheckpoint', {
-      id: state.checkpointThreadId,
-      text,
-      attachments,
-      replyToId: state.checkpointReplyTo?.messageId ?? null,
-    }).then((result) => {
-      if (result.ok) {
-        state.checkpointReplyTo = null;
-        renderCheckpointReply();
-      }
-      return result;
-    }),
-  });
-  win.append(bar, checkpointsBody, checkpointChatHost);
+  win.append(bar, checkpointsBody);
   document.body.append(win);
   dom.winCheckpoints = win;
   dom.checkpoints = checkpointsBody;
@@ -2152,61 +2050,159 @@ function mountCheckpoints() {
 }
 
 function openCheckpointThread(id) {
-  if (!state.board.some((item) => item.id === id)) return;
-  state.checkpointThreadId = id;
-  state.checkpointReplyTo = null;
-  openWindow('checkpoints');
-  renderCheckpointComposer();
-  schedulePanels();
+  openConnectedEntity('checkpoint', id);
 }
 
-function closeCheckpointThread() {
-  state.checkpointThreadId = null;
-  state.checkpointReplyTo = null;
-  renderCheckpointComposer();
-  schedulePanels();
-}
+async function openConnectedEntity(kind, id) {
+  const events = Object.values(state.eventsByAgent).flat();
+  let source = kind === 'hero'
+    ? state.workspace?.heroes?.find((item) => item.id === id)
+    : kind === 'checkpoint'
+      ? state.workspace?.checkpoints?.find((item) => item.id === id)
+      : kind === 'decision'
+        ? state.workspace?.decisions?.find((item) => (item.key ?? item.id) === id)
+        : kind === 'message'
+          ? events.find((event) => event.payload?.message?.id === id)?.payload?.message
+          : null;
+  if ((kind === 'file' || kind === 'skill') && !source) {
+    const response = await send('resolveResource', { reference: { kind, id } });
+    source = response.result ?? null;
+  }
+  if (!source || !windows?.openEntity) return;
+  const content = document.createElement('div');
+  content.className = 'connected-entity-content';
+  const facts = document.createElement('div');
+  facts.className = 'connected-entity-facts';
+  if (kind === 'hero') facts.append(
+    contextFact('STATUS', source.status ?? 'idle'),
+    contextFact('CHECKPOINTS', source.checkpoints?.length ?? 0),
+    contextFact('ACTIVE', source.running?.length ?? 0),
+  );
+  if (kind === 'checkpoint') facts.append(
+    contextFact('STATUS', source.status?.state ?? 'pending'),
+    contextFact('OWNER', source.owner?.label ?? source.owner?.name ?? 'unassigned'),
+    contextFact('WORK UNIT', source.workUnitId ?? '—'),
+    contextFact('STAGE', source.stage ?? '—'),
+  );
+  if (kind === 'decision') facts.append(
+    contextFact('STATUS', source.resolved ? 'resolved' : 'open'),
+    contextFact('HERO', state.agents[source.agentId]?.label ?? source.agentId ?? '—'),
+  );
+  if (kind === 'file' || kind === 'skill') facts.append(
+    contextFact('TYPE', kind), contextFact('SOURCE', source.source ?? state.repo),
+  );
+  if (kind === 'message') facts.append(
+    contextFact('AUTHOR', state.agents[source.authorId]?.label ?? source.authorId),
+    contextFact('CONTEXT', `${source.context.kind}:${source.context.id}`),
+  );
+  content.append(facts);
 
-function renderCheckpointComposer() {
-  if (!checkpointChatHost) return;
-  checkpointChatHost.hidden = !state.checkpointThreadId;
-  renderCheckpointReply();
-  const owner = state.board.find((item) => item.id === state.checkpointThreadId)?.owner;
-  checkpointChat?.setTarget(owner ?? orchestratorId(), orderedAgents(), '');
-}
-
-function renderCheckpointReply() {
-  if (!checkpointReply) return;
-  const reply = state.checkpointReplyTo;
-  checkpointReply.hidden = !reply;
-  checkpointReply.replaceChildren();
-  if (!reply) return;
-  const text = document.createElement('span');
-  text.textContent = `Replying to ${reply.author}`;
-  const cancel = document.createElement('button');
-  cancel.type = 'button';
-  cancel.setAttribute('aria-label', 'Cancel reply');
-  cancel.textContent = '×';
-  cancel.onclick = () => {
-    state.checkpointReplyTo = null;
-    renderCheckpointReply();
-  };
-  checkpointReply.append(text, cancel);
-}
-
-function mountPrayerComposer() {
-  if (!dom.prayerChat || prayerComposer) return;
-  const settled = document.createElement('button');
-  settled.className = 'dock-btn mini';
-  settled.type = 'button';
-  settled.textContent = 'SETTLED';
-  settled.onclick = () => {
-    if (state.prayerWith) send('settlePrayer', { agentId: state.prayerWith });
-  };
-  prayerComposer = mountPanelComposer(dom.prayerChat, {
-    getTarget: () => state.prayerWith,
-    extraActions: [settled],
+  if (kind === 'hero' && source.checkpoints?.length) {
+    content.append(contextLinks('CHECKPOINTS', source.checkpoints.map((checkpoint) => ({
+      label: `${checkpoint.id}  ${checkpoint.title ?? checkpoint.outcome}`, onClick: () => openConnectedEntity('checkpoint', checkpoint.id),
+    }))));
+  }
+  if (kind === 'checkpoint') {
+    content.append(contextCopy('OUTCOME', source.outcome), contextCopy('PLAN', source.plan), contextCopy('PROOF', source.verify));
+    if (source.dependencies?.length) content.append(contextLinks('DEPENDS ON', source.dependencies.map((checkpoint) => ({
+      label: `${checkpoint.id}  ${checkpoint.title ?? checkpoint.outcome}`, onClick: () => openConnectedEntity('checkpoint', checkpoint.id),
+    }))));
+  }
+  if (kind === 'decision') {
+    content.append(contextCopy('NEEDS YOU', source.reason ?? source.summary ?? source.detail));
+    if (source.kind === 'prayer' && !source.resolved) {
+      const settled = createControlButton('SETTLED');
+      settled.onclick = async () => {
+        await send('settlePrayer', { agentId: source.agentId });
+        windows?.open('decisions');
+      };
+      content.append(settled);
+    }
+  }
+  if (kind === 'file' || kind === 'skill') {
+    const resource = document.createElement('pre');
+    resource.className = 'connected-resource';
+    resource.textContent = source.content ?? '';
+    content.append(resource);
+  }
+  const thread = document.createElement('div');
+  thread.className = 'connected-entity-thread';
+  const messages = kind === 'message' ? [source] : source.messages ?? [];
+  if (messages.length || ['hero', 'checkpoint', 'decision'].includes(kind)) content.append(thread);
+  let replyToMessageId = null;
+  const render = () => renderThread(thread, messages, {
+    agents: state.agents, events,
+    onReply: ['hero', 'checkpoint', 'decision'].includes(kind)
+      ? (message) => { replyToMessageId = message.id; input?.focus(); }
+      : null,
+    onReact: (message, reaction) => send('reactConversation', {
+      context: message.context, messageId: message.id, reaction,
+    }),
+    onOpen: (reference) => openConnectedEntity(reference.kind, reference.id),
   });
+  let input = null;
+  if (!['hero', 'checkpoint', 'decision'].includes(kind)) {
+    render();
+    windows.openEntity({ kind, id, title: source.label ?? source.title ?? source.name ?? id,
+      subtitle: source.role ?? source.stage ?? '', content });
+    return;
+  }
+  const composer = document.createElement('form');
+  composer.className = 'connected-entity-composer';
+  input = document.createElement('textarea');
+  input.rows = 2;
+  input.placeholder = 'Write a message';
+  const sendButton = createControlButton('SEND');
+  sendButton.type = 'submit';
+  composer.append(input, sendButton);
+  composer.onsubmit = async (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    const context = { kind: kind === 'hero' ? CONTEXT_KIND.MISSION : kind,
+      id: kind === 'hero' ? String(state.runId) : id };
+    const recipients = kind === 'hero' ? [id]
+      : kind === 'checkpoint' && source.owner?.id ? [source.owner.id]
+        : kind === 'decision' && source.agentId ? [source.agentId] : [];
+    await send(replyToMessageId ? 'replyConversation' : 'postConversation', {
+      context, text, recipients, replyToMessageId,
+    });
+    input.value = '';
+    replyToMessageId = null;
+  };
+  render();
+  content.append(composer);
+  windows.openEntity({ kind, id, title: source.label ?? source.title ?? source.name ?? id,
+    subtitle: source.role ?? source.stage ?? '', content });
+}
+
+function contextFact(label, value) {
+  const fact = document.createElement('span');
+  fact.innerHTML = `<small>${label}</small><b></b>`;
+  fact.querySelector('b').textContent = String(value ?? '—');
+  return fact;
+}
+
+function contextCopy(label, value) {
+  const section = document.createElement('section');
+  section.className = 'connected-copy';
+  const heading = document.createElement('h3');
+  heading.textContent = label;
+  const body = document.createElement('p');
+  body.textContent = value || '—';
+  section.append(heading, body);
+  return section;
+}
+
+function contextLinks(label, links) {
+  const section = contextCopy(label, '');
+  const body = section.querySelector('p');
+  body.replaceChildren(...links.map((link) => {
+    const button = createControlButton(link.label);
+    button.onclick = link.onClick;
+    return button;
+  }));
+  return section;
 }
 
 // The main console and both side-panel chats use createComposer. This shell
@@ -2259,6 +2255,10 @@ function mountPanelComposer(host, { getTarget, extraActions = [], dispatch }) {
     dom: { input, send: sendButton, menu, attachments, file },
     send,
     getAgents: () => orderedAgents(),
+    getReferences: () => [
+      ...state.board.map((item) => ({ kind: 'checkpoint', id: item.id })),
+      ...state.cards.map((item) => ({ kind: 'decision', id: item.key ?? item.id })),
+    ],
     getTarget,
     getHistory: () => sentHistoryFor(getTarget()),
     setTarget: () => {},
@@ -2266,152 +2266,6 @@ function mountPanelComposer(host, { getTarget, extraActions = [], dispatch }) {
     dispatch,
     dropTarget: host,
   });
-}
-
-// The prayer thread. One hero asked you something only they could know to
-// ask; this is where the two of you settle it. It stays open until YOU say it
-// is settled - answering once does not end a conversation.
-function openPrayer(agentId) {
-  state.prayerWith = agentId;
-  openWindow('decisions');
-  schedulePanels();
-}
-
-function prayerThread(agentId) {
-  const events = state.eventsByAgent[agentId] ?? [];
-  const start = events.findLastIndex(
-    (event) => event.kind === EVENT_KINDS.PRAYER && !event.payload?.answered,
-  );
-  if (start === -1) return null;
-  const question = events[start].payload;
-  // Everything either of you has said since they asked.
-  const spoken = events.slice(start + 1).filter((event) =>
-    event.kind === EVENT_KINDS.MESSAGE || event.kind === EVENT_KINDS.PRAYER);
-  // Engines can emit a partial message and then the same message completed.
-  // Keep the completed form once; do not show a person two copies.
-  const said = spoken.filter((event, index) => {
-    const next = spoken[index + 1];
-    if (!next || next.payload?.from !== event.payload?.from) return true;
-    const text = plainText(event.payload?.text ?? event.payload?.answer ?? '');
-    const nextText = plainText(next.payload?.text ?? next.payload?.answer ?? '');
-    return !nextText.startsWith(text);
-  });
-  return { question, said, askedAt: events[start].ts };
-}
-
-function renderPrayer(into) {
-  const prayerBody = into;
-  if (!prayerBody) return;
-  const agentId = state.prayerWith;
-  const agent = agentId ? state.agents[agentId] : null;
-  const thread = agentId ? prayerThread(agentId) : null;
-
-  // No thread picked - so show WHO is waiting. The tab counts four questions;
-  // opening it to "nobody has asked you anything" is the badge calling the
-  // panel a liar.
-  if (!agent || !thread) {
-    const waiting = orderedAgents()
-      .map((candidate) => ({ agent: candidate, thread: prayerThread(candidate.id) }))
-      .filter((row) => row.thread);
-
-    if (waiting.length === 0) {
-      clearPrayerChrome();
-      const idle = document.createElement('div');
-      idle.style.cssText = 'padding:10px 0;color:var(--muted,#8a8a8a)';
-      idle.textContent = agentId
-        ? 'settled - nothing is waiting on you here'
-        : 'nobody has asked you anything';
-      prayerBody.replaceChildren(idle);
-      return;
-    }
-
-    clearPrayerChrome();
-
-    const head = document.createElement('div');
-    head.style.cssText = 'font-size:9px;letter-spacing:.12em;color:var(--faint,#5a5a5a);padding-bottom:8px';
-    head.textContent = `${waiting.length} WAITING ON YOU`;
-
-    const rows = waiting.map(({ agent: who, thread: t }) => {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;'
-        + 'border:0;border-bottom:1px solid var(--line,#262626);color:inherit;font:inherit;'
-        + 'padding:8px 0;cursor:pointer';
-      const name = document.createElement('div');
-      name.style.cssText = 'font-size:9px;letter-spacing:.12em;color:var(--accent,#34d399)';
-      name.textContent = (who.label ?? who.name).toUpperCase();
-      const asked = document.createElement('div');
-      asked.style.cssText = 'padding-top:2px';
-      asked.textContent = t.question.why;
-      row.append(name, asked);
-      row.onclick = () => openPrayer(who.id);
-      return row;
-    });
-    prayerBody.replaceChildren(head, ...rows);
-    return;
-  }
-
-  renderPrayerHead(agent);
-  const rows = [];
-
-  const asked = document.createElement('div');
-  asked.style.cssText = 'padding:8px 10px;border-left:2px solid var(--accent,#34d399);'
-    + 'background:var(--sunk,#1a1a1a);margin-bottom:10px';
-  asked.textContent = thread.question.why;
-  rows.push(asked);
-
-  for (const event of thread.said) {
-    const mine = event.payload?.from === 'you';
-    const line = document.createElement('div');
-    line.style.cssText = 'padding:5px 0;border-bottom:1px solid var(--line,#262626)';
-    const tag = document.createElement('span');
-    tag.style.cssText = `font-size:9px;letter-spacing:.12em;margin-right:8px;color:${
-      mine ? 'var(--accent,#34d399)' : 'var(--muted,#8a8a8a)'}`;
-    tag.textContent = mine ? 'YOU' : (agent.label ?? agent.name).toUpperCase();
-    line.append(tag, document.createTextNode(plainText(event.payload?.text ?? event.payload?.answer ?? '')));
-    rows.push(line);
-  }
-
-  prayerBody.replaceChildren(...rows);
-  renderPrayerChat(agent);
-}
-
-function renderPrayerHead(agent) {
-  if (!dom.prayerHead) return;
-  if (dom.prayerHead.dataset.agentId === agent.id && !dom.prayerHead.hidden) return;
-  const who = document.createElement('button');
-  who.type = 'button';
-  who.style.cssText = 'display:block;width:100%;text-align:left;background:transparent;border:0;'
-    + 'font:inherit;font-size:10px;letter-spacing:.12em;color:var(--accent,#34d399);'
-    + 'padding:0 0 6px;cursor:pointer';
-  who.textContent = `\u2190 ${(agent.label ?? agent.name).toUpperCase()} ASKED YOU`;
-  who.title = 'back to everyone waiting';
-  who.onclick = () => { state.prayerWith = null; schedulePanels(); };
-  dom.prayerHead.dataset.agentId = agent.id;
-  dom.prayerHead.replaceChildren(who);
-  dom.prayerHead.hidden = false;
-}
-
-// The thread scrolls. Its reply control does not. Keep the same footer while
-// new events arrive, so a redraw cannot move the caret or discard typed text.
-function renderPrayerChat(agent) {
-  if (!dom.prayerChat) return;
-  mountPrayerComposer();
-  dom.prayerChat.dataset.agentId = agent.id;
-  dom.prayerChat.hidden = false;
-  prayerComposer?.setTarget(agent.id, orderedAgents(), state.mission ?? '');
-}
-
-function clearPrayerChrome() {
-  if (dom.prayerHead) {
-    dom.prayerHead.hidden = true;
-    delete dom.prayerHead.dataset.agentId;
-    dom.prayerHead.replaceChildren();
-  }
-  if (dom.prayerChat) {
-    dom.prayerChat.hidden = true;
-    delete dom.prayerChat.dataset.agentId;
-  }
 }
 
 // A switch on the console, cloned from its neighbours so it cannot drift out
@@ -2689,7 +2543,7 @@ function boot() {
     scene = createScene({
       canvas: dom.floor,
       palette,
-      onSelect: openAgentFeed,
+      onSelect: (agentId) => openConnectedEntity('hero', agentId),
       onHover: (id) => {
         if (state.hovered === id) return;
         state.hovered = id;
@@ -2711,6 +2565,10 @@ function boot() {
     },
     send,
     getAgents: () => orderedAgents(),
+    getReferences: () => [
+      ...state.board.map((item) => ({ kind: 'checkpoint', id: item.id })),
+      ...state.cards.map((item) => ({ kind: 'decision', id: item.key ?? item.id })),
+    ],
     getTarget: () => state.target,
     getHistory: () => sentHistoryFor(state.target),
     setTarget: (target) => {
@@ -2727,7 +2585,6 @@ function boot() {
   mountHeader();
   mountFeed();
   mountCheckpoints();
-  mountPrayerComposer();
   mountMiddleware();
   orderDockViews();
 

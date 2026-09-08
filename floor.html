@@ -791,8 +791,7 @@
     background: var(--surface);
   }
 
-  .feed-controls,
-  .prayer-head {
+  .feed-controls {
     flex: 0 0 auto;
     padding: calc(var(--step) * 2) calc(var(--step) * 2.5) 0 calc(var(--step) * 3.5);
     background: var(--surface);
@@ -920,14 +919,6 @@
     color: var(--muted);
     font: 400 9px/1 var(--mono);
   }
-
-  .prayer-chat {
-    position: relative;
-    display: grid;
-    gap: calc(var(--step) * 1.5);
-  }
-
-  .prayer-chat[hidden] { display: none; }
 
   .panel-compose-row {
     display: grid;
@@ -1562,88 +1553,6 @@
   .checkpoint-detail-line > span { color: var(--faint); font-size: 9px; letter-spacing: .1em; }
   .checkpoint-detail-line > p { margin: 0; color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
 
-  .checkpoint-chat {
-    flex: none;
-    padding: calc(var(--step) * 2);
-    border-top: 1px solid var(--line);
-    background: var(--surface);
-  }
-  .checkpoint-chat[hidden] { display: none; }
-  .checkpoint-compose-note {
-    margin: 0 0 var(--step);
-    color: var(--faint);
-    font: 9px/1.4 var(--mono);
-  }
-  .checkpoint-compose-reply {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--step) calc(var(--step) * 2);
-    color: var(--muted);
-    border-left: 2px solid var(--accent);
-    background: var(--nested);
-    font-size: 9px;
-  }
-  .checkpoint-compose-reply[hidden] { display: none; }
-  .checkpoint-compose-reply button {
-    border: 0;
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-    font: inherit;
-  }
-  .checkpoint-thread { display: grid; gap: calc(var(--step) * 3); min-width: 0; }
-  .checkpoint-thread-head {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: calc(var(--step) * 3);
-    align-items: start;
-    border-bottom: 1px solid var(--line);
-    padding-bottom: calc(var(--step) * 3);
-  }
-  .checkpoint-thread-identity { display: grid; gap: var(--step); }
-  .checkpoint-thread-identity h2 { margin: 0; color: var(--text); font: 16px/1.3 var(--mono); }
-  .checkpoint-thread-identity p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
-  .checkpoint-thread-facts { display: flex; flex-wrap: wrap; gap: calc(var(--step) * 3); align-items: center; }
-  .checkpoint-person {
-    padding: 0;
-    border: 0;
-    border-bottom: 1px solid var(--accent-edge);
-    background: transparent;
-    color: var(--accent);
-    font: 10px var(--mono);
-    cursor: pointer;
-  }
-  .checkpoint-thread-details::part(base) { border: 1px solid var(--line); border-radius: 0; background: var(--nested); }
-  .checkpoint-thread-details::part(header) { color: var(--muted); font: 10px var(--mono); letter-spacing: .08em; }
-  .checkpoint-thread-details.control-details-fallback { border: 1px solid var(--line); background: var(--nested); }
-  .checkpoint-thread-details.control-details-fallback > summary {
-    padding: calc(var(--step) * 2);
-    color: var(--muted);
-    font: 10px var(--mono);
-    letter-spacing: .08em;
-    cursor: pointer;
-  }
-  .checkpoint-thread-details.control-details-fallback > .checkpoint-detail-body {
-    padding: 0 calc(var(--step) * 2) calc(var(--step) * 2);
-  }
-  .checkpoint-timeline { display: grid; gap: 0; }
-  .checkpoint-message { padding: calc(var(--step) * 3) 0; border-bottom: 1px solid var(--line-soft); }
-  .checkpoint-message[data-reply-to] { padding-left: calc(var(--step) * 4); border-left: 1px solid var(--line); }
-  .checkpoint-message-head { display: flex; gap: calc(var(--step) * 2); align-items: baseline; color: var(--muted); font-size: 9px; }
-  .checkpoint-message-head strong { color: var(--text); font-size: 11px; font-weight: 400; }
-  .checkpoint-reply-mark { color: var(--faint); }
-  .checkpoint-message-body { margin-top: var(--step); color: var(--text); font-size: 11px; line-height: 1.55; }
-  .checkpoint-message-actions { display: flex; gap: var(--step); margin-top: calc(var(--step) * 1.5); }
-  .checkpoint-message-actions .control-button,
-  .checkpoint-thread-head .control-button { min-height: 24px; }
-  .relative-time-fallback { color: inherit; }
-  .checkpoint-attachments { display: flex; flex-wrap: wrap; gap: calc(var(--step) * 2); margin-top: calc(var(--step) * 2); }
-  .checkpoint-attachment img { display: block; width: 112px; height: 72px; object-fit: cover; border: 1px solid var(--line); }
-  .checkpoint-references { display: flex; flex-wrap: wrap; gap: var(--step); margin-top: calc(var(--step) * 1.5); }
-  .checkpoint-references button,
-  .checkpoint-references a { padding: 2px 5px; border: 1px solid var(--line); background: transparent; color: var(--accent); font: 9px var(--mono); text-decoration: none; cursor: pointer; }
-
   @media (max-width: 900px) {
     .checkpoint-create { grid-template-columns: minmax(0, 1fr); }
     .checkpoint-field.is-wide,
@@ -1654,10 +1563,6 @@
       grid-template-areas: "line" "controls" "details";
     }
     .checkpoint-controls { justify-content: flex-start; flex-wrap: wrap; }
-  }
-
-  @media (max-width: 720px) {
-    .checkpoint-thread-head { grid-template-columns: minmax(0, 1fr); }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -2394,9 +2299,7 @@
         <span class="readout" id="roDecisions">0 WAITING</span>
         <button class="icon-btn" id="winDecisionsClose" type="button" aria-label="Close decisions">✕</button>
       </header>
-      <div class="prayer-head" id="prayerHead" hidden></div>
       <div class="win-body"><div id="queue" aria-live="polite"></div></div>
-      <footer class="feed-chat prayer-chat" id="prayerChat" hidden></footer>
     </section>
 
     <section class="win" id="winRuns" hidden aria-label="Runs">
