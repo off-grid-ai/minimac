@@ -1409,12 +1409,20 @@ const COMMANDS = {
     const selectedItems = Array.isArray(checkpointIds)
       ? checkpointIds.map((id) => findItem(state.board, id)).filter(Boolean)
       : null;
-    const assignedItems = agent.role === ROLES.ORCHESTRATOR || task
+    const assignedItems = agent.role === ROLES.ORCHESTRATOR
       ? []
-      : selectedItems ?? readyWork(agentId).slice(0, Math.max(1, agent.instances ?? 1));
-    const tasks = agent.role === ROLES.ORCHESTRATOR || task
-      ? [task ?? state.mission]
-      : assignedItems.map(checkpointTask);
+      : selectedItems ?? (task
+        ? []
+        : readyWork(agentId).slice(0, Math.max(1, agent.instances ?? 1)));
+    let tasks = [];
+    if (agent.role === ROLES.ORCHESTRATOR) {
+      tasks = [task ?? state.mission];
+    } else if (assignedItems.length > 0) {
+      tasks = assignedItems.map((item) =>
+        [task, checkpointTask(item)].filter(Boolean).join('\n\n'));
+    } else if (task) {
+      tasks = [task];
+    }
     if (!tasks.length) throw new Error(`${agentId} has no ready checkpoint`);
     const cwd = options.isolate ? await worktrees.create(agentId) : options.repo;
     const context = promptContext(agent, tasks[0], {
