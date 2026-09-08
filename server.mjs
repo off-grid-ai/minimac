@@ -3,7 +3,7 @@
 
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -163,6 +163,8 @@ const state = {
   // coordination stops being prose.
   board: createBoard(),
 };
+
+const MAX_REFERENCE_BYTES = 2 * 1024 * 1024;
 
 state.goals = deriveGoals(state.goals, state.agents, state.mission);
 
@@ -2224,17 +2226,7 @@ const server = createServer(async (req, res) => {
     if (wanted !== root && !wanted.startsWith(`${root}${sep}`)) {
       return json(res, 403, { error: 'forbidden' });
     }
-    try {
-      const body = await readFile(wanted);
-      res.writeHead(200, {
-        'content-type': 'text/plain; charset=utf-8',
-        'content-length': body.length,
-        'cache-control': 'no-store',
-      });
-      return res.end(body);
-    } catch {
-      return json(res, 404, { error: 'not found' });
-    }
+    return serveTextResource(wanted, res);
   }
   if (url.pathname === '/dirs') {
     return json(res, 200, await repoIndex.dirs(url.searchParams.get('path') ?? ''));
@@ -2257,17 +2249,7 @@ const server = createServer(async (req, res) => {
     const id = String(url.searchParams.get('id') ?? '');
     const skill = (await repoIndex.skills(options.repo)).find((candidate) => candidate.id === id);
     if (!skill) return json(res, 404, { error: 'not found' });
-    try {
-      const body = await readFile(skill.path);
-      res.writeHead(200, {
-        'content-type': 'text/plain; charset=utf-8',
-        'content-length': body.length,
-        'cache-control': 'no-store',
-      });
-      return res.end(body);
-    } catch {
-      return json(res, 404, { error: 'not found' });
-    }
+    return serveTextResource(skill.path, res);
   }
   if (url.pathname === '/runs') {
     return json(res, 200, { runs: store.listRuns(Number(url.searchParams.get('limit') ?? 20)) });
@@ -2499,6 +2481,26 @@ async function upload(req, res) {
     json(res, 200, { ok: true, file: saved });
   } catch (error) {
     json(res, 400, { ok: false, error: error.message });
+  }
+}
+
+async function serveTextResource(path, res) {
+  try {
+    const info = await stat(path);
+    if (!info.isFile()) return json(res, 404, { error: 'not found' });
+    if (info.size > MAX_REFERENCE_BYTES) {
+      return json(res, 413, { error: 'file is too large to preview' });
+    }
+    const body = await readFile(path);
+    if (body.includes(0)) return json(res, 415, { error: 'binary files cannot be previewed' });
+    res.writeHead(200, {
+      'content-type': 'text/plain; charset=utf-8',
+      'content-length': body.length,
+      'cache-control': 'no-store',
+    });
+    return res.end(body);
+  } catch {
+    return json(res, 404, { error: 'not found' });
   }
 }
 
