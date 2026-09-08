@@ -386,13 +386,14 @@ export function advance(
     ? [...item.evidence, { gate, state, receipt: receipt.trim(), by: evidenceBy, at: now }]
     : item.evidence;
   const completed = isDone({ ...item, gates });
+  const leaseEnded = completed || state === GATE_STATE.FAIL;
   const next = {
     ...item,
     gates,
     evidence,
     closedAt: completed ? now : null,
-    lease: completed && item.lease?.state === 'running'
-      ? finishLease(item.lease, 'done', now)
+    lease: leaseEnded && item.lease?.state === 'running'
+      ? finishLease(item.lease, completed ? 'done' : 'failed', now)
       : item.lease,
   };
   return {

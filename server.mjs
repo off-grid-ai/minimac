@@ -29,8 +29,11 @@ import {
   WORKER_STATE,
   ensureWorkers,
   freeWorkers,
+  hasLiveWorker,
   hydrateWorker,
+  liveWorkers,
   patchWorker,
+  primarySessionId,
   projectWorkers,
   workerForCheckpoint,
   workerForSession,
@@ -80,6 +83,7 @@ import {
 import { projectMissionFlows } from './core/mission-flows.mjs';
 import {
   createAcceptancePolicy,
+  missionIsComplete,
   validateAcceptancePolicy,
   reconcileAcceptanceChange,
 } from './core/acceptance.mjs';
@@ -106,6 +110,7 @@ import {
   itemsOf,
   itemsFor,
   canWork,
+  isClosed,
   isDone,
   unmetDeps,
   stateOf as checkpointState,
@@ -179,6 +184,7 @@ const state = {
   // coordination stops being prose.
   board: createBoard(),
   acceptance: createAcceptancePolicy(),
+  completedAt: null,
 };
 
 const MAX_REFERENCE_BYTES = 2 * 1024 * 1024;
@@ -255,23 +261,12 @@ if (adopted) {
     state.agents = patchAgent(state.agents, agent.id, projectWorkers(restored, ensureWorkers(restored)));
   }
   // The checkpoints belong to the run, so rejoining a run rejoins its work.
-  // Older `continue` runs opened a new record without copying the checkpoint
-  // rows. Their first status event still records the source run, which lets a
-  // restart repair that missing projection once and persist the correction.
-  let adoptedItems = store.itemsFor(adopted.id);
-  if (adoptedItems.length === 0) {
-    const continued = [...state.events].reverse().find((event) =>
-      event.kind === EVENT_KINDS.STATUS
-      && /^continued run \d+:/.test(String(event.payload?.text ?? '')),
-    );
-    const sourceRunId = Number(/^continued run (\d+):/.exec(String(continued?.payload?.text ?? ''))?.[1]);
-    if (Number.isInteger(sourceRunId)) {
-      adoptedItems = store.itemsFor(sourceRunId);
-      for (const item of adoptedItems) store.saveItem(item);
-    }
-  }
+  const adoptedItems = store.itemsFor(adopted.id);
   state.board = { workUnits: store.workUnitsFor(adopted.id), items: adoptedItems };
   state.acceptance = store.acceptanceFor(adopted.id) ?? createAcceptancePolicy();
+  const savedMissionState = store.missionStateFor(adopted.id);
+  state.completedAt = savedMissionState?.completedAt
+    ?? (missionIsComplete(state.acceptance, state.board) ? Date.now() : null);
   const adoptedAt = Date.now();
   state.cards = stampCards(
     state.cards,
@@ -442,6 +437,7 @@ const WORK_PLAN_BLOCK = new RegExp('```' + WORK_PLAN_FENCE + '\\s*([\\s\\S]*?)``
 
 // The orchestrator's answer to "what should each of them be doing".
 async function harvestWorkPlan(event) {
+  if (state.completedAt) return { applied: false, error: 'mission is complete' };
   const match = WORK_PLAN_BLOCK.exec(String(event.payload?.text ?? ''));
   if (!match) return { applied: false, error: 'no assemble payload' };
 
@@ -587,6 +583,7 @@ function harvestReport(event) {
   const done = report.standDown;
 
   const completedWork = [];
+  const failedWork = [];
   // Gate moves. This is the only way the board changes from a worker, and
   // board.mjs refuses anything out of order or without a receipt - so an agent
   // cannot report a push over untested code however confidently it tries.
@@ -598,6 +595,29 @@ function harvestReport(event) {
     );
     if (result.error) continue;
     if (result.item.closedAt) completedWork.push(result.item);
+    if (move.state === 'fail') failedWork.push({ item: result.item, move });
+  }
+
+  for (const failure of failedWork) {
+    const discoveries = (report.discoveries ?? [])
+      .filter((finding) => !finding.checkpointId || finding.checkpointId === failure.item.id);
+    const findings = discoveries.length ? discoveries : [{
+      id: `${failure.move.gate}-failure`,
+      checkpointId: failure.item.id,
+      title: `Fix ${failure.item.title}`,
+      outcome: `${failure.item.outcome} passes ${failure.move.gate} verification.`,
+      scope: failure.item.scope,
+      files: failure.item.files ?? [],
+      receipt: failure.move.receipt,
+    }];
+    const remediation = workBoard.addRemediation(failure.item.id, findings);
+    if (remediation.error) {
+      ingest(createBlockedEvent('minimac', {
+        category: BLOCKED_REASONS.ERROR,
+        reason: `could not own failure from ${failure.item.id}: ${remediation.error}`,
+      }));
+    }
+    if (event.payload?.workerId) workerLeases?.clear(event.payload.workerId);
   }
 
   for (const claim of report.claims ?? []) {
@@ -619,7 +639,10 @@ function harvestReport(event) {
   });
   const isWorker = state.agents[event.agentId]?.role !== ROLES.ORCHESTRATOR;
   const askedToStop = Boolean(done?.why && String(done.why).trim());
-  const shouldStop = isWorker && assignedDone && (completedWork.length > 0 || askedToStop);
+  const shouldStop = isWorker && (
+    failedWork.length > 0
+    || (assignedDone && (completedWork.length > 0 || askedToStop))
+  );
   if (askedToStop && !assignedDone) {
     ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
       text: `one worker finished its slice: ${String(done.why).trim()}`,
@@ -629,7 +652,9 @@ function harvestReport(event) {
   if (shouldStop) {
     const why = askedToStop
       ? String(done.why).trim()
-      : `completed ${completedWork.map((item) => item.id).join(', ')}`;
+      : failedWork.length
+        ? `verification failed on ${failedWork.map(({ item }) => item.id).join(', ')}; correction work is assigned`
+        : `completed ${completedWork.map((item) => item.id).join(', ')}`;
     ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
       text: `stood down: ${why}`,
       from: 'you',
@@ -698,6 +723,27 @@ function persistEventWorker(event) {
   if (worker) store.saveWorkerSession(worker);
 }
 
+function acceptsWorkerEvent(event) {
+  const workerId = event.payload?.workerId;
+  const sessionId = event.payload?.sessionId;
+  if (!workerId && !sessionId) return true;
+  const agent = state.agents[event.agentId];
+  const worker = workerId
+    ? ensureWorkers(agent).find((candidate) => candidate.id === workerId)
+    : workerForSession(agent, sessionId);
+  if (!worker || !isCurrentSessionEvent(worker, event.payload)) return false;
+  const checkpointId = event.payload?.checkpointId ?? worker.checkpointId;
+  if (!checkpointId) return true;
+  if (worker.checkpointId && worker.checkpointId !== checkpointId) return false;
+  const item = findItem(state.board, checkpointId);
+  if (!item) return false;
+  if (item.lease?.workerId && item.lease.workerId !== worker.id) return false;
+  const terminalWorkerStatus = event.kind === EVENT_KINDS.STATUS
+    && [WORKER_STATE.IDLE, WORKER_STATE.STOPPED, WORKER_STATE.FAILED]
+      .includes(event.payload?.state);
+  return !isClosed(item) || terminalWorkerStatus;
+}
+
 function settleEventLease(event) {
   const workerId = event.payload?.workerId;
   if (!workerId) return;
@@ -706,15 +752,27 @@ function settleEventLease(event) {
   if (!isCurrentSessionEvent(worker, event.payload)) return;
   const checkpointId = event.payload?.checkpointId ?? worker.checkpointId;
   const item = checkpointId && findItem(state.board, checkpointId);
-  if (!item?.lease || item.lease.workerId !== workerId) return;
+  if (!item?.lease || item.lease.state !== 'running' || item.lease.workerId !== workerId) return;
   if (item.lease.sessionId && event.payload?.sessionId
     && item.lease.sessionId !== event.payload.sessionId) return;
-  const settled = reviseItem(state.board, checkpointId, {
-    lease: finishLease(item.lease, event.payload.state, event.ts),
-  });
+  const retryAt = event.ts + 15_000;
+  const settled = isClosed(item)
+    ? reviseItem(state.board, checkpointId, {
+      lease: finishLease(item.lease, event.payload.state, event.ts),
+    })
+    : failCheckpointStart(
+      state.board,
+      checkpointId,
+      `worker ${event.payload.state}; MINIMAC will retry`,
+      retryAt,
+    );
   if (settled.error) return;
   state.board = settled.board;
   store.saveItem(settled.item);
+  if (!isClosed(item)) {
+    const timer = setTimeout(scheduleReadyWork, Math.max(0, retryAt - Date.now()));
+    timer.unref?.();
+  }
 }
 
 function repeatsUnchangedFact(event, withinMs = 300_000) {
@@ -736,8 +794,10 @@ function repeatsUnchangedFact(event, withinMs = 300_000) {
 
 function ingest(rawIncoming) {
   const incoming = identifyWorker(rawIncoming);
+  if (!acceptsWorkerEvent(incoming)) return;
   if (incoming.kind === EVENT_KINDS.STATUS
-    && [WORKER_STATE.IDLE, WORKER_STATE.STOPPED].includes(incoming.payload?.state)) {
+    && [WORKER_STATE.IDLE, WORKER_STATE.STOPPED, WORKER_STATE.FAILED]
+      .includes(incoming.payload?.state)) {
     const worker = incoming.payload?.workerId
       ? ensureWorkers(state.agents[incoming.agentId])
         .find((candidate) => candidate.id === incoming.payload.workerId)
@@ -801,7 +861,7 @@ let runtimeSupervisor = null;
 let schedulerQueued = false;
 
 function scheduleReadyWork() {
-  if (!scheduler || schedulerQueued) return;
+  if (!scheduler || schedulerQueued || state.completedAt) return;
   schedulerQueued = true;
   queueMicrotask(() => {
     schedulerQueued = false;
@@ -835,11 +895,36 @@ const workBoard = createWorkBoard({
   setBoard: (board) => { state.board = board; },
   getAgents: () => state.agents,
   saveItem: (item) => store.saveItem(item),
+  saveBoard: (board) => store.saveWorkPlan(board),
+  activateOwner: (agentId) => {
+    state.agents = patchAgent(state.agents, agentId, { enabled: true });
+  },
   emit: ingest,
   order: orders,
-  onChange: scheduleReadyWork,
+  onChange: reconcileMissionCompletion,
+  missionComplete: () => Boolean(state.completedAt),
   workerLimitMs: LEASE_LIMIT_MS,
 });
+
+function reconcileMissionCompletion() {
+  if (!missionIsComplete(state.acceptance, state.board)) {
+    scheduleReadyWork();
+    return false;
+  }
+  if (state.completedAt) return true;
+  state.completedAt = Date.now();
+  store.saveMissionState({
+    acceptance: state.acceptance,
+    board: state.board,
+    completedAt: state.completedAt,
+  });
+  ingest(createEvent('minimac', EVENT_KINDS.STATUS, {
+    state: 'complete',
+    text: 'mission complete: every required acceptance gate passed',
+    from: 'you',
+  }));
+  return true;
+}
 
 const workPlanning = createWorkPlanningService({
   getBoard: () => state.board,
@@ -968,7 +1053,7 @@ async function governanceTurn(raised) {
   }));
   try {
     const task = governanceTask(his, crewRoster());
-    if (boss.sessionId) {
+    if (hasLiveWorker(boss)) {
       const sent = await eachSession(boss, (id) =>
         getDriver(boss.engine).steer(
           id,
@@ -1350,6 +1435,7 @@ function postCheckpointReaction({ id, messageId, reaction, from = 'you', authorA
 
 const COMMANDS = {
   setAcceptance({ required }) {
+    if (state.completedAt) throw new Error('mission is complete');
     ensureRun();
     const validated = validateAcceptancePolicy({ required });
     if (validated.error) throw new Error(validated.error);
@@ -1360,13 +1446,15 @@ const COMMANDS = {
     );
     state.acceptance = validated.policy;
     state.board = reconcileReleaseCheckpoints(reconciled.board, state.agents, state.acceptance);
-    store.saveMissionState({ acceptance: state.acceptance, board: state.board });
+    store.saveMissionState({ acceptance: state.acceptance, board: state.board, completedAt: null });
+    reconcileMissionCompletion();
     publish({ type: 'state', state: snapshot() });
     return { acceptance: state.acceptance, removed: reconciled.removed };
   },
 
   // One mission in, a goal on every seat out. Nothing is ever dispatched blind.
   async setMission({ mission, attachments = [] }) {
+    if (state.completedAt) throw new Error('start a new mission before changing the mission text');
     state.mission = mission;
     ensureRun();
     state.attachments = attachments;
@@ -1407,6 +1495,7 @@ const COMMANDS = {
   // changes shape, or after you have flipped agents by hand and want Thor to
   // judge it again.
   async assemble() {
+    if (state.completedAt) throw new Error('mission is complete');
     if (!state.mission) throw new Error('set the mission first - there is nobody to assemble for');
     const orchestrator = Object.values(state.agents).find((a) => a.role === 'orchestrator');
     if (!orchestrator) throw new Error('no orchestrator on the floor');
@@ -1419,7 +1508,7 @@ const COMMANDS = {
     // deep in mission work is why he never once answered it: he was pushing a
     // branch and the planning instruction arrived as an aside. Ending that turn
     // first makes the brief the whole of what he is being asked.
-    if (orchestrator.sessionId) {
+    if (hasLiveWorker(orchestrator)) {
       await interruptAgent(orchestrator.id);
     }
     state.awaitingGoals = true;
@@ -1475,6 +1564,12 @@ const COMMANDS = {
     if (!previous) throw new Error(`no run ${runId}`);
     const savedItems = store.itemsFor(Number(runId));
     const savedGoals = store.goalsFor(Number(runId));
+    const savedAcceptance = store.acceptanceFor(Number(runId)) ?? createAcceptancePolicy();
+    const savedBoard = { workUnits: store.workUnitsFor(Number(runId)), items: savedItems };
+    if (store.missionStateFor(Number(runId))?.completedAt
+      || missionIsComplete(savedAcceptance, savedBoard)) {
+      throw new Error('that mission is complete; use Run Again to create a new run');
+    }
 
     // Continue always continues. Where a session survives, the agent keeps its
     // memory; where it does not, that agent starts fresh on the same goal and
@@ -1488,14 +1583,15 @@ const COMMANDS = {
     state.events = [];
     state.mission = previous.mission;
     store.startRun(state.mission, options.repo);
-    state.acceptance = store.acceptanceFor(Number(runId)) ?? createAcceptancePolicy();
-    store.saveMissionState({ acceptance: state.acceptance });
+    state.acceptance = savedAcceptance;
+    state.completedAt = null;
+    store.saveMissionState({ acceptance: state.acceptance, completedAt: null });
     for (const agent of Object.values(state.agents)) store.saveEngine(agent.id, agent.engine);
 
     // The new run record continues the old work. Copy the checkpoints into the
     // new run before any worker starts, so the UI and every agent receive the
     // same queue instead of an empty one.
-    state.board = { workUnits: store.workUnitsFor(Number(runId)), items: savedItems };
+    state.board = savedBoard;
     store.saveWorkPlan(state.board);
 
     for (const row of savedGoals) {
@@ -1590,12 +1686,13 @@ const COMMANDS = {
     // theirs - which is how a LICENSE plan turned up under a CI mission.
     state.board = createBoard();
     state.acceptance = createAcceptancePolicy();
+    state.completedAt = null;
     state.cards = [];
     state.dismissedCards = new Set();
     state.verdicts = {};
     state.mission = mission ?? '';
     const id = store.startRun(state.mission, options.repo);
-    store.saveMissionState({ acceptance: state.acceptance });
+    store.saveMissionState({ acceptance: state.acceptance, completedAt: null });
     state.goals = deriveGoals(state.goals, state.agents, state.mission);
     for (const [agentId, goal] of Object.entries(state.goals)) store.saveGoal(agentId, goal);
     for (const agent of Object.values(state.agents)) store.saveEngine(agent.id, agent.engine);
@@ -1616,6 +1713,7 @@ const COMMANDS = {
     exclusiveOutput = planning,
     checkpointIds = null,
   }) {
+    if (state.completedAt) throw new Error('mission is complete');
     if (state.agents[agentId]?.enabled === false) return { skipped: 'disabled' };
     ensureRun();
     const agent = state.agents[agentId];
@@ -1760,7 +1858,7 @@ const COMMANDS = {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
     const body = attachments.length > 0 ? `${text}\n\n${attachmentLines(attachments)}` : text;
-    if (agent.sessionId) {
+    if (hasLiveWorker(agent)) {
       return COMMANDS.steer({
         agentId,
         text: body,
@@ -1820,13 +1918,14 @@ const COMMANDS = {
   // offered. Engines without an approval protocol fall back to steering.
   async approve({ agentId, approvalId, decision }) {
     const agent = state.agents[agentId];
-    if (!agent?.sessionId) throw new Error(`${agentId} is not running`);
+    const sessionId = agent && primarySessionId(agent);
+    if (!sessionId) throw new Error(`${agentId} is not running`);
     const driver = getDriver(agent.engine);
     if (typeof driver.approve === 'function') {
-      await driver.approve(agent.sessionId, approvalId, decision);
+      await driver.approve(sessionId, approvalId, decision);
     } else {
       await driver.steer(
-        agent.sessionId,
+        sessionId,
         composeDispatch(promptContext(agent, String(decision))),
       );
     }
@@ -1863,7 +1962,7 @@ const COMMANDS = {
     // A reply does NOT close the question. You asked to be able to go back and
     // forth, and a card that vanishes on your first sentence ends the
     // conversation for you. It closes when you say it is settled.
-    if (!agent.sessionId) {
+    if (!hasLiveWorker(agent)) {
       // The answer is already recorded above, so say what happened rather than
       // pretending nothing did: the card is closed, the agent never heard it.
       throw new Error(
@@ -1903,7 +2002,7 @@ const COMMANDS = {
     state.goals = setGoal(state.goals, agentId, objective, tokenBudget, status);
     store.saveGoal(agentId, getGoal(state.goals, agentId));
     const agent = state.agents[agentId];
-    if (agent?.sessionId) {
+    if (agent && hasLiveWorker(agent)) {
       const message = `Your goal changed. From now on: ${objective}`;
       const sent = await eachSession(agent, async (id) => {
         const driver = getDriver(agent.engine);
@@ -1938,6 +2037,7 @@ const COMMANDS = {
     id, title, plan, outcome, verify, scope, owner, needs, blockedBy, estimateMs,
     by = 'minimac',
   }) {
+    if (state.completedAt) throw new Error('mission is complete');
     if (!state.agents[owner] || state.agents[owner].role === ROLES.ORCHESTRATOR) {
       throw new Error(`unknown Avenger: ${owner}`);
     }
@@ -1964,6 +2064,7 @@ const COMMANDS = {
   },
 
   async moveCheckpoint({ id, direction }) {
+    if (state.completedAt) throw new Error('mission is complete');
     const running = itemsOf(state.board)
       .filter((item) => item.lease?.state === 'running')
       .map((item) => item.id);
@@ -1975,6 +2076,7 @@ const COMMANDS = {
   },
 
   async pauseCheckpoint({ id, paused = true }) {
+    if (state.completedAt) throw new Error('mission is complete');
     const item = findItem(state.board, id);
     if (!item) throw new Error(`no item ${id}`);
     if (paused && item.owner) await interruptCheckpoint(item.owner, id);
@@ -1986,6 +2088,7 @@ const COMMANDS = {
   },
 
   async extendCheckpointLease({ id }) {
+    if (state.completedAt) throw new Error('mission is complete');
     const item = findItem(state.board, id);
     if (!item) throw new Error(`no item ${id}`);
     const result = workerLeases.extend(item.lease);
@@ -1999,6 +2102,7 @@ const COMMANDS = {
   },
 
   async reassignCheckpoint({ id, owner }) {
+    if (state.completedAt) throw new Error('mission is complete');
     if (!state.agents[owner] || state.agents[owner].role === ROLES.ORCHESTRATOR) {
       throw new Error(`unknown Avenger: ${owner}`);
     }
@@ -2021,6 +2125,7 @@ const COMMANDS = {
   },
 
   async forceStartCheckpoint({ id }) {
+    if (state.completedAt) throw new Error('mission is complete');
     let item = findItem(state.board, id);
     if (!item) throw new Error(`no item ${id}`);
     if (!item.owner) throw new Error('assign this checkpoint first');
@@ -2061,15 +2166,15 @@ const COMMANDS = {
         state.agents = patchAgent(state.agents, agentId, { enabled: true });
         return { agentId, active: isActive(state.agents[agentId]), required: 'mission' };
       }
-      if (agent.sessionId) await interruptAgent(agentId);
+      if (hasLiveWorker(agent)) await interruptAgent(agentId);
       state.agents = patchAgent(state.agents, agentId, projectWorkers({
         ...state.agents[agentId], enabled: false,
       }));
       return { agentId, active: false };
     }
-    if (agent.sessionId) {
+    if (hasLiveWorker(agent)) {
       state.agents = patchAgent(state.agents, agentId, { enabled: true });
-      return { agentId, active: true, sessionId: agent.sessionId };
+      return { agentId, active: true, sessionId: primarySessionId(agent) };
     }
     state.agents = patchAgent(state.agents, agentId, { enabled: true });
     try {
@@ -2099,22 +2204,24 @@ const COMMANDS = {
       .map((worker) => worker.sessionId ?? worker.resumeSessionId)
       .filter(Boolean);
     await captureEngineHandoff(agentId, current.engine, engine, sourceSessionIds);
-    if (current.sessionId || current.sessionIds?.length) await interruptAgent(agentId);
+    if (hasLiveWorker(current)) await interruptAgent(agentId);
     state.agents = assignEngine(state.agents, agentId, engine);
     applySavedRuntime(agentId);
-    const resetWorkers = ensureWorkers(state.agents[agentId]).map((worker) => ({
-      ...worker,
-      engine,
-      state: WORKER_STATE.IDLE,
-      sessionId: null,
-      resumeSessionId: null,
-      checkpointId: null,
-    }));
-    state.agents = patchAgent(state.agents, agentId, projectWorkers({
+    let resetAgent = projectWorkers({
       ...state.agents[agentId],
       enabled: current.enabled,
       blockedReason: null,
-    }, resetWorkers));
+    });
+    for (const worker of ensureWorkers(resetAgent)) {
+      resetAgent = patchWorker(resetAgent, worker.id, {
+        engine,
+        state: WORKER_STATE.IDLE,
+        sessionId: null,
+        resumeSessionId: null,
+        checkpointId: null,
+      });
+    }
+    state.agents = patchAgent(state.agents, agentId, resetAgent);
     store.saveEngine(agentId, engine);
     return { engine };
   },
@@ -2135,7 +2242,7 @@ const COMMANDS = {
       engine: agent.engine,
       model: agent.model,
       effort: agent.effort,
-      applies: current.sessionId ? 'next turn' : 'next start',
+      applies: hasLiveWorker(current) ? 'next turn' : 'next start',
     };
   },
 
@@ -2163,7 +2270,8 @@ scheduler = createScheduler({
 runtimeSupervisor = createRuntimeSupervisor({
   getBoard: () => state.board,
   getAgents: () => state.agents,
-  markStale: (agentId, workerId) => expireWorkerLease(agentId, workerId),
+  markStale: (agentId, workerId, reason, observedState) =>
+    expireWorkerLease(agentId, workerId, reason, observedState),
   recover: async () => scheduleReadyWork(),
   inspect: (worker) => getDriver(worker.engine).sessionHealth?.(worker.sessionId, options.repo),
 });
@@ -2183,7 +2291,7 @@ coordination = createFleetCoordination({
   deliver: async (agentId, text, { wake = false } = {}) => {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
-    if (agent.sessionId) return COMMANDS.steer({ agentId, text, record: false });
+    if (hasLiveWorker(agent)) return COMMANDS.steer({ agentId, text, record: false });
     if (!wake) throw new Error(`${agent.label ?? agentId} has no live session`);
     return COMMANDS.setActive({ agentId, active: true, task: text });
   },
@@ -2323,7 +2431,12 @@ async function interruptWorker(
   return true;
 }
 
-async function expireWorkerLease(agentId, workerId) {
+async function expireWorkerLease(
+  agentId,
+  workerId,
+  reason = 'worker session became stale',
+  observedState = WORKER_STATE.STALE,
+) {
   const agent = state.agents[agentId];
   const worker = agent && ensureWorkers(agent).find((candidate) => candidate.id === workerId);
   const leasedItem = itemsOf(state.board).find((item) =>
@@ -2334,7 +2447,7 @@ async function expireWorkerLease(agentId, workerId) {
     const failed = failCheckpointStart(
       state.board,
       leasedItem.id,
-      'worker session no longer exists; MINIMAC will retry',
+      `${reason}; MINIMAC will retry`,
       retryAt,
     );
     if (!failed.error) {
@@ -2345,18 +2458,26 @@ async function expireWorkerLease(agentId, workerId) {
     }
     return true;
   }
-  const stopped = worker.sessionId
-    ? await interruptWorker(agentId, workerId, {
+  const engineEnded = [WORKER_STATE.STOPPED, WORKER_STATE.FAILED].includes(observedState);
+  let stopped = true;
+  if (worker.sessionId && !engineEnded) {
+    stopped = await interruptWorker(agentId, workerId, {
       workerState: WORKER_STATE.STALE,
       clearCheckpoint: true,
-    })
-    : true;
-  if (!worker.sessionId) {
+    });
+  } else {
+    workerLeases?.clear(workerId);
     state.agents = patchAgent(state.agents, agentId, patchWorker(agent, workerId, {
-      state: WORKER_STATE.STALE,
+      state: engineEnded ? observedState : WORKER_STATE.STALE,
+      sessionId: null,
+      resumeSessionId: observedState === WORKER_STATE.STOPPED
+        ? worker.sessionId ?? worker.resumeSessionId
+        : null,
       checkpointId: null,
-      failureReason: 'worker session disappeared',
+      failureReason: reason,
     }));
+    store.saveWorkerSession(ensureWorkers(state.agents[agentId])
+      .find((candidate) => candidate.id === workerId));
   }
   const checkpointId = worker.checkpointId ?? leasedItem?.id ?? null;
   if (checkpointId) {
@@ -2364,7 +2485,7 @@ async function expireWorkerLease(agentId, workerId) {
     const failed = failCheckpointStart(
       state.board,
       checkpointId,
-      'worker session became stale; MINIMAC will retry',
+      `${reason}; MINIMAC will retry`,
       retryAt,
     );
     if (!failed.error) {
@@ -2427,6 +2548,7 @@ function snapshot() {
     flows: projectMissionFlows(state.board),
     acceptance: state.acceptance,
     progress: projectMissionProgress(state.board, state.acceptance),
+    completedAt: state.completedAt,
     quality: repositoryQualitySummary(state.board),
     contradictions: missionContradictions(state.board, workers, state.acceptance),
     tokenEstimate: estimateDispatchTokens({
@@ -2581,7 +2703,7 @@ async function agentTool(req, res) {
 function principalIsActive({ agentId, workerId }) {
   const agent = state.agents[agentId];
   if (!agent) return false;
-  if (!workerId) return Boolean(agent.sessionId);
+  if (!workerId) return hasLiveWorker(agent);
   return ensureWorkers(agent).some((worker) => worker.id === workerId && Boolean(worker.sessionId));
 }
 
@@ -2612,7 +2734,7 @@ async function executeAgentTool(principal, name, args) {
     const avengers = Object.values(state.agents)
       .filter((agent) => agent.role !== ROLES.ORCHESTRATOR)
       .map((agent) => {
-        const inUse = agent.sessionIds?.length || (agent.sessionId ? 1 : 0);
+        const inUse = liveWorkers(agent).length;
         const owned = checkpoints.filter((item) => item.owner === agent.id && !isDone(item));
         const active = owned.filter((item) =>
           item.lease?.agentId === agent.id && item.lease.state === 'running');
@@ -2753,6 +2875,7 @@ async function executeAgentTool(principal, name, args) {
     return COMMANDS.assignWork({ ...args, by: callerId });
   }
   if (name === AGENT_TOOL.CLOSE) {
+    if (state.completedAt) throw new Error('mission is complete');
     const closed = closeItem(state.board, args.id, args.disposition);
     if (closed.error) throw new Error(closed.error);
     state.board = closed.board;

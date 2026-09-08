@@ -139,6 +139,8 @@ export function createSimDriver() {
   const arcs = new Map();          // agentId -> arc state
   const sessionByAgent = new Map(); // agentId -> sessionId
   const agentBySession = new Map(); // sessionId -> agentId
+  const workflowSessions = new Map();
+  const workflowAttempts = new Map();
   let ticker = null;
   let startedAt = 0;
 
@@ -435,8 +437,110 @@ export function createSimDriver() {
     ticker = setInterval(tick, TICK_MS);
   }
 
+  function workflowPlan() {
+    const stages = [
+      ['pw', 'pm'], ['dw', 'ux'], ['cw', 'coder'],
+      ['tw', 'tester'], ['aw', 'auditor'], ['rw', 'reviewer'],
+    ];
+    return {
+      crew: { coder: 2, tester: 2, auditor: 2, reviewer: 2, ux: 2, pm: 2 },
+      workUnits: ['w1', 'w2'].map((id, index) => ({
+        id,
+        title: `Prove parallel outcome ${index + 1}`,
+        outcome: `Parallel outcome ${index + 1} is complete and verified.`,
+        scope: `sim/${id}`,
+        blockedBy: [],
+        stages: stages.map(([stage, owner]) => ({
+          stage,
+          required: true,
+          owner,
+          plan: `Complete ${stage.toUpperCase()} for ${id}.`,
+          verify: `Record ${stage.toUpperCase()} proof for ${id}.`,
+          files: [`sim/${id}/${stage}.txt`],
+          estimateMs: 60_000,
+        })),
+      })),
+    };
+  }
+
+  function workflowEvent(session, kind, payload = {}) {
+    emit(createEvent(session.agent.id, kind, {
+      ...payload,
+      sessionId: session.id,
+      workerId: session.agent.workerId ?? null,
+      checkpointId: session.checkpointId,
+      engine: 'sim',
+    }));
+  }
+
+  function workflowGates(agent, checkpointId) {
+    if (checkpointId === 'release.prepush') return ['prepush'];
+    if (checkpointId === 'release.push') return ['push'];
+    return {
+      pm: ['product'],
+      ux: ['design'],
+      coder: ['coding', 'wiring', 'lint', 'commits'],
+      tester: ['test'],
+      auditor: ['audit'],
+      reviewer: ['review'],
+    }[agent.id] ?? [];
+  }
+
+  function startWorkflow(agent, prompt) {
+    const id = randomUUID();
+    const checkpointId = /^# Assigned task: (\S+)/m.exec(prompt)?.[1] ?? null;
+    const session = { id, agent, checkpointId, state: 'running', finished: false };
+    workflowSessions.set(id, session);
+    agentBySession.set(id, agent.id);
+
+    setTimeout(() => {
+      if (session.finished) return;
+      workflowEvent(session, EVENT_KINDS.STATUS, { state: 'running' });
+      if (agent.id === 'minimac' && prompt.includes('# First job: assemble the crew')) {
+        workflowEvent(session, EVENT_KINDS.MESSAGE, {
+          text: `\`\`\`minimac-work-plan\n${JSON.stringify(workflowPlan())}\n\`\`\``,
+        });
+        return;
+      }
+      if (!checkpointId) return;
+      const attempt = (workflowAttempts.get(checkpointId) ?? 0) + 1;
+      workflowAttempts.set(checkpointId, attempt);
+      if (checkpointId === 'w2.cw' && attempt === 1) {
+        session.state = 'stopped';
+        session.finished = true;
+        workflowEvent(session, EVENT_KINDS.STATUS, { state: 'stopped' });
+        return;
+      }
+      const failedVerification = checkpointId === 'w1.tw' && attempt === 1;
+      const gates = workflowGates(agent, checkpointId).map((gate) => ({
+        item: checkpointId,
+        gate,
+        state: failedVerification ? 'fail' : 'pass',
+        receipt: failedVerification
+          ? 'simulated focused check: one reproducible failure'
+          : `simulated ${gate} proof for ${checkpointId}`,
+      }));
+      const discoveries = failedVerification ? [{
+        id: 'focused-regression',
+        checkpointId,
+        title: 'Fix the focused regression',
+        outcome: 'The focused regression passes when verification runs again.',
+        scope: 'sim/w1',
+        receipt: 'simulated focused check: one reproducible failure',
+        files: ['sim/w1/cw.txt'],
+      }] : [];
+      workflowEvent(session, EVENT_KINDS.MESSAGE, {
+        text: `\`\`\`minimac\n${JSON.stringify({ claims: [], discoveries, gates })}\n\`\`\``,
+      });
+    }, 40);
+    return id;
+  }
+
   return {
-    async start(agent, _cwd, _prompt) {
+    async start(agent, _cwd, prompt) {
+      if (prompt.includes('# Assigned task:') || prompt.includes('# First job: assemble the crew')) {
+        return startWorkflow(agent, prompt);
+      }
       ensemble(agent);
       const existing = sessionByAgent.get(agent.id);
       if (existing) return existing;
@@ -503,6 +607,15 @@ export function createSimDriver() {
     },
 
     async interrupt(sessionId) {
+      const workflow = workflowSessions.get(sessionId);
+      if (workflow) {
+        if (!workflow.finished) {
+          workflow.state = 'stopped';
+          workflow.finished = true;
+          workflowEvent(workflow, EVENT_KINDS.STATUS, { state: 'stopped' });
+        }
+        return;
+      }
       const agentId = agentBySession.get(sessionId);
       const arc = arcs.get(agentId);
       if (!arc || arc.finished) return;
@@ -510,6 +623,14 @@ export function createSimDriver() {
       arc.blocked = false;
       emit(createEvent(agentId, EVENT_KINDS.STATUS, { state: 'stopped' }));
       if ([...arcs.values()].every((entry) => entry.finished)) stopTicker();
+    },
+
+    async sessionHealth(sessionId) {
+      const workflow = workflowSessions.get(sessionId);
+      if (workflow) return { state: workflow.state, live: !workflow.finished };
+      const arc = arcs.get(agentBySession.get(sessionId));
+      if (!arc || arc.finished) return { state: 'stopped', live: false };
+      return { state: arc.blocked ? 'running' : 'running', live: true };
     },
 
     onEvent(handler) {

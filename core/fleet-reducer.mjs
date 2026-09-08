@@ -1,5 +1,5 @@
 import { EVENT_KINDS } from './events.mjs';
-import { ensureWorkers, patchWorker, WORKER_STATE } from './workers.mjs';
+import { ensureWorkers, patchWorker, updateWorker, WORKER_STATE } from './workers.mjs';
 import { isCurrentSessionEvent } from './session-lifecycle.mjs';
 
 export function applyFleetEvent(agents, event) {
@@ -27,14 +27,20 @@ export function applyFleetEvent(agents, event) {
     });
     if (event.kind === EVENT_KINDS.STATUS && event.payload.state) {
       const ended = [WORKER_STATE.IDLE, WORKER_STATE.STOPPED].includes(event.payload.state);
-      projected = patchWorker(projected, workerId, {
+      const transition = updateWorker(projected, workerId, {
         state: event.payload.state,
         sessionId: ended ? null : eventSessionId,
         resumeSessionId: ended ? eventSessionId ?? worker.resumeSessionId : null,
       });
+      // An engine event from an earlier lifecycle is late, not a new source of
+      // truth. Ignore it instead of forcing the worker backwards.
+      if (transition.error) return agents;
+      projected = transition.agent;
     }
     if (event.kind === EVENT_KINDS.BLOCKED) {
-      projected = patchWorker(projected, workerId, { state: WORKER_STATE.BLOCKED });
+      const transition = updateWorker(projected, workerId, { state: WORKER_STATE.BLOCKED });
+      if (transition.error) return agents;
+      projected = transition.agent;
       projected.blockedReason = event.payload.reason ?? null;
     }
     if (event.kind === EVENT_KINDS.DIFF) {

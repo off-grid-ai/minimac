@@ -1,7 +1,7 @@
 // The crew. Roles are data, not code - adding one is a row here, and the
 // engine behind any of them is switchable at any time from the floor.
 
-import { createWorker } from './workers.mjs';
+import { createWorker, hasLiveWorker } from './workers.mjs';
 
 export const ENGINES = Object.freeze({ CODEX: 'codex', CLAUDE: 'claude', SIM: 'sim' });
 
@@ -103,8 +103,6 @@ export function createAgent(spec) {
     // the count and must split the work into disjoint, verifiable slices.
     instances,
     color: spec.color ?? null,
-    sessionId: null,
-    sessionIds: [],
     workers: Array.from({ length: instances }, (_, index) => createWorker(spec.id, index)),
     status: 'idle', // idle | running | blocked | stopped
     blockedReason: null,
@@ -118,7 +116,7 @@ export function createAgent(spec) {
 // lifecycle stay separate inside the server; consumers get this one read-only
 // projection and never have to rebuild the rule themselves.
 export function isActive(agent) {
-  return agent?.enabled !== false && Boolean(agent?.sessionId);
+  return agent?.enabled !== false && hasLiveWorker(agent);
 }
 
 export function createRoster(specs = DEFAULT_ROSTER, overrides = {}) {

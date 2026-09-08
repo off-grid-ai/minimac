@@ -10,7 +10,7 @@ const stage = (name, owner) => ({
   estimateMs: 60_000,
 });
 
-test('publishing a plan exposes no partial state and saves parents with stages', () => {
+test('publishing and regrouping expose no partial state and save parents with stages', () => {
   let board = createBoard();
   let saved = null;
   const service = createWorkPlanningService({
@@ -20,7 +20,7 @@ test('publishing a plan exposes no partial state and saves parents with stages',
     saveWorkPlan: (next) => { saved = next; },
     workerLimitMs: 480_000,
   });
-  const result = service.publishInitialPlan([{
+  const result = service.publishWorkPlan([{
     id: 'w1', title: 'Ship outcome', outcome: 'outcome works', scope: 'core', blockedBy: [],
     stages: [stage('pw', 'pm'), stage('cw', 'coder'), stage('rw', 'reviewer')],
   }]);
@@ -32,17 +32,19 @@ test('publishing a plan exposes no partial state and saves parents with stages',
   assert.deepEqual(board.items.find((item) => item.id === 'release.prepush').blockedBy, ['w1.rw']);
   assert.equal(saved, board);
 
-  const published = board;
-  const duplicatePlan = service.publishInitialPlan([{
+  const regrouped = service.publishWorkPlan([{
     id: 'w2', title: 'Another', outcome: 'another', scope: 'core', blockedBy: [],
     stages: [stage('cw', 'coder')],
   }]);
-  assert.match(duplicatePlan.error, /already has a work plan/);
-  assert.equal(board, published);
+  assert.equal(regrouped.error, undefined);
+  assert.equal(regrouped.mode, 'regroup');
+  assert.deepEqual(board.workUnits.map((unit) => unit.id), ['w2']);
+  assert.equal(board.items.find((item) => item.id === 'w1.cw').disposition, 'cancelled');
+  assert.equal(saved, board);
 
   board = createBoard();
   const before = board;
-  const refused = service.publishInitialPlan([{
+  const refused = service.publishWorkPlan([{
     id: 'bad', title: 'Bad', outcome: 'bad', scope: 'core', blockedBy: [],
     stages: [stage('cw', 'ux')],
   }]);

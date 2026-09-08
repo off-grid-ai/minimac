@@ -1,6 +1,7 @@
 // Worker instances are the runtime source of truth. An Avenger is a seat and
 // role; each worker owns one engine conversation. The work board owns active
-// checkpoint leases. Seat fields are read-only compatibility projections.
+// checkpoint leases. A seat may project worker health, but never owns a
+// session handle or lifecycle state of its own.
 
 export const WORKER_STATE = Object.freeze({
   IDLE: 'idle',
@@ -14,13 +15,26 @@ export const WORKER_STATE = Object.freeze({
 });
 
 const TRANSITIONS = Object.freeze({
-  [WORKER_STATE.IDLE]: new Set([WORKER_STATE.STARTING, WORKER_STATE.STOPPED]),
-  [WORKER_STATE.STARTING]: new Set([WORKER_STATE.RUNNING, WORKER_STATE.FAILED, WORKER_STATE.STOPPING]),
-  [WORKER_STATE.RUNNING]: new Set([WORKER_STATE.BLOCKED, WORKER_STATE.STOPPING, WORKER_STATE.STALE, WORKER_STATE.FAILED]),
-  [WORKER_STATE.BLOCKED]: new Set([WORKER_STATE.RUNNING, WORKER_STATE.STOPPING, WORKER_STATE.STALE, WORKER_STATE.FAILED]),
-  [WORKER_STATE.STOPPING]: new Set([WORKER_STATE.STOPPED, WORKER_STATE.FAILED]),
-  [WORKER_STATE.STALE]: new Set([WORKER_STATE.STARTING, WORKER_STATE.STOPPED]),
-  [WORKER_STATE.FAILED]: new Set([WORKER_STATE.STARTING, WORKER_STATE.STOPPED]),
+  [WORKER_STATE.IDLE]: new Set([
+    WORKER_STATE.STARTING, WORKER_STATE.STALE, WORKER_STATE.STOPPED,
+  ]),
+  [WORKER_STATE.STARTING]: new Set([
+    WORKER_STATE.RUNNING, WORKER_STATE.IDLE, WORKER_STATE.STOPPING,
+    WORKER_STATE.STOPPED, WORKER_STATE.FAILED,
+  ]),
+  [WORKER_STATE.RUNNING]: new Set([
+    WORKER_STATE.IDLE, WORKER_STATE.BLOCKED, WORKER_STATE.STOPPING,
+    WORKER_STATE.STOPPED, WORKER_STATE.STALE, WORKER_STATE.FAILED,
+  ]),
+  [WORKER_STATE.BLOCKED]: new Set([
+    WORKER_STATE.IDLE, WORKER_STATE.RUNNING, WORKER_STATE.STOPPING,
+    WORKER_STATE.STOPPED, WORKER_STATE.STALE, WORKER_STATE.FAILED,
+  ]),
+  [WORKER_STATE.STOPPING]: new Set([
+    WORKER_STATE.IDLE, WORKER_STATE.STALE, WORKER_STATE.STOPPED, WORKER_STATE.FAILED,
+  ]),
+  [WORKER_STATE.STALE]: new Set([WORKER_STATE.STARTING, WORKER_STATE.IDLE, WORKER_STATE.STOPPED]),
+  [WORKER_STATE.FAILED]: new Set([WORKER_STATE.STARTING, WORKER_STATE.IDLE, WORKER_STATE.STOPPED]),
   [WORKER_STATE.STOPPED]: new Set([WORKER_STATE.STARTING, WORKER_STATE.IDLE]),
 });
 
@@ -88,30 +102,57 @@ export function ensureWorkers(agent) {
 }
 
 export function projectWorkers(agent, workers = ensureWorkers(agent)) {
-  const live = workers.filter((worker) => Boolean(worker.sessionId));
   const priority = [
     WORKER_STATE.FAILED, WORKER_STATE.STALE, WORKER_STATE.BLOCKED,
     WORKER_STATE.STOPPING, WORKER_STATE.STARTING, WORKER_STATE.RUNNING,
   ];
   const activeState = priority.find((state) => workers.some((worker) => worker.state === state));
   const status = activeState
-    ?? (live.length > 0 ? WORKER_STATE.RUNNING
-      : agent.enabled === false
-        ? WORKER_STATE.STOPPED
-        : WORKER_STATE.IDLE);
+    ?? (agent.enabled === false || workers.every((worker) => worker.state === WORKER_STATE.STOPPED)
+      ? WORKER_STATE.STOPPED
+      : WORKER_STATE.IDLE);
   return {
     ...agent,
     workers,
-    sessionId: live[0]?.sessionId ?? null,
-    sessionIds: live.map((worker) => worker.sessionId),
-    resumeSessionId: workers.find((worker) => worker.resumeSessionId)?.resumeSessionId ?? null,
     status,
   };
 }
 
-export function patchWorker(agent, id, changes) {
-  const workers = ensureWorkers(agent).map((worker) =>
-    worker.id === id ? { ...worker, ...changes } : worker);
+export function updateWorker(agent, id, changes, now = Date.now()) {
+  let error = null;
+  let found = false;
+  const workers = ensureWorkers(agent).map((worker) => {
+    if (worker.id !== id) return worker;
+    found = true;
+    if (changes.state === undefined) return { ...worker, ...changes };
+    const { state, ...fields } = changes;
+    const result = transitionWorker(worker, state, fields, now);
+    error = result.error ?? null;
+    return result.worker;
+  });
+  if (!found) error = `unknown worker ${id}`;
+  return { agent: projectWorkers(agent, workers), error };
+}
+
+export function patchWorker(agent, id, changes, now = Date.now()) {
+  const result = updateWorker(agent, id, changes, now);
+  if (result.error) throw new Error(result.error);
+  return result.agent;
+}
+
+export function liveWorkers(agent) {
+  return ensureWorkers(agent).filter((worker) => Boolean(worker.sessionId));
+}
+
+export function primarySessionId(agent) {
+  return liveWorkers(agent)[0]?.sessionId ?? null;
+}
+
+export function hasLiveWorker(agent) {
+  return liveWorkers(agent).length > 0;
+}
+
+export function replaceWorkers(agent, workers) {
   return projectWorkers(agent, workers);
 }
 
@@ -126,7 +167,14 @@ export function workerForCheckpoint(agent, checkpointId) {
 
 export function freeWorkers(agent) {
   const capacity = Math.max(1, Number(agent?.instances) || 1);
-  return ensureWorkers(agent).slice(0, capacity).filter((worker) => !worker.sessionId);
+  const available = new Set([
+    WORKER_STATE.IDLE,
+    WORKER_STATE.STALE,
+    WORKER_STATE.FAILED,
+    WORKER_STATE.STOPPED,
+  ]);
+  return ensureWorkers(agent).slice(0, capacity)
+    .filter((worker) => !worker.sessionId && available.has(worker.state));
 }
 
 export function hydrateWorker(row) {

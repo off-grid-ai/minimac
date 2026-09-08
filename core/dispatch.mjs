@@ -55,12 +55,30 @@ const ROLE_PROMPTS = Object.freeze({
 export function buildOutputSchema() {
   return {
     type: 'object',
-    required: ['claims', 'gates'],
+    required: ['claims', 'gates', 'discoveries'],
     properties: {
       gates: {
         type: 'array',
         description: 'Changes to shared checkpoints. This is the only writable gate state.',
         items: buildCheckpointUpdateSchema(),
+      },
+      discoveries: {
+        type: 'array',
+        description: 'New failures found by testing, audit, or review. MINIMAC creates owned correction work for them.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['id', 'checkpointId', 'title', 'outcome', 'receipt', 'files'],
+          properties: {
+            id: { type: 'string', description: 'Stable failure id from the tool or a short stable slug.' },
+            checkpointId: { type: 'string', description: 'The verification checkpoint that found the failure.' },
+            title: { type: 'string' },
+            outcome: { type: 'string' },
+            scope: { type: 'string' },
+            receipt: { type: 'string', description: 'The failing command and observed result.' },
+            files: { type: 'array', items: { type: 'string' } },
+          },
+        },
       },
       escalate: {
         type: 'object',
@@ -130,6 +148,7 @@ export function reportInstruction(role = null) {
     '```' + REPORT_FENCE,
     '{',
     '  "claims": [],',
+    '  "discoveries": [],',
     '  "gates": [',
     '    {"item": "w1", "gate": "test", "state": "pass|fail|running",',
     '     "receipt": "the exact command that proved it"}',
@@ -148,9 +167,8 @@ export function reportInstruction(role = null) {
     '- The top-level gates list is the ONLY mission progress state.',
     '- Work only on items you own. If something needs doing on an item you do not '
       + 'own, escalate - never reach into it.',
-    '- If you discover new work that the mission cannot finish without, escalate it to Thor. '
-      + 'Thor uses create_checkpoint and starts an owner. Assembly is not the only time '
-      + 'checkpoints can be created.',
+    '- Put every new failure from testing, audit, or review in discoveries. Use one entry per failure. '
+      + 'MINIMAC creates owned coding work and schedules the failed checkpoint again after the fix.',
     '- standDown is OPTIONAL and ends your own session. Use it the moment your '
       + 'goal is met, or when you have nothing real left to do on this mission. '
       + 'Sitting idle in a chair costs tokens and fills the floor with noise; '

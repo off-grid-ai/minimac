@@ -28,7 +28,12 @@ export function createRuntimeSupervisor({
       for (const item of recovery) {
         const workerId = item.lease?.workerId;
         if (!workerId || knownWorkers.has(workerId)) continue;
-        await markStale(item.lease.agentId ?? item.owner, workerId, 'worker session no longer exists');
+        await markStale(
+          item.lease.agentId ?? item.owner,
+          workerId,
+          'worker session no longer exists',
+          WORKER_STATE.STALE,
+        );
         stale.push(workerId);
       }
       for (const worker of workers) {
@@ -38,8 +43,16 @@ export function createRuntimeSupervisor({
           now: now(),
           staleAfterMs,
         });
-        if (health.state !== WORKER_STATE.STALE && !candidates.has(worker.id)) continue;
-        await markStale(worker.agentId, worker.id, health.reason ?? 'engine session is stale');
+        const terminal = [WORKER_STATE.STALE, WORKER_STATE.FAILED, WORKER_STATE.STOPPED]
+          .includes(health.state);
+        const changed = health.state !== worker.state;
+        if ((!terminal || !changed) && !candidates.has(worker.id)) continue;
+        await markStale(
+          worker.agentId,
+          worker.id,
+          health.reason ?? 'engine session is stale',
+          health.state,
+        );
         stale.push(worker.id);
       }
       if (stale.length > 0) await recover();

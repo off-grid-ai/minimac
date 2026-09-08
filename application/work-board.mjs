@@ -7,7 +7,7 @@ import {
 import { createEvent, EVENT_KINDS } from '../core/events.mjs';
 import { ROLES } from '../core/roster.mjs';
 import { ORDER_ACTION } from '../core/coordination.mjs';
-import { splitCheckpoint } from '../core/work-units.mjs';
+import { createRemediationWork, splitCheckpoint } from '../core/work-units.mjs';
 
 // Application boundary for checkpoint writes. The HTTP server wires
 // storage and delivery into this service; it does not own these use cases.
@@ -16,12 +16,16 @@ export function createWorkBoard({
   setBoard,
   getAgents,
   saveItem,
+  saveBoard = null,
+  activateOwner = () => {},
   emit,
   order,
   onChange = () => {},
+  missionComplete = () => false,
   workerLimitMs,
 }) {
   function add(spec, by) {
+    if (missionComplete()) return { board: getBoard(), error: 'mission is complete' };
     if (!spec?.title) return { error: 'an item needs a title' };
     for (const field of ['plan', 'outcome', 'verify']) {
       if (!String(spec[field] ?? '').trim()) return { error: `an item needs ${field}` };
@@ -78,6 +82,7 @@ export function createWorkBoard({
         && entry.receipt === String(move.receipt ?? '').trim()
         && entry.by === (workerId ?? agentId));
     if (repeated) return { board: current, item: target, duplicate: true };
+    if (missionComplete()) return { board: current, item: target, error: 'mission is complete' };
     if (workerId && (
       target?.lease?.state !== 'running'
       || target.lease.workerId !== workerId
@@ -123,6 +128,7 @@ export function createWorkBoard({
   }
 
   function requestSplit(agentId, id, parts, workerId = null) {
+    if (missionComplete()) return { board: getBoard(), error: 'mission is complete' };
     const item = findItem(getBoard(), id);
     if (!item) return { board: getBoard(), error: `no item ${id}` };
     if (item.owner !== agentId && getAgents()[agentId]?.role !== ROLES.ORCHESTRATOR) {
@@ -149,5 +155,26 @@ export function createWorkBoard({
     return result;
   }
 
-  return Object.freeze({ add, updateCheckpoint, requestSplit });
+  function addRemediation(sourceId, findings = []) {
+    if (missionComplete()) return { board: getBoard(), error: 'mission is complete' };
+    const result = createRemediationWork(getBoard(), sourceId, findings, getAgents());
+    if (result.error) return result;
+    setBoard(result.board);
+    if (saveBoard) saveBoard(result.board);
+    else for (const item of result.board.items) saveItem(item);
+    for (const item of result.created) {
+      activateOwner(item.owner);
+      emit(createEvent('minimac', EVENT_KINDS.STATUS, {
+        text: `${item.id}: remediation assigned to ${getAgents()[item.owner]?.label ?? item.owner}`,
+        from: 'you',
+        checkpointId: item.id,
+        workUnitId: item.workUnitId,
+      }));
+      order(item.owner, `${item.id}: ${item.title}`, ORDER_ACTION.ASSIGN, item.id);
+    }
+    onChange();
+    return result;
+  }
+
+  return Object.freeze({ add, updateCheckpoint, requestSplit, addRemediation });
 }

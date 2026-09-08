@@ -119,24 +119,7 @@ export function createStore({ file }) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
-  // Old builds copied checkpoint lease times into worker sessions. The work
-  // board is now the only lease owner, so remove those duplicate columns when
-  // an existing database opens.
-  const workerSessionColumns = new Set(
-    db.prepare('PRAGMA table_info(worker_sessions)').all().map((column) => column.name),
-  );
-  for (const column of ['lease_started_at', 'lease_expires_at']) {
-    if (workerSessionColumns.has(column)) {
-      db.exec(`ALTER TABLE worker_sessions DROP COLUMN ${column}`);
-    }
-  }
-  // Old builds could assign one conversation to several worker rows. Keep the
-  // newest owner, then make that ownership rule permanent in SQLite.
   db.exec(`
-    DELETE FROM worker_sessions
-    WHERE rowid NOT IN (
-      SELECT MAX(rowid) FROM worker_sessions GROUP BY run_id, session_id
-    );
     CREATE UNIQUE INDEX IF NOT EXISTS worker_sessions_run_session
       ON worker_sessions(run_id, session_id);
   `);

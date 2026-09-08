@@ -181,9 +181,78 @@ export function workUnitState(board, workUnit) {
   return WORK_UNIT_STATE.PENDING;
 }
 
-export function releaseReady(board) {
-  const release = (board.items ?? []).find((item) => item.id === 'release.push');
-  return Boolean(release && isDone(release));
+function findingKey(value) {
+  return String(value ?? 'failure')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 32) || 'failure';
+}
+
+// A failed verification stage creates coding work. The failed checkpoint
+// stays authoritative and runs again only after each correction passes.
+export function createRemediationWork(board, sourceId, findings, agents, now = Date.now()) {
+  const source = findItem(board, sourceId);
+  if (!source) return { board, error: `no item ${sourceId}` };
+  if (!['tw', 'aw', 'rw'].includes(source.stage) && source.id !== 'release.prepush') {
+    return { board, error: `${sourceId} is not a verification checkpoint` };
+  }
+  const coder = Object.values(agents).find(
+    (agent) => agent.role === ROLES.CODER && agent.enabled !== false,
+  ) ?? Object.values(agents).find((agent) => agent.role === ROLES.CODER);
+  if (!coder) return { board, error: 'no coder can own remediation work' };
+
+  const entries = Array.isArray(findings) && findings.length
+    ? findings
+    : [{ id: 'reported-failure', title: source.title, receipt: '' }];
+  const workUnits = [...(board.workUnits ?? [])];
+  const items = [...(board.items ?? [])];
+  const created = [];
+  const correctionIds = [];
+
+  for (const [index, finding] of entries.entries()) {
+    const unitId = `${source.workUnitId ?? source.id}.repair-${findingKey(finding.id ?? index + 1)}`
+      + `-a${Math.max(1, Number(source.attempt) || 1)}`;
+    const checkpointId = stageCheckpointId(unitId, 'cw');
+    correctionIds.push(checkpointId);
+    if (workUnits.some((unit) => unit.id === unitId)) continue;
+    const title = String(finding.title ?? `Fix failure found by ${source.id}`).trim();
+    const outcome = String(
+      finding.outcome ?? `The failure found by ${source.id} is fixed and ready to verify again.`,
+    ).trim();
+    workUnits.push(createWorkUnit({
+      id: unitId,
+      title,
+      outcome,
+      scope: finding.scope ?? source.scope,
+      blockedBy: [],
+      stages: [{ stage: 'cw', required: true }],
+    }, now + index));
+    const checkpoint = createItem({
+      id: checkpointId,
+      workUnitId: unitId,
+      stage: 'cw',
+      title: `${title} · CW`,
+      plan: `Fix the verified failure. Use this evidence: ${finding.receipt || 'the failed checkpoint receipt'}`,
+      outcome,
+      verify: `Run the focused proof, then return ${source.id} to ${source.owner} for verification.`,
+      scope: finding.scope ?? source.scope,
+      files: finding.files ?? source.files ?? [],
+      owner: coder.id,
+      needs: STAGE_GATES.cw,
+      blockedBy: source.blockedBy ?? [],
+      estimateMs: Math.min(480_000, source.estimateMs ?? 480_000),
+    }, now + index);
+    checkpoint.remediationFor = source.id;
+    checkpoint.findingId = finding.id ?? `finding-${index + 1}`;
+    items.push(checkpoint);
+    created.push(checkpoint);
+  }
+
+  const nextItems = items.map((item) => item.id === source.id
+    ? { ...item, blockedBy: [...new Set([...(item.blockedBy ?? []), ...correctionIds])] }
+    : item);
+  return { board: { ...board, workUnits, items: nextItems }, sourceId, created };
 }
 
 export function splitCheckpoint(board, id, parts, now = Date.now()) {

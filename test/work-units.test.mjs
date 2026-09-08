@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import {
   expandWorkUnit,
   createReleaseCheckpoints,
-  releaseReady,
   stageCheckpointId,
   validateWorkPlan,
 } from '../core/work-units.mjs';
 import { advance, createBoard, createItem } from '../core/board.mjs';
+import { createAcceptancePolicy, missionIsComplete } from '../core/acceptance.mjs';
 import { DEFAULT_ROSTER, createRoster } from '../core/roster.mjs';
 
 const agents = createRoster(DEFAULT_ROSTER);
@@ -64,9 +64,11 @@ test('release waits for every final stage receipt', () => {
   const board = createBoard();
   board.workUnits = [{ id: 'w1', stages: ['cw', 'rw'] }];
   board.items = createReleaseCheckpoints(board.workUnits, agents).map((spec) => createItem(spec));
-  assert.equal(releaseReady(board), false);
+  const policy = createAcceptancePolicy({ required: ['prepush', 'push'] });
+  assert.equal(missionIsComplete(policy, board), false);
+  board.items.find((item) => item.id === 'release.prepush').gates.prepush = 'pass';
   board.items.find((item) => item.id === 'release.push').gates.push = 'pass';
-  assert.equal(releaseReady(board), true);
+  assert.equal(missionIsComplete(policy, board), true);
 });
 
 test('the same checkpoint receipt is idempotent', () => {
