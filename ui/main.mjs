@@ -1984,11 +1984,11 @@ function mountFeed() {
   talk.className = 'feed-chat';
   feedChatHost = talk;
   feedChat = mountPanelComposer(talk, {
-    getTarget: () => state.feedFilter ?? orchestratorId(),
+    getTarget: () => orchestratorId(),
     dispatch: ({ text, attachments }) => send(
       state.feedReplyTo ? 'replyConversation' : 'postConversation', {
         context: { kind: CONTEXT_KIND.MISSION, id: String(state.runId) },
-        text, attachments, recipients: state.feedFilter ? [state.feedFilter] : [],
+        text, attachments, recipients: [],
         replyToMessageId: state.feedReplyTo,
       },
     ).then((result) => {
