@@ -34,7 +34,7 @@ test('a hero mention becomes a recipient and wakes that hero', async () => {
   assert.equal(deliveries[0].options.wake, true);
 
   service.acceptAgentOutput(createEvent('minimac', EVENT_KINDS.ENGINE_OUTPUT, {
-    text: 'I am awake.', final: true,
+    text: 'I am awake.', final: true, replyToMessageId: message.id,
   }, 100), { kind: 'mission', id: '110' });
   assert.equal(
     conversationOf(events).delivery[`${message.id}:minimac`].state,
@@ -62,7 +62,7 @@ test('an explicit recipient and a mentioned hero are both kept once', async () =
   assert.deepEqual(message.recipients, ['coder', 'minimac']);
 });
 
-test('a stopped recipient no longer appears delivered', () => {
+test('a normal recipient stop preserves delivered state', () => {
   const delivery = createDelivery({
     id: 'delivery-1', authorId: 'you', messageId: 'message-1',
     recipientId: 'coder', state: DELIVERY_STATE.DELIVERED, createdAt: 10,
@@ -72,6 +72,6 @@ test('a stopped recipient no longer appears delivered', () => {
   }, 20);
   assert.equal(
     conversationOf([delivery, stopped]).delivery['message-1:coder'].state,
-    DELIVERY_STATE.STALE,
+    DELIVERY_STATE.DELIVERED,
   );
 });
