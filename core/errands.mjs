@@ -5,7 +5,7 @@
 // cross the floor at once is a screensaver, not information. Waiting orders
 // queue, and the room works through them in the order they were given.
 //
-// An errand is three things: who walks, where to, and what they say.
+// An errand is one event: who walks, where to, and what they say.
 //
 // Pure. It is handed a clock and returns the next state; it never reads one,
 // never touches the DOM, and never knows what a three.js scene is.
@@ -34,15 +34,16 @@ export function createQueue() {
 // and a message with nothing in it has nothing to say.
 export function canWalk(errand) {
   return Boolean(
-    errand?.heroId && errand?.toId && errand.heroId !== errand.toId && errand.message?.trim(),
+    errand?.eventId && errand?.heroId && errand?.toId
+      && errand.heroId !== errand.toId && errand.message?.trim(),
   );
 }
 
 export function enqueue(queue, errand, now = Date.now()) {
   if (!canWalk(errand)) return queue;
-  // The same order twice in a row is one order. Engines re-send a goal on
-  // every plan update, and the room must not re-enact it each time.
-  const key = `${errand.heroId}->${errand.toId}:${errand.message.trim()}`;
+  // One durable event produces one walk, even when live delivery repeats it.
+  // A later event with the same words remains a different walk.
+  const key = String(errand.eventId);
   if (queue.seen.includes(key)) return queue;
 
   const item = { ...errand, key, queuedAt: now };

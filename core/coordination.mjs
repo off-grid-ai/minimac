@@ -61,22 +61,40 @@ export function isCrosstalkEvent(event) {
 export function crosstalkDelivery(event) {
   const payload = event?.payload ?? {};
   if (event?.kind === EVENT_KINDS.ORDER) {
-    return delivery(event.agentId, payload.toAgentId, payload.text);
+    return delivery(event.kind, payload.key, event.agentId, payload.toAgentId, payload.text);
   }
   if (event?.kind === EVENT_KINDS.ESCALATION && payload.state === ESCALATION_STATE.OPEN) {
-    return delivery(payload.fromAgentId ?? event.agentId, payload.toAgentId, payload.why);
+    return delivery(
+      event.kind,
+      payload.id,
+      payload.fromAgentId ?? event.agentId,
+      payload.toAgentId,
+      payload.why,
+    );
   }
   if (event?.kind === EVENT_KINDS.CONVERSATION_MESSAGE && payload.message?.recipients?.length) {
-    return delivery(event.agentId, payload.message.recipients[0], payload.message.body);
+    return delivery(
+      event.kind,
+      payload.message.id,
+      event.agentId,
+      payload.message.recipients[0],
+      payload.message.body,
+    );
   }
   return null;
 }
 
-function delivery(fromAgentId, toAgentId, message) {
-  if (!fromAgentId || !toAgentId || fromAgentId === toAgentId || !String(message ?? '').trim()) {
+function delivery(kind, identity, fromAgentId, toAgentId, message) {
+  if (!kind || !identity || !fromAgentId || !toAgentId
+    || fromAgentId === toAgentId || !String(message ?? '').trim()) {
     return null;
   }
-  return { fromAgentId, toAgentId, message: String(message).trim() };
+  return {
+    eventId: `${kind}:${identity}`,
+    fromAgentId,
+    toAgentId,
+    message: String(message).trim(),
+  };
 }
 
 export function isBoardActivityEvent(event) {

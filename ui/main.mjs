@@ -285,6 +285,7 @@ function noticeErrand(event) {
   const delivery = crosstalkDelivery(event);
   if (!delivery) return;
   state.errands = enqueueErrand(state.errands, {
+    eventId: delivery.eventId,
     heroId: delivery.fromAgentId,
     toId: delivery.toAgentId,
     message: delivery.message,
