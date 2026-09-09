@@ -160,6 +160,9 @@ export function createStore({ file }) {
   const selectWorkerSessions = db.prepare(
     'SELECT * FROM worker_sessions WHERE run_id = ? ORDER BY agent_id, worker_id',
   );
+  const deleteWorkerSession = db.prepare(
+    'DELETE FROM worker_sessions WHERE run_id = ? AND worker_id = ?',
+  );
   const selectEngines = db.prepare('SELECT agent_id, engine FROM engines WHERE run_id = ?');
   const upsertHandoff = db.prepare(
     `INSERT INTO engine_handoffs
@@ -325,6 +328,10 @@ export function createStore({ file }) {
         worker.startedAt ?? now,
         now,
       );
+    },
+
+    clearWorkerSession(workerId) {
+      if (runId !== null && workerId) deleteWorkerSession.run(runId, workerId);
     },
 
     // Middleware overrides outlive a run: they are how this fleet is told to

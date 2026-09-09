@@ -2313,6 +2313,20 @@ const COMMANDS = {
       state.board = resumed.board;
       item = resumed.item;
       store.saveItem(item);
+      // An explicit retry is a new attempt. Reusing the conversation that
+      // produced the failure lets stale model memory overrule the current
+      // checkpoint even though the durable mission history is already in the
+      // new prompt.
+      const previousWorker = workerForCheckpoint(state.agents[item.owner], id);
+      if (previousWorker && !previousWorker.sessionId) {
+        const fresh = patchWorker(state.agents[item.owner], previousWorker.id, {
+          resumeSessionId: null,
+          checkpointId: null,
+          state: WORKER_STATE.IDLE,
+        });
+        state.agents = patchAgent(state.agents, item.owner, fresh);
+        store.clearWorkerSession(previousWorker.id);
+      }
     }
     state.agents = patchAgent(state.agents, item.owner, { enabled: true });
     return COMMANDS.start({ agentId: item.owner, checkpointIds: [id] });
