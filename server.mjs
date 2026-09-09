@@ -486,10 +486,8 @@ async function harvestWorkPlan(event) {
 
     const enabled = copies > 0;
     const instances = Math.max(1, copies);
-    const changed = isActive(agent) !== enabled || agent.instances !== instances;
-    if (agent.instances !== instances) {
-      state.agents = patchAgent(state.agents, agentId, { instances });
-    }
+    const changed = agent.enabled !== enabled || agent.instances !== instances;
+    if (changed) state.agents = patchAgent(state.agents, agentId, { enabled, instances });
     if (changed) {
       crew.push(enabled
         ? `+${agent.label ?? agentId}${instances > 1 ? ` x${instances}` : ''}`
@@ -1819,11 +1817,15 @@ const COMMANDS = {
   },
 
   async postConversation({ context, text = '', attachments = [], recipients = [], from = 'you' }) {
-    return writeConversation({ context, text, attachments, recipients, from });
+    return writeConversation({
+      context, text, attachments, recipients, from, wake: from === 'you',
+    });
   },
 
   async replyConversation({ context, text = '', attachments = [], replyToMessageId, recipients = [], from = 'you' }) {
-    return writeConversation({ context, text, attachments, replyToMessageId, recipients, from });
+    return writeConversation({
+      context, text, attachments, replyToMessageId, recipients, from, wake: from === 'you',
+    });
   },
 
   async reactConversation({ context, messageId, reaction, from = 'you' }) {
@@ -2220,10 +2222,12 @@ runtimeSupervisor = createRuntimeSupervisor({
   inspect: (worker) => getDriver(worker.engine).sessionHealth?.(worker.sessionId, options.repo),
 });
 const runtimeSupervisorTimer = setInterval(() => {
-  void runtimeSupervisor.reconcileWorkers().catch((error) => ingest(createBlockedEvent('minimac', {
-    category: BLOCKED_REASONS.ERROR,
-    reason: `worker recovery failed: ${error.message}`,
-  })));
+  void runtimeSupervisor.reconcileWorkers()
+    .then(() => scheduleReadyWork())
+    .catch((error) => ingest(createBlockedEvent('minimac', {
+      category: BLOCKED_REASONS.ERROR,
+      reason: `worker recovery failed: ${error.message}`,
+    })));
 }, 15_000);
 runtimeSupervisorTimer.unref?.();
 

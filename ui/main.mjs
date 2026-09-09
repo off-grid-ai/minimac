@@ -638,6 +638,8 @@ function renderPanels() {
   }
   if (dom.queueCount) dom.queueCount.textContent = String(queue.length);
   const runningCheckpoints = board.filter((item) => item.lease?.state === 'running').length;
+  const openCheckpoints = board.filter((item) => item.closedAt == null
+    && item.disposition !== 'cancelled' && item.disposition !== 'replaced').length;
   const completedFlows = flows.filter((flow) => flow.status === 'verified').length;
   const flowPercent = flows.length
     ? Math.round((completedFlows / flows.length) * 100)
@@ -647,7 +649,7 @@ function renderPanels() {
     : 0;
   windows?.setMissionContext?.({ id: state.selectedRunId, title: state.selectedMission });
   windows?.setCount?.('flows', `${flowPercent}%`);
-  windows?.setCount?.('checkpoints', String(runningCheckpoints));
+  windows?.setCount?.('checkpoints', `${runningCheckpoints} RUN · ${openCheckpoints} OPEN`);
   windows?.setCount?.('crew', String(activeAvengers));
   windows?.setCount?.('decisions', queue.length);
   composer?.setTarget(state.target, agents, state.mission ?? '');
