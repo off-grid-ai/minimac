@@ -1561,6 +1561,9 @@ const COMMANDS = {
   async continueRun({ runId, note }) {
     const previous = store.getRun(Number(runId));
     if (!previous) throw new Error(`no run ${runId}`);
+    if (previous.repo !== options.repo) {
+      throw new Error(`run ${runId} belongs to ${previous.repo}; restart MINIMAC for that repository`);
+    }
     const savedItems = store.itemsFor(Number(runId));
     const savedGoals = store.goalsFor(Number(runId));
     const savedAcceptance = store.acceptanceFor(Number(runId)) ?? createAcceptancePolicy();
@@ -1576,23 +1579,26 @@ const COMMANDS = {
     // right answer.
     const savedWorkers = store.workerSessionsFor(Number(runId));
 
-    // Continuing opens a NEW run record carrying the old mission, so the fleet
-    // has one current run and the history stays honest about what happened when.
+    // Continue preserves the selected run identity. RUN AGAIN is the only
+    // command that creates a new run.
     store.finishRun();
-    state.events = [];
     state.mission = previous.mission;
-    store.startRun(state.mission, options.repo);
+    store.reopenRun(Number(runId));
+    state.events = store.replayRun(Number(runId));
     state.acceptance = savedAcceptance;
     state.completedAt = null;
     store.saveMissionState({ acceptance: state.acceptance, completedAt: null });
-    for (const agent of Object.values(state.agents)) store.saveEngine(agent.id, agent.engine);
 
-    // The new run record continues the old work. Copy the checkpoints into the
-    // new run before any worker starts, so the UI and every agent receive the
-    // same queue instead of an empty one.
+    // Restore the selected run as one complete state, not as a copy of the
+    // current floor with old checkpoints attached.
+    state.agents = forceEngine(createRoster(DEFAULT_ROSTER, options.rosterOverrides), options.engine);
+    for (const row of store.enginesFor(Number(runId))) {
+      state.agents = assignEngine(state.agents, row.agent_id, row.engine);
+    }
+    for (const agent of Object.values(state.agents)) applySavedRuntime(agent.id);
+    for (const event of state.events) state.agents = applyFleetEvent(state.agents, event);
     state.board = savedBoard;
-    store.saveWorkPlan(state.board);
-
+    state.goals = deriveGoals({}, state.agents, state.mission);
     for (const row of savedGoals) {
       if (row.objective) {
         state.goals = setGoal(state.goals, row.agent_id, row.objective, row.token_budget, 'active', 'manual');

@@ -126,6 +126,7 @@ export function createStore({ file }) {
 
   const insertRun = db.prepare('INSERT INTO runs (started_at, mission, repo) VALUES (?, ?, ?)');
   const endRun = db.prepare('UPDATE runs SET ended_at = ? WHERE id = ?');
+  const reopenRunRow = db.prepare('UPDATE runs SET ended_at = NULL WHERE id = ?');
   const setRunMission = db.prepare('UPDATE runs SET mission = ? WHERE id = ?');
   const insertEvent = db.prepare(
     'INSERT INTO events (run_id, agent_id, ts, kind, payload) VALUES (?, ?, ?, ?, ?)',
@@ -255,6 +256,17 @@ export function createStore({ file }) {
       if (runId === null) return;
       endRun.run(Date.now(), runId);
       runId = null;
+    },
+
+    reopenRun(targetRunId) {
+      const selected = Number(targetRunId);
+      if (!Number.isSafeInteger(selected) || selected <= 0) {
+        throw new Error(`invalid run ${targetRunId}`);
+      }
+      const result = reopenRunRow.run(selected);
+      if (result.changes !== 1) throw new Error(`no run ${selected}`);
+      runId = selected;
+      return runId;
     },
 
     // A run is titled by its mission. The mission is usually set after the run
