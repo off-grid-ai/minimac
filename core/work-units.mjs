@@ -3,6 +3,15 @@ import { ROLES } from './roster.mjs';
 
 export const STAGE_ORDER = Object.freeze(['pw', 'dw', 'cw', 'tw', 'aw', 'rw']);
 
+export const STAGE_LABEL = Object.freeze({
+  pw: 'Product',
+  dw: 'Design',
+  cw: 'Coding',
+  tw: 'Testing',
+  aw: 'Audit',
+  rw: 'Review',
+});
+
 export const STAGE_ROLE = Object.freeze({
   pw: ROLES.PRODUCT,
   dw: ROLES.UX,
@@ -31,6 +40,19 @@ export const WORK_UNIT_STATE = Object.freeze({
 
 export function stageCheckpointId(workUnitId, stage) {
   return `${workUnitId}.${stage}`;
+}
+
+export function stageLabel(stage) {
+  return STAGE_LABEL[stage] ?? String(stage ?? '').toUpperCase();
+}
+
+export function checkpointDisplayTitle(checkpoint) {
+  const title = String(checkpoint?.title ?? checkpoint?.outcome ?? '').trim();
+  const code = String(checkpoint?.stage ?? '').toUpperCase();
+  const label = stageLabel(checkpoint?.stage);
+  const suffix = [code, label].filter(Boolean).join('|');
+  const base = suffix ? title.replace(new RegExp(`\\s*·\\s*(?:${suffix})$`, 'i'), '') : title;
+  return label ? `${base} · ${label}` : base;
 }
 
 export function createWorkUnit(spec, now = Date.now()) {
@@ -104,7 +126,7 @@ export function expandWorkUnit(spec, workUnits, now = Date.now()) {
     id: stageCheckpointId(spec.id, stage.stage),
     workUnitId: spec.id,
     stage: stage.stage,
-    title: `${spec.title} · ${stage.stage.toUpperCase()}`,
+    title: `${spec.title} · ${stageLabel(stage.stage)}`,
     plan: String(stage.plan).trim(),
     outcome: spec.outcome,
     verify: String(stage.verify).trim(),

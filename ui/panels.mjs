@@ -13,6 +13,7 @@
 import { burnRatio } from '../core/derive.mjs';
 import { GATES, rollup, remaining } from '../core/flows.mjs';
 import { compareQueueOrder, nextGate, isClosed, isDone, unmetDeps } from '../core/board.mjs';
+import { checkpointDisplayTitle, stageLabel } from '../core/work-units.mjs';
 import { createControlButton, createDisclosure, createRelativeTime } from './controls.mjs';
 
 // The status ladder is ordered, so a checkpoint's position on it is a number.
@@ -316,7 +317,7 @@ function checkpointRow(item, all, agents, running, handlers, movement) {
   const owner = agents.find((agent) => agent.id === item.owner);
   const ownerBusy = (owner?.workers ?? []).some((worker) =>
     worker.sessionId && worker.checkpointId !== item.id);
-  const heading = item.title || item.outcome;
+  const heading = checkpointDisplayTitle(item);
   const description = item.outcome && item.outcome !== heading ? item.outcome : item.plan;
   const line = el('div', 'checkpoint-line');
   const title = el('button', 'checkpoint-title');
@@ -635,10 +636,12 @@ function flowRow(step, handlers) {
   for (const checkpoint of step.checkpoints ?? []) {
     const button = el('button', `flow-checkpoint is-${checkpoint.status}`);
     button.type = 'button';
-    button.title = `Open ${checkpoint.id}`;
-    button.setAttribute('aria-label', `Open checkpoint ${checkpoint.id}`);
+    const label = stageLabel(checkpoint.stage);
+    button.title = `Open ${checkpoint.id} · ${label}`;
+    button.setAttribute('aria-label', `Open checkpoint ${checkpoint.id}, ${label}`);
     button.append(
       el('span', 'flow-checkpoint-stage', checkpoint.displayId ?? String(checkpoint.stage ?? '').toUpperCase()),
+      el('span', 'flow-checkpoint-label', label),
       el('span', 'flow-checkpoint-owner', checkpoint.owner ?? 'unassigned'),
     );
     button.onclick = () => handlers.openCheckpoint?.(checkpoint.id);

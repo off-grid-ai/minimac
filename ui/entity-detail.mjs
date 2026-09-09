@@ -1,5 +1,6 @@
 import { createControlButton } from './controls.mjs';
 import { renderThread } from './conversation.mjs';
+import { checkpointDisplayTitle, stageLabel } from '../core/work-units.mjs';
 
 export function renderEntityDetail({
   kind, source, agents = {}, events = [], onOpen, onReply, onReact, onCapacity,
@@ -73,7 +74,7 @@ function checkpointDetail(checkpoint, onOpen) {
   const trailing = el('div', 'connected-context-trailing');
   trailing.append(status(checkpoint.status?.state ?? 'pending'), text('span', owner));
   const metadata = metrics([
-    ['STAGE', checkpoint.stage ?? '—'],
+    ['STAGE', checkpoint.stage ? stageLabel(checkpoint.stage) : '—'],
     ['WORK UNIT', checkpoint.workUnitId ?? '—'],
     ['DEPENDS', checkpoint.dependencies?.length ?? 0],
   ]);
@@ -89,8 +90,8 @@ function checkpointDetail(checkpoint, onOpen) {
     })));
   }
   return {
-    title: `${checkpoint.id} · ${checkpoint.title ?? checkpoint.outcome ?? ''}`,
-    subtitle: checkpoint.stage ?? '',
+    title: `${checkpoint.id} · ${checkpointDisplayTitle(checkpoint)}`,
+    subtitle: checkpoint.stage ? `${stageLabel(checkpoint.stage)} · ${checkpoint.stage.toUpperCase()}` : '',
     trailing,
     sections,
   };
