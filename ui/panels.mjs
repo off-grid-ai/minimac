@@ -1167,10 +1167,11 @@ function runRow(run, live, handlers, selected = false) {
   // A long mission must never push the controls off the row: the text gives
   // way, the buttons do not.
   head.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0';
-  const mission = el('div', 'run-mission', run.mission || 'untitled run');
+  const missionName = run.mission || 'untitled run';
+  const mission = el('div', 'run-mission', `#${run.id} ${missionName}`);
   mission.style.cssText =
     'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-  mission.title = run.mission || 'untitled run';
+  mission.title = `Run ${run.id}: ${missionName}`;
   head.append(mission);
   if (selected) head.append(el('span', 'run-selected', 'open'));
   if (live) head.append(el('span', 'run-live', 'current'), stopButton(handlers));

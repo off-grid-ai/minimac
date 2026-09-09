@@ -1283,6 +1283,23 @@ function tabFromUrl() {
   return tab && tab in WINDOW_IDS ? tab : null;
 }
 
+function feedLevelFromUrl() {
+  const detail = new URL(window.location.href).searchParams.get('detail');
+  return FEED_LEVELS.some((level) => level.id === detail) ? detail : 'summary';
+}
+
+function setFeedLevelUrl(detail, { replace = false } = {}) {
+  if (!FEED_LEVELS.some((level) => level.id === detail)) return;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('detail') === detail) return;
+  url.searchParams.set('detail', detail);
+  window.history[replace ? 'replaceState' : 'pushState'](
+    { runId: state.selectedRunId, tab: tabFromUrl(), detail },
+    '',
+    url,
+  );
+}
+
 function setTabUrl(tab, { replace = false } = {}) {
   const url = new URL(window.location.href);
   if ((url.searchParams.get('tab') ?? null) === (tab ?? null)) return;
@@ -1298,6 +1315,7 @@ function setTabUrl(tab, { replace = false } = {}) {
 function restorePanelFromUrl() {
   if (!windows) return;
   restoringNavigation = true;
+  state.feedLevel = feedLevelFromUrl();
   const tab = tabFromUrl();
   if (tab) {
     lastPanel = tab;
@@ -1664,6 +1682,7 @@ function feedLevelBar() {
     button.setAttribute('aria-pressed', String(level.id === state.feedLevel));
     button.onclick = () => {
       state.feedLevel = level.id;
+      setFeedLevelUrl(level.id);
       renderFeed();
     };
     bar.append(button);
