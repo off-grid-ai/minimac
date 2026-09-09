@@ -851,6 +851,50 @@ function settleEventLease(event) {
   }
 }
 
+function hasValidCheckpointReport(event) {
+  const match = REPORT_BLOCK.exec(blockText(event));
+  if (!match) return false;
+  try {
+    JSON.parse(match[1]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function settleUnreportedResult(event) {
+  if (hasValidCheckpointReport(event)) return false;
+  const workerId = event.payload?.workerId;
+  if (!workerId) return false;
+  const worker = ensureWorkers(state.agents[event.agentId])
+    .find((candidate) => candidate.id === workerId);
+  if (!worker || !isCurrentSessionEvent(worker, event.payload)) return false;
+  const checkpointId = event.payload?.checkpointId ?? worker.checkpointId;
+  const item = checkpointId && findItem(state.board, checkpointId);
+  if (!item?.lease || item.lease.state !== 'running' || item.lease.workerId !== workerId) return false;
+  const text = blockText(event).trim().replace(/\s+/g, ' ').slice(0, 300);
+  const settled = reviseItem(state.board, checkpointId, {
+    lease: finishLease(item.lease, 'unreported', event.ts),
+    paused: true,
+    pauseReason: text
+      ? `worker ended without a checkpoint report: ${text}`
+      : 'worker ended without a checkpoint report',
+  });
+  if (settled.error) return false;
+  workerLeases?.clear(workerId);
+  state.board = settled.board;
+  store.saveItem(settled.item);
+  ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
+    text: `${checkpointId} paused: worker ended without a checkpoint report`,
+    checkpointId,
+    workerId,
+    sessionId: event.payload?.sessionId ?? null,
+    launchId: event.payload?.launchId ?? null,
+    from: 'you',
+  }));
+  return true;
+}
+
 function repeatsUnchangedFact(event, withinMs = 300_000) {
   if (![EVENT_KINDS.STATUS, EVENT_KINDS.BLOCKED].includes(event.kind)) return false;
   const facts = event.payload ?? {};
@@ -901,6 +945,7 @@ function ingest(rawIncoming) {
       agent: publicAgent(state.agents[incoming.agentId]),
     });
     harvestBlocks(incoming);
+    settleUnreportedResult(incoming);
     scheduleCards();
     return;
   }
