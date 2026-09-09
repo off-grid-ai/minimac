@@ -774,24 +774,6 @@ function identifyWorker(event) {
     : event;
 }
 
-function conversationContextForAgentOutput(event) {
-  const repliedTo = new Set(state.events
-    .filter((candidate) => candidate.payload?.message?.authorId === event.agentId)
-    .map((candidate) => candidate.payload?.message?.replyToMessageId)
-    .filter(Boolean));
-  const question = [...state.events].reverse().find((candidate) => {
-    const message = candidate.payload?.message;
-    return message
-      && message.authorId !== event.agentId
-      && message.recipients?.includes(event.agentId)
-      && !repliedTo.has(message.id);
-  })?.payload?.message;
-  if (question?.context) return question.context;
-  return event.payload?.checkpointId
-    ? { kind: CONTEXT_KIND.CHECKPOINT, id: event.payload.checkpointId }
-    : { kind: CONTEXT_KIND.MISSION, id: String(store.runId) };
-}
-
 function persistEventWorker(event) {
   const workerId = event.payload?.workerId;
   if (!workerId) return;
@@ -958,7 +940,9 @@ function ingest(rawIncoming) {
   }
   if (event.kind === EVENT_KINDS.ENGINE_OUTPUT) {
     if (raw) harvestBlocks({ ...event, payload: { ...event.payload, text: raw } });
-    conversations?.acceptAgentOutput(event, conversationContextForAgentOutput(event));
+    conversations?.acceptAgentOutput(event, event.payload?.checkpointId
+      ? { kind: CONTEXT_KIND.CHECKPOINT, id: event.payload.checkpointId }
+      : { kind: CONTEXT_KIND.MISSION, id: String(store.runId) });
     return;
   }
   if (raw !== null) event.payload = { ...event.payload, raw };
