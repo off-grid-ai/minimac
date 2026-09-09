@@ -2304,6 +2304,8 @@ conversations = createConversationService({
     const owner = state.cards.find((card) => String(card.key ?? card.id) === context.id)?.agentId;
     return owner && owner !== authorId ? [owner] : [];
   },
+  resolveVisibleRecipient: ({ authorId }) => Object.values(state.agents)
+    .find((agent) => agent.role === ROLES.ORCHESTRATOR && agent.id !== authorId)?.id ?? null,
   deliver: async (agentId, text, { wake = false } = {}) => {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);

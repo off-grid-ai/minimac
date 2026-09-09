@@ -5,7 +5,7 @@ import {
 
 export function createConversationService({
   getEvents, emit, id, missionId, resolveMentions, resolveSkills, resolveRecipients,
-  validateContext, validateRecipient, deliver,
+  resolveVisibleRecipient, validateContext, validateRecipient, deliver,
 }) {
   async function post({
     authorId, context, recipients = [], body = '', attachments = [], references = [],
@@ -75,9 +75,16 @@ export function createConversationService({
 
   function acceptAgentOutput(event, context) {
     if (event.payload?.final !== true) return null;
+    const explicitRecipients = event.payload?.recipients ?? [];
+    const visibleRecipient = explicitRecipients.length
+      ? null
+      : resolveVisibleRecipient?.({ context, authorId: event.agentId }) ?? null;
     const result = createMessage({
       id: id(), authorId: event.agentId, context: normalizeContext(context, missionId()),
-      recipients: event.payload?.recipients ?? [], body: event.payload?.text ?? '',
+      recipients: explicitRecipients.length
+        ? explicitRecipients
+        : visibleRecipient && visibleRecipient !== event.agentId ? [visibleRecipient] : [],
+      body: event.payload?.text ?? '',
       attachments: event.payload?.attachments ?? [], references: event.payload?.references ?? [],
       from: event.payload?.from ?? 'agent', createdAt: event.ts,
     });
