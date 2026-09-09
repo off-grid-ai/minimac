@@ -15,8 +15,8 @@ export function renderEntityDetail({
         : resourceDetail(kind, source, agents);
   content.append(...detail.sections);
 
-  const messages = source.messages ?? (kind === 'message' ? [source] : []);
-  if (messages.length || ['hero', 'checkpoint', 'decision'].includes(kind)) {
+  const messages = kind === 'hero' ? [] : source.messages ?? (kind === 'message' ? [source] : []);
+  if (messages.length || ['checkpoint', 'decision'].includes(kind)) {
     const thread = el('section', 'connected-entity-thread');
     renderThread(thread, messages, { agents, events, onReply, onReact, onOpen });
     content.append(thread);

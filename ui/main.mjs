@@ -31,7 +31,7 @@ import { createSound } from './sound.mjs';
 import { renderMarkdown, markdownReady } from './markdown.mjs';
 import { createControlButton } from './controls.mjs';
 import {
-  CONTEXT_KIND, messagesForContext, messagesForHero, messagesForThread,
+  CONTEXT_KIND, messagesForContext, messagesForThread,
 } from '../core/conversation.mjs';
 import { renderMessageGroup } from './conversation.mjs';
 import { renderEntityDetail } from './entity-detail.mjs';
@@ -2051,7 +2051,6 @@ async function openConnectedEntity(kind, id, { replace = false } = {}) {
     source = response.result ?? null;
   }
   if (!source || !windows?.openEntity) return;
-  if (kind === 'hero') source = { ...source, messages: messagesForHero(events, id) };
   if (kind === 'checkpoint' || kind === 'decision') {
     source = { ...source, messages: messagesForContext(events, { kind, id }) };
   }
@@ -2060,7 +2059,7 @@ async function openConnectedEntity(kind, id, { replace = false } = {}) {
   }
   let replyToMessageId = kind === 'message' ? source.id : null;
   let detailComposer = null;
-  const conversational = ['hero', 'checkpoint', 'decision', 'message'].includes(kind);
+  const conversational = ['checkpoint', 'decision', 'message'].includes(kind);
   const detail = renderEntityDetail({
     kind, source, agents: state.agents, events,
     onReply: conversational
@@ -2077,17 +2076,15 @@ async function openConnectedEntity(kind, id, { replace = false } = {}) {
   if (conversational) {
     const context = kind === 'message'
       ? source.context
-      : { kind: kind === 'hero' ? CONTEXT_KIND.MISSION : kind,
-        id: kind === 'hero' ? String(state.runId) : id };
-    const recipients = kind === 'hero' ? [id]
-      : kind === 'checkpoint' && source.owner?.id ? [source.owner.id]
+      : { kind, id };
+    const recipients = kind === 'checkpoint' && source.owner?.id ? [source.owner.id]
         : kind === 'decision' && source.agentId ? [source.agentId]
           : kind === 'message' && source.authorId !== 'you' ? [source.authorId] : [];
     const host = document.createElement('footer');
     host.className = 'connected-entity-composer';
     detail.content.append(host);
     detailComposer = mountPanelComposer(host, {
-      getTarget: () => kind === 'hero' ? id : context.id,
+      getTarget: () => context.id,
       dispatch: ({ text, attachments }) => send(
         replyToMessageId ? 'replyConversation' : 'postConversation', {
           context, text, attachments, recipients, replyToMessageId,
