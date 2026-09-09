@@ -21,19 +21,26 @@ export function createConversationService({
       || replyTo.context?.kind !== primary.kind || replyTo.context?.id !== primary.id)) {
       throw new Error(`no message ${replyToMessageId} in this conversation`);
     }
+    const parsed = await resolveMentions(body);
+    const mentionedHeroes = (parsed.references ?? [])
+      .filter((reference) => reference.kind === 'hero')
+      .map((reference) => reference.id);
     // A reply is addressed to the person being answered. The UI can still add
     // explicit recipients, but it does not have to duplicate conversation logic.
-    const requested = recipients.length
-      ? recipients
-      : replyTo?.authorId && replyTo.authorId !== authorId ? [replyTo.authorId] : [];
-    const resolved = replyTo && !recipients.length
+    const replyRecipient = replyTo?.authorId && replyTo.authorId !== authorId
+      ? [replyTo.authorId]
+      : [];
+    const requested = [
+      ...(recipients.length ? recipients : replyRecipient),
+      ...mentionedHeroes,
+    ];
+    const resolved = replyTo && !recipients.length && !mentionedHeroes.length
       ? requested
       : (await resolveRecipients?.({ context: primary, authorId, recipients: requested }) ?? requested);
     const audience = [...new Set(resolved.filter(Boolean).map(String))];
     for (const recipientId of audience) {
       if (validateRecipient && !validateRecipient(recipientId)) throw new Error(`recipient ${recipientId} does not exist`);
     }
-    const parsed = await resolveMentions(body);
     const skills = await resolveSkills((parsed.references ?? [])
       .filter((reference) => reference.kind === 'skill').map((reference) => reference.id));
     const result = createMessage({

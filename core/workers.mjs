@@ -89,6 +89,7 @@ export function createWorker(agentId, index, saved = {}) {
     heartbeatAt: saved.heartbeatAt ?? saved.startedAt ?? null,
     stateChangedAt: saved.stateChangedAt ?? saved.startedAt ?? null,
     failureReason: saved.failureReason ?? null,
+    launchId: saved.launchId ?? null,
   };
 }
 

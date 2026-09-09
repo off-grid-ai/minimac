@@ -213,10 +213,14 @@ function findingKey(value) {
 
 // A failed verification stage creates coding work. The failed checkpoint
 // stays authoritative and runs again only after each correction passes.
+export function isVerificationCheckpoint(item) {
+  return ['tw', 'aw', 'rw'].includes(item?.stage) || item?.id === 'release.prepush';
+}
+
 export function createRemediationWork(board, sourceId, findings, agents, now = Date.now()) {
   const source = findItem(board, sourceId);
   if (!source) return { board, error: `no item ${sourceId}` };
-  if (!['tw', 'aw', 'rw'].includes(source.stage) && source.id !== 'release.prepush') {
+  if (!isVerificationCheckpoint(source)) {
     return { board, error: `${sourceId} is not a verification checkpoint` };
   }
   const coder = Object.values(agents).find(

@@ -13,8 +13,12 @@ export function canResumeSession(worker, { engine, checkpointId }) {
     && hasSessionAffinity(worker, checkpointId);
 }
 
-export function isCurrentSessionEvent(worker, { sessionId = null, engine = null } = {}) {
+export function isCurrentSessionEvent(
+  worker,
+  { sessionId = null, engine = null, launchId = null } = {},
+) {
   if (!worker) return false;
+  if (worker.launchId && launchId && launchId !== worker.launchId) return false;
   const knownSessionId = worker.sessionId ?? worker.resumeSessionId;
   if (knownSessionId && sessionId && knownSessionId !== sessionId) return false;
   if (worker.engine && engine && worker.engine !== engine) return false;

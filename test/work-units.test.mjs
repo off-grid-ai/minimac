@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   expandWorkUnit,
   createReleaseCheckpoints,
+  isVerificationCheckpoint,
   stageCheckpointId,
   validateWorkPlan,
 } from '../core/work-units.mjs';
@@ -58,6 +59,13 @@ test('invalid roles, oversized stages, and cycles are rejected before dispatch',
     { ...base, id: 'w2', blockedBy: ['w1'], stages: [stage('cw', 'coder')] },
   ];
   assert.match(validateWorkPlan(cyclic, agents, 480_000).error, /cycle/);
+});
+
+test('only verification checkpoints can create correction work', () => {
+  assert.equal(isVerificationCheckpoint({ id: 'w1.cw', stage: 'cw' }), false);
+  assert.equal(isVerificationCheckpoint({ id: 'w1.tw', stage: 'tw' }), true);
+  assert.equal(isVerificationCheckpoint({ id: 'w1.aw', stage: 'aw' }), true);
+  assert.equal(isVerificationCheckpoint({ id: 'release.prepush' }), true);
 });
 
 test('release waits for every final stage receipt', () => {

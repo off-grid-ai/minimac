@@ -76,6 +76,7 @@ export function createCodexDriver({
   const turnByThread = new Map();
   const agentByThread = new Map();
   const workerByThread = new Map();
+  const launchByThread = new Map();
   const runtimeByThread = new Map();
   const approvalsByThread = new Map(); // threadId -> [{ id, method, event }]
 
@@ -116,6 +117,7 @@ export function createCodexDriver({
         final,
         sessionId: threadId,
         workerId: workerByThread.get(threadId) ?? null,
+        launchId: launchByThread.get(threadId) ?? null,
       }));
     }
   }
@@ -225,6 +227,7 @@ export function createCodexDriver({
         approvalId: String(id),
         sessionId: threadId,
         workerId: workerByThread.get(threadId) ?? null,
+        launchId: launchByThread.get(threadId) ?? null,
       }),
     );
   }
@@ -284,7 +287,9 @@ export function createCodexDriver({
     );
     if (decision === 'cancel' || decision === 'abort') return;
     emit(createEvent(entry.agentId, EVENT_KINDS.STATUS, {
-      state: 'running', sessionId: entry.threadId, workerId: workerByThread.get(entry.threadId) ?? null,
+      state: 'running', sessionId: entry.threadId,
+      workerId: workerByThread.get(entry.threadId) ?? null,
+      launchId: launchByThread.get(entry.threadId) ?? null,
     }));
   }
 
@@ -344,6 +349,7 @@ export function createCodexDriver({
       sessionId: threadId,
       workerId,
       engine: 'codex',
+      launchId: launchByThread.get(threadId) ?? null,
     }));
 
     switch (method) {
@@ -409,6 +415,7 @@ export function createCodexDriver({
             reason: params.message ?? 'codex reported an error',
             sessionId: threadId,
             workerId,
+            launchId: launchByThread.get(threadId) ?? null,
           }),
         );
         return undefined;
@@ -506,6 +513,7 @@ export function createCodexDriver({
       // destination. This does not start a turn.
       agentByThread.set(sessionId, agent.id);
       workerByThread.set(sessionId, agent.workerId ?? null);
+      launchByThread.set(sessionId, agent.launchId ?? null);
       runtimeByThread.set(sessionId, { model: agent.model || null, effort: agent.effort || null });
       const result = await request('thread/resume', {
         threadId: sessionId,
@@ -516,6 +524,7 @@ export function createCodexDriver({
       const threadId = thread.id ?? sessionId;
       agentByThread.set(threadId, agent.id);
       workerByThread.set(threadId, agent.workerId ?? null);
+      launchByThread.set(threadId, agent.launchId ?? null);
       runtimeByThread.set(threadId, { model: agent.model || null, effort: agent.effort || null });
       const state = threadState(thread.status);
       const activeTurn = [...(thread.turns ?? [])].reverse().find((turn) => {
@@ -541,6 +550,7 @@ export function createCodexDriver({
       if (!threadId) throw new Error('thread/start returned no thread id');
       agentByThread.set(threadId, agent.id);
       workerByThread.set(threadId, agent.workerId ?? null);
+      launchByThread.set(threadId, agent.launchId ?? null);
       runtimeByThread.set(threadId, { model: agent.model || null, effort: agent.effort || null });
 
       const turn = await request('turn/start', {
@@ -565,6 +575,7 @@ export function createCodexDriver({
       const threadId = thread?.thread?.id ?? sessionId;
       agentByThread.set(threadId, agent.id);
       workerByThread.set(threadId, agent.workerId ?? null);
+      launchByThread.set(threadId, agent.launchId ?? null);
       runtimeByThread.set(threadId, { model: agent.model || null, effort: agent.effort || null });
 
       const turn = await request('turn/start', {

@@ -130,7 +130,11 @@ import { AGENT_TOOL, roleCanUseTool } from './core/agent-tools.mjs';
 import { applyFleetEvent } from './core/fleet-reducer.mjs';
 import { activationPlan } from './core/crew.mjs';
 import { estimateDispatchTokens } from './core/token-estimate.mjs';
-import { reconcileReleaseCheckpoints, STAGE_GATES } from './core/work-units.mjs';
+import {
+  isVerificationCheckpoint,
+  reconcileReleaseCheckpoints,
+  STAGE_GATES,
+} from './core/work-units.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const MIME = {
@@ -168,7 +172,7 @@ const state = {
   goals: {},
   claims: {},
   events: [],
-  awaitingGoals: false,
+  assembly: null,
   mission: options.mission,
   // What the room has noticed and nobody has reported. Derived here rather
   // than in the browser, so the same answer reaches the screen AND anything
@@ -417,6 +421,30 @@ async function reconcileAdoptedSessions() {
         if (item?.lease?.workerId === workerId && item.lease.state === 'running') {
           workerLeases.restore(item.lease);
         }
+      } else if (row.checkpoint_id) {
+        const item = findItem(state.board, row.checkpoint_id);
+        if (item?.lease?.workerId === workerId && item.lease.state === 'running') {
+          const failedGate = Object.entries(item.gates ?? {})
+            .find(([, gateState]) => gateState === 'fail')?.[0] ?? null;
+          const evidence = [...(item.evidence ?? [])].reverse()
+            .find((entry) => entry.state === 'fail');
+          const settled = failedGate && !isVerificationCheckpoint(item)
+            ? reviseItem(state.board, item.id, {
+              lease: finishLease(item.lease, 'failed'),
+              paused: true,
+              pauseReason: evidence?.receipt || `${failedGate} failed before restart`,
+            })
+            : failCheckpointStart(
+              state.board,
+              item.id,
+              'worker session ended before the checkpoint reported completion',
+              Date.now() + 15_000,
+            );
+          if (!settled.error) {
+            state.board = settled.board;
+            store.saveItem(settled.item);
+          }
+        }
       }
     } catch {
       state.agents = patchAgent(state.agents, agent.id, patchWorker(agent, workerId, {
@@ -438,17 +466,24 @@ const WORK_PLAN_BLOCK = new RegExp('```' + WORK_PLAN_FENCE + '\\s*([\\s\\S]*?)``
 // The orchestrator's answer to "what should each of them be doing".
 async function harvestWorkPlan(event) {
   if (state.completedAt) return { applied: false, error: 'mission is complete' };
+  const assemblyId = state.assembly?.id ?? null;
   const match = WORK_PLAN_BLOCK.exec(String(event.payload?.text ?? ''));
-  if (!match) return { applied: false, error: 'no assemble payload' };
+  if (!match) {
+    if (assemblyId) failAssembly(assemblyId, 'Thor finished without a valid work plan');
+    return { applied: false, error: 'no assemble payload' };
+  }
+  if (!assemblyId) return { applied: false, error: 'no active assemble attempt' };
 
   let parsed;
   try {
     parsed = JSON.parse(match[1]);
   } catch {
+    if (assemblyId) failAssembly(assemblyId, 'Thor returned a work plan that is not valid JSON');
     return { applied: false, error: 'assemble payload is not valid JSON' };
   }
 
   if (!['local', 'publish'].includes(parsed.delivery)) {
+    if (assemblyId) failAssembly(assemblyId, 'Thor returned a work plan without a valid delivery mode');
     return { applied: false, error: 'assemble needs delivery: local or publish' };
   }
 
@@ -467,7 +502,7 @@ async function harvestWorkPlan(event) {
   const unknown = crewSpec
     ? Object.keys(crewSpec).filter((agentId) => !expected.includes(agentId))
     : [];
-  if ((state.awaitingGoals || crewSpec) && (missing.length > 0 || unknown.length > 0)) {
+  if ((assemblyId || crewSpec) && (missing.length > 0 || unknown.length > 0)) {
     const problem = [
       missing.length > 0 && `missing ${missing.join(', ')}`,
       unknown.length > 0 && `unknown ${unknown.join(', ')}`,
@@ -476,6 +511,7 @@ async function harvestWorkPlan(event) {
       text: `assemble incomplete: ${problem}; the roster was not changed`,
       from: 'you',
     }));
+    if (assemblyId) settleAssembly(assemblyId);
     return { applied: false, error: problem };
   }
 
@@ -521,6 +557,7 @@ async function harvestWorkPlan(event) {
       text: `assemble refused: ${planned.error}; nobody was started`,
       from: 'you',
     }));
+    if (assemblyId) settleAssembly(assemblyId);
     return { applied: false, error: planned.error };
   }
   state.acceptance = nextAcceptance;
@@ -547,6 +584,9 @@ async function harvestWorkPlan(event) {
     await startCrew(`${event.agentId} assembled ${named} Avengers`, true, crewSpec);
   } else if (applied > 0) {
     await startCrew(`${event.agentId} set goals for ${applied} agents`);
+  } else if (assemblyId) {
+    failAssembly(assemblyId, 'Thor returned a plan with no runnable crew or goals');
+    return { applied: false, error: 'assemble plan has no runnable crew or goals' };
   }
   return { applied: true, avengers: named, goals: applied };
 }
@@ -616,6 +656,21 @@ function harvestReport(event) {
   }
 
   for (const failure of failedWork) {
+    // Verification can discover new correction work. An implementation
+    // checkpoint is already that correction work, so a failure stays on it
+    // and waits for an explicit retry instead of creating repairs forever.
+    if (!isVerificationCheckpoint(failure.item)) {
+      const paused = reviseItem(state.board, failure.item.id, {
+        paused: true,
+        pauseReason: failure.move.receipt || `${failure.move.gate} failed`,
+      });
+      if (!paused.error) {
+        state.board = paused.board;
+        store.saveItem(paused.item);
+      }
+      if (event.payload?.workerId) workerLeases?.clear(event.payload.workerId);
+      continue;
+    }
     const discoveries = (report.discoveries ?? [])
       .filter((finding) => !finding.checkpointId || finding.checkpointId === failure.item.id);
     const findings = discoveries.length ? discoveries : [{
@@ -997,7 +1052,11 @@ function blockText(event) {
 
 function harvestBlocks(event) {
   const text = blockText(event);
-  if (!text.includes('```')) return; // nothing fenced, nothing to parse
+  const isAssemblyResult = Boolean(state.assembly)
+    && state.agents[event.agentId]?.role === ROLES.ORCHESTRATOR
+    && [EVENT_KINDS.RESULT, EVENT_KINDS.ENGINE_OUTPUT].includes(event.kind)
+    && (event.kind === EVENT_KINDS.RESULT || event.payload?.final === true);
+  if (!text.includes('```') && !isAssemblyResult) return; // nothing fenced, nothing to parse
   const seen = harvested.get(event.agentId);
   if (seen === text) return;
   harvested.set(event.agentId, text);
@@ -1066,7 +1125,7 @@ async function governanceTurn(raised) {
   if (state.governing) return; // one ruling at a time
   // Never interrupt an assemble. That turn IS the plan; cutting into it with a
   // ruling is how the plan came to be abandoned halfway through.
-  if (state.awaitingGoals) return;
+  if (state.assembly) return;
   const boss = Object.values(state.agents).find((a) => a.role === ROLES.ORCHESTRATOR);
   if (!boss || boss.enabled === false) return;
 
@@ -1165,6 +1224,7 @@ async function startWorkers(agent, cwd, context) {
     if (!worker) break;
     const checkpointId = context.workItems?.[index]?.id ?? null;
     const startingAt = Date.now();
+    const launchId = randomUUID();
     state.agents = patchAgent(
       state.agents,
       agent.id,
@@ -1175,12 +1235,29 @@ async function startWorkers(agent, cwd, context) {
         startedAt: startingAt,
         heartbeatAt: startingAt,
         failureReason: null,
+        launchId,
       }),
     );
+    // The lease exists before the engine can emit its first event. Fast turns
+    // can finish before start() returns, and their report must still belong to
+    // the exact checkpoint that launched them.
+    if (checkpointId) {
+      const lease = workerLeases.start({
+        agentId: agent.id,
+        workerId: worker.id,
+        checkpointId,
+        sessionId: null,
+      });
+      const leased = beginCheckpoint(state.board, checkpointId, lease);
+      if (!leased.error) {
+        state.board = leased.board;
+        store.saveItem(leased.item);
+      }
+    }
     const resumableId = worker.resumeSessionId;
     const canResume = canResumeSession(worker, { engine: agent.engine, checkpointId })
       && typeof driver.resume === 'function';
-    const workerAgent = { ...agent, workerId: worker.id };
+    const workerAgent = { ...agent, workerId: worker.id, launchId };
     let sessionId;
     try {
       if (!canResume) {
@@ -1225,16 +1302,21 @@ async function startWorkers(agent, cwd, context) {
       }
     }
     const now = Date.now();
+    const currentWorker = ensureWorkers(state.agents[agent.id])
+      .find((candidate) => candidate.id === worker.id);
+    const endedDuringStart = [WORKER_STATE.IDLE, WORKER_STATE.STOPPED, WORKER_STATE.FAILED]
+      .includes(currentWorker?.state);
     const nextWorker = {
-      ...worker,
-      sessionId,
-      resumeSessionId: null,
+      ...currentWorker,
+      sessionId: endedDuringStart ? null : sessionId,
+      resumeSessionId: endedDuringStart ? sessionId : null,
       checkpointId,
       engine: agent.engine,
-      state: WORKER_STATE.RUNNING,
+      state: endedDuringStart ? currentWorker.state : WORKER_STATE.RUNNING,
       startedAt: now,
       heartbeatAt: now,
       failureReason: null,
+      launchId,
     };
     state.agents = patchAgent(
       state.agents,
@@ -1242,6 +1324,18 @@ async function startWorkers(agent, cwd, context) {
       patchWorker(state.agents[agent.id], worker.id, nextWorker),
     );
     store.saveWorkerSession(nextWorker);
+    if (checkpointId) {
+      const item = findItem(state.board, checkpointId);
+      if (item?.lease?.state === 'running' && item.lease.workerId === worker.id) {
+        const updated = reviseItem(state.board, checkpointId, {
+          lease: { ...item.lease, sessionId },
+        });
+        if (!updated.error) {
+          state.board = updated.board;
+          store.saveItem(updated.item);
+        }
+      }
+    }
     started.push(nextWorker);
   }
   return started;
@@ -1353,10 +1447,27 @@ function middlewareText(name) {
 
 const PLANNING_TIMEOUT_MS = 180_000;
 
+function settleAssembly(id) {
+  if (!state.assembly || state.assembly.id !== id) return false;
+  if (state.assembly.timer) clearTimeout(state.assembly.timer);
+  state.assembly = null;
+  return true;
+}
+
+function failAssembly(id, reason) {
+  if (!settleAssembly(id)) return false;
+  ingest(createBlockedEvent('minimac', {
+    category: BLOCKED_REASONS.ERROR,
+    reason: `assemble failed: ${reason}`,
+  }));
+  return true;
+}
+
 // Start everyone except the orchestrator, which is already running.
 async function startCrew(note, assembled = true, desired = null) {
-  if (!state.awaitingGoals && !desired) return;
-  state.awaitingGoals = false;
+  const assemblyId = state.assembly?.id ?? null;
+  if (!assemblyId && !desired) return;
+  if (assemblyId) settleAssembly(assemblyId);
   ingest(
     createEvent('minimac', EVENT_KINDS.STATUS, {
       text: note ?? 'goals set by the orchestrator - starting the crew',
@@ -1368,8 +1479,8 @@ async function startCrew(note, assembled = true, desired = null) {
   // pressed ASSEMBLE to avoid. Say so and start nobody.
   if (!assembled) {
     ingest(createEvent('minimac', EVENT_KINDS.BLOCKED, {
-      reason: 'assemble produced no crew - nobody was started. Press ASSEMBLE again, '
-        + 'or START ALL to run everyone on their role defaults.',
+      reason: 'assemble failed: Thor did not publish a complete work plan. '
+        + 'No worker was started.',
     }));
     return;
   }
@@ -1498,7 +1609,8 @@ const COMMANDS = {
     if (hasLiveWorker(orchestrator)) {
       await interruptAgent(orchestrator.id);
     }
-    state.awaitingGoals = true;
+    const assemblyId = randomUUID();
+    state.assembly = { id: assemblyId, timer: null };
     try {
       await COMMANDS.setActive({
         agentId: orchestrator.id,
@@ -1508,14 +1620,18 @@ const COMMANDS = {
         exclusiveOutput: true,
       });
     } catch (error) {
-      state.awaitingGoals = false;
+      settleAssembly(assemblyId);
       throw error;
     }
-    // If nothing comes back, the crew still starts - late beats never.
-    setTimeout(() => {
-      if (state.awaitingGoals) startCrew('the orchestrator did not set goals in time', false);
+    const timer = setTimeout(() => {
+      if (state.assembly?.id === assemblyId) {
+        failAssembly(assemblyId, 'Thor did not publish a work plan in time');
+      }
     }, PLANNING_TIMEOUT_MS);
-    return { planning: true };
+    timer.unref?.();
+    if (state.assembly?.id === assemblyId) state.assembly.timer = timer;
+    else clearTimeout(timer);
+    return { planning: true, assemblyId };
   },
 
   // START ALL means "start all work that can run now". The scheduler owns
@@ -1790,21 +1906,6 @@ const COMMANDS = {
       enabled: true,
     });
     store.clearHandoff(agentId);
-    for (const worker of startedWorkers) {
-      if (worker.checkpointId) {
-        const lease = workerLeases.start({
-          agentId,
-          workerId: worker.id,
-          checkpointId: worker.checkpointId,
-          sessionId: worker.sessionId,
-        });
-        const leased = beginCheckpoint(state.board, worker.checkpointId, lease);
-        if (!leased.error) {
-          state.board = leased.board;
-          store.saveItem(leased.item);
-        }
-      }
-    }
     return {
       sessionId: startedWorkers[0].sessionId,
       workerIds: startedWorkers.map((worker) => worker.id),

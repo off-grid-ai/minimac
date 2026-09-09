@@ -79,6 +79,7 @@ export function createItem({
     gates,
     blockedBy: [...blockedBy],
     paused: false,
+    pauseReason: null,
     lease: null,
     startFailure: null,
     retryAt: null,
@@ -159,6 +160,9 @@ export function statusOf(board, item) {
   if (state === ITEM_STATE.OPEN) return { state, reason: 'waiting for worker', detail: 'no owner' };
   if (state === ITEM_STATE.START_FAILED) {
     return { state, reason: 'start failed', detail: item.startFailure, retryAt: item.retryAt };
+  }
+  if (state === ITEM_STATE.PAUSED) {
+    return { state, reason: 'paused', detail: item.pauseReason ?? 'paused' };
   }
   return { state, reason: null, detail: null };
 }
@@ -304,7 +308,7 @@ export function revise(board, id, change = {}) {
   for (const field of ['title', 'plan', 'outcome', 'verify', 'scope']) {
     if (change[field] !== undefined) next[field] = String(change[field]).trim();
   }
-  for (const field of ['owner', 'estimateMs', 'lease']) {
+  for (const field of ['owner', 'estimateMs', 'lease', 'paused', 'pauseReason']) {
     if (change[field] !== undefined) next[field] = change[field];
   }
   if (change.blockedBy !== undefined) next.blockedBy = [...change.blockedBy];

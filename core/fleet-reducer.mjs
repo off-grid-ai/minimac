@@ -13,7 +13,11 @@ export function applyFleetEvent(agents, event) {
     if (!worker) return agents;
     const eventSessionId = event.payload?.sessionId;
     const eventEngine = event.payload?.engine ?? null;
-    if (!isCurrentSessionEvent(worker, { sessionId: eventSessionId, engine: eventEngine })) {
+    if (!isCurrentSessionEvent(worker, {
+      sessionId: eventSessionId,
+      engine: eventEngine,
+      launchId: event.payload?.launchId ?? null,
+    })) {
       return agents;
     }
     const expectedEngine = worker.engine ?? agent.engine;

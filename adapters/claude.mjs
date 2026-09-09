@@ -113,6 +113,7 @@ export function createClaudeDriver({
       sessionId,
       workerId,
       engine: runtimeAgent?.engine ?? 'claude',
+      launchId: runtimeAgent?.launchId ?? null,
     }));
 
     if (message.type === 'assistant') {
@@ -198,6 +199,7 @@ export function createClaudeDriver({
           approvalId: block.tool_use_id ?? null,
           sessionId,
           workerId,
+          launchId: sessions.get(sessionId)?.agent?.launchId ?? null,
         }),
       );
     }
@@ -240,6 +242,7 @@ export function createClaudeDriver({
           reason: String(message.result ?? message.subtype ?? 'run failed').slice(0, 200),
           sessionId,
           workerId: session?.agent?.workerId ?? null,
+          launchId: session?.agent?.launchId ?? null,
         }),
       );
       at(EVENT_KINDS.STATUS, { state: 'failed' });
@@ -253,6 +256,7 @@ export function createClaudeDriver({
           approvalId: message.permission_denials[0]?.tool_use_id ?? null,
           sessionId,
           workerId: session?.agent?.workerId ?? null,
+          launchId: session?.agent?.launchId ?? null,
         }),
       );
     }
@@ -340,6 +344,7 @@ export function createClaudeDriver({
           reason: `cannot launch ${bin}: ${error.message}`,
           sessionId,
           workerId: agent.workerId ?? null,
+          launchId: agent.launchId ?? null,
         }),
       );
     });
@@ -356,6 +361,7 @@ export function createClaudeDriver({
             reason: session.stderr.trim().split('\n').slice(-3).join(' ').slice(0, 300),
             sessionId,
             workerId: agent.workerId ?? null,
+            launchId: agent.launchId ?? null,
           }),
         );
       }
@@ -366,6 +372,7 @@ export function createClaudeDriver({
         code,
         sessionId,
         workerId: agent.workerId ?? null,
+        launchId: agent.launchId ?? null,
       }));
     });
 
