@@ -13,8 +13,11 @@
 import { burnRatio } from '../core/derive.mjs';
 import { GATES, rollup, remaining } from '../core/flows.mjs';
 import { compareQueueOrder, nextGate, isClosed, isDone, unmetDeps } from '../core/board.mjs';
+import { EFFORT_OPTIONS, ENGINES, MODEL_OPTIONS } from '../core/roster.mjs';
 import { checkpointDisplayTitle, stageLabel } from '../core/work-units.mjs';
 import { createControlButton, createDisclosure, createRelativeTime } from './controls.mjs';
+
+const ENGINE_LABELS = [ENGINES.CODEX, ENGINES.CLAUDE];
 
 // The status ladder is ordered, so a checkpoint's position on it is a number.
 const LADDER = ['coded', 'wired', 'verified'];
@@ -81,6 +84,7 @@ function agentRow(agent, handlers) {
 
   const header = el('div', 'agent-header');
   header.append(ident, statusChip(agent));
+  if (!agent.readOnly) header.append(runtimeControls(agent, handlers));
   const details = el('button', 'agent-details-toggle', '›');
   details.type = 'button';
   details.title = `Open ${nameOf(agent)}`;
@@ -115,6 +119,69 @@ function statusChip(agent) {
   chip.append(el('span', 'dot'));
   chip.setAttribute('aria-label', state);
   return chip;
+}
+
+function runtimeControls(agent, handlers) {
+  const group = el('div', 'agent-runtime');
+  group.append(engineToggle(agent, handlers));
+  group.append(runtimeSelect(
+    `${nameOf(agent)} model`,
+    MODEL_OPTIONS[agent.engine] ?? [],
+    agent.model ?? '',
+    (model) => handlers.configureRuntime(agent.id, { model }),
+    'agent-model',
+  ));
+  group.append(runtimeSelect(
+    `${nameOf(agent)} effort`,
+    (EFFORT_OPTIONS[agent.engine] ?? []).map((value) => ({ value, label: value.toUpperCase() })),
+    agent.effort ?? 'medium',
+    (effort) => handlers.configureRuntime(agent.id, { effort }),
+    'agent-effort',
+  ));
+  group.append(runtimeSelect(
+    `${nameOf(agent)} capacity`,
+    [1, 2, 3, 4].map((value) => ({ value: String(value), label: `×${value}` })),
+    String(Math.max(1, Number(agent.instances) || 1)),
+    (instances) => handlers.setInstances(agent.id, Number(instances)),
+    'agent-capacity',
+  ));
+  return group;
+}
+
+function engineToggle(agent, handlers) {
+  const group = el('div', 'agent-engine');
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', `${nameOf(agent)} engine`);
+  for (const engine of ENGINE_LABELS) {
+    const button = el('button', '', engine.toUpperCase());
+    button.type = 'button';
+    button.setAttribute('aria-pressed', String(agent.engine === engine));
+    button.setAttribute('aria-label', `Use ${engine} for ${nameOf(agent)}`);
+    button.onclick = (event) => {
+      event.stopPropagation();
+      handlers.assignEngine(agent.id, engine);
+    };
+    group.append(button);
+  }
+  return group;
+}
+
+function runtimeSelect(label, options, selected, change, className) {
+  const select = el('select', className);
+  select.setAttribute('aria-label', label);
+  select.title = label;
+  for (const option of options) {
+    const item = el('option', '', option.label);
+    item.value = option.value;
+    item.selected = option.value === selected;
+    select.append(item);
+  }
+  select.onclick = (event) => event.stopPropagation();
+  select.onchange = (event) => {
+    event.stopPropagation();
+    change(select.value);
+  };
+  return select;
 }
 
 // ---------------------------------------------------------- flow contract
