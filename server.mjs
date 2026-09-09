@@ -1444,6 +1444,12 @@ function checkpointTask(item) {
     `Execution plan: ${item.plan}`,
     `Verifiable outcome: ${item.outcome}`,
     `Proof: ${item.verify}`,
+    ...(item.files?.length ? [
+      '',
+      'Files this checkpoint owns:',
+      ...item.files.map((file) => `- ${file}`),
+      'These checkpoint files replace any older file assignment in the saved goal.',
+    ] : []),
     '',
     'Finish this task within eight minutes. Report the gate receipts, then stand down.',
   ].filter((line) => line !== null).join('\n');
@@ -1462,13 +1468,15 @@ function promptContext(agent, task, {
   mentions = null,
   attachments = [],
   exclusiveOutput = false,
+  goal = null,
+  claims = null,
 } = {}) {
   return {
     agent,
-    goal: getGoal(state.goals, agent.id),
+    goal: goal ?? getGoal(state.goals, agent.id),
     task: task ?? state.mission,
     skills: options.skills,
-    claims: state.claims[agent.id] ?? [],
+    claims: claims ?? state.claims[agent.id] ?? [],
     steps: [],
     board: state.board,
     mentions,
@@ -1907,6 +1915,13 @@ const COMMANDS = {
     const context = promptContext(agent, tasks[0], {
       mentions,
       attachments,
+      goal: assignedItems.length ? {
+        objective: `Complete the assigned checkpoint${assignedItems.length > 1 ? 's' : ''}: `
+          + assignedItems.map((item) => `${item.id} — ${item.outcome}`).join('; '),
+      } : null,
+      claims: assignedItems.length
+        ? [...new Set(assignedItems.flatMap((item) => item.files ?? []))]
+        : null,
       // A planning turn owns the goals fence. Do not add the report fence.
       exclusiveOutput,
     });
