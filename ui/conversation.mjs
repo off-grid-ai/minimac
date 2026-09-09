@@ -38,16 +38,19 @@ export function renderMessage(message, { events = [], onReply, onReact, onOpen }
   article.append(body);
   if (message.attachments.length) article.append(renderAttachments(message.attachments));
   if (message.references.length) article.append(renderReferences(message.references, onOpen));
-  const deliveries = Object.values(conversationOf(events).delivery)
+  const deliveries = message.deliveries ?? Object.values(conversationOf(events).delivery)
     .filter((delivery) => delivery.messageId === message.id);
-  const failed = deliveries.filter((delivery) => delivery.state === DELIVERY_STATE.FAILED);
+  const failed = deliveries.filter((delivery) => [DELIVERY_STATE.FAILED, DELIVERY_STATE.STALE].includes(delivery.state));
   const queued = deliveries.filter((delivery) => delivery.state === DELIVERY_STATE.QUEUED);
-  if (failed.length || queued.length) {
+  const delivered = deliveries.filter((delivery) => delivery.state === DELIVERY_STATE.DELIVERED);
+  if (failed.length || queued.length || delivered.length) {
     const delivery = document.createElement('p');
     delivery.className = failed.length ? 'conversation-delivery is-failed' : 'conversation-delivery';
     delivery.textContent = failed.length
       ? `Not delivered to ${failed.map((item) => item.recipientId).join(', ')}: ${failed[0].error}`
-      : `Sending to ${queued.map((item) => item.recipientId).join(', ')}`;
+      : queued.length
+        ? `Sending to ${queued.map((item) => item.recipientId).join(', ')}`
+        : `Delivered to ${delivered.map((item) => item.recipientId).join(', ')}`;
     article.append(delivery);
   }
   const actions = document.createElement('div');

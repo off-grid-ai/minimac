@@ -105,7 +105,15 @@ export function applyConversationEvent(projection = {}, event) {
 }
 
 export function conversationOf(events = []) {
-  return events.reduce(applyConversationEvent, { messages: [], reactions: {}, delivery: {} });
+  const projection = events.reduce(applyConversationEvent, { messages: [], reactions: {}, delivery: {} });
+  const deliveries = Object.values(projection.delivery);
+  return {
+    ...projection,
+    messages: projection.messages.map((message) => ({
+      ...message,
+      deliveries: deliveries.filter((delivery) => delivery.messageId === message.id),
+    })),
+  };
 }
 
 export function messagesForContext(events, context) {

@@ -1,5 +1,7 @@
 import { EVENT_KINDS } from './events.mjs';
-import { CONTEXT_KIND, reactionsForMessage, threadSummary } from './conversation.mjs';
+import {
+  CONTEXT_KIND, conversationOf, reactionsForMessage, threadSummary,
+} from './conversation.mjs';
 import { isCrosstalkEvent } from './coordination.mjs';
 
 export const DETAIL_LEVELS = Object.freeze([
@@ -71,13 +73,16 @@ export function applyActivityFilters(events, {
 
 export function missionNarrative({ events = [], missionId, board = [], filters = {} }) {
   const visible = applyActivityFilters(events, { ...filters, board });
+  const messagesById = new Map(conversationOf(events).messages.map((message) => [message.id, message]));
   const messages = visible
     .filter((event) => event.kind === EVENT_KINDS.CONVERSATION_MESSAGE
       && event.payload?.message?.context?.kind === CONTEXT_KIND.MISSION
       && event.payload.message.context.id === String(missionId))
-    .map((event) => ({ kind: 'message', id: event.payload.message.id,
-      at: event.payload.message.createdAt, message: event.payload.message,
-      reactions: reactionsForMessage(events, event.payload.message.id) }));
+    .map((event) => {
+      const message = messagesById.get(event.payload.message.id) ?? event.payload.message;
+      return { kind: 'message', id: message.id, at: message.createdAt, message,
+        deliveries: message.deliveries ?? [], reactions: reactionsForMessage(events, message.id) };
+    });
   const milestones = visible
     .filter((event) => ![EVENT_KINDS.CONVERSATION_MESSAGE, EVENT_KINDS.ENGINE_OUTPUT].includes(event.kind))
     .map((event) => ({ kind: 'event', id: `${event.agentId}:${event.ts}:${event.kind}`, at: event.ts, event }));
