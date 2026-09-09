@@ -116,7 +116,7 @@ export function buildOutputSchema() {
 export function buildCheckpointUpdateSchema() {
   return {
     type: 'object',
-    required: ['item', 'gate', 'state', 'receipt'],
+    required: ['gate', 'state', 'receipt'],
     additionalProperties: false,
     properties: {
       item: { type: 'string' },
@@ -139,6 +139,10 @@ export function reportInstruction(role = null) {
     'Call update_checkpoint as soon as a checkpoint gate starts, passes, or fails. '
       + 'The checkpoint board is the only mission progress record. The Flow screen is '
       + 'a read-only view of that board.',
+    'For update_checkpoint, report only the gate, state, and receipt. MINIMAC uses your '
+      + 'leased checkpoint identity. Never guess or shorten its id.',
+    'Never start another copy of MINIMAC or server.mjs. The application that dispatched '
+      + 'you is the live instance.',
     '',
     'Call the MINIMAC report_progress tool before your final answer. It records the same '
       + 'claims and checkpoint gates as one final snapshot for every engine.',
@@ -151,7 +155,7 @@ export function reportInstruction(role = null) {
     '  "claims": [],',
     '  "discoveries": [],',
     '  "gates": [',
-    '    {"item": "w1", "gate": "test", "state": "pass|fail|running",',
+    '    {"gate": "test", "state": "pass|fail|running",',
     '     "receipt": "the exact command that proved it"}',
     '  ]',
     '}',
@@ -161,8 +165,7 @@ export function reportInstruction(role = null) {
     '- Every measured number you state goes in claims with the command that produced it. '
       + 'A time estimate is a forecast, not a measured claim.',
     '- If you have no command behind a number, set receipt to "" and say so.',
-    `- gates are checkpoint moves. The fixed gates are: ${GATES.join(', ')}. Name the item id `
-      + 'you own, the gate, and '
+    `- gates are checkpoint moves. The fixed gates are: ${GATES.join(', ')}. Name the gate and `
       + 'the command that proved it. A pass without a receipt is rejected, and a '
       + 'gate cannot pass before the ones before it.',
     '- The top-level gates list is the ONLY mission progress state.',
@@ -492,9 +495,11 @@ export function planningTask(mission, crew, board = null) {
   const roster = members
     .map((member) => `- ${member.id}  (${member.label}, ${member.role})`
       + `  [${member.enabled === false ? 'currently STOOD DOWN' : 'currently on'}]`
+      + `  [browser ${member.capabilities?.browserControl ? 'available' : 'unavailable'}]`
       + (member.instances > 1 ? `  — ${member.instances} workers share this seat` : ''))
     .join('\n');
   const example = JSON.stringify({
+    delivery: 'local',
     crew: Object.fromEntries(members.map((member) => [member.id, true])),
     workUnits: [{
       id: 'w1',
@@ -532,6 +537,8 @@ export function planningTask(mission, crew, board = null) {
     '',
     'Use the MINIMAC publish_work_plan tool. Its crew object must name every agent below. '
       + 'The application rejects an invalid graph before any worker starts.',
+    'Set delivery to local unless the mission explicitly asks to push or publish. A review, '
+      + 'inspection, or verification mission is local.',
     '',
     'Only if publish_work_plan is unavailable, use this fallback block:',
     '',
@@ -550,6 +557,10 @@ export function planningTask(mission, crew, board = null) {
       + 'for - a review, a test, a design, a contract - that role is ON. Benching '
       + 'the reviewer on a mission that says "review" is not a small crew, it is '
       + 'the wrong crew.',
+    '- Do not expand a named behavior into adjacent features from the same document. '
+      + 'Verify only the requested capability and its direct acceptance conditions.',
+    '- A worker without browser control cannot provide visual proof. Give it machine-verifiable '
+      + 'work only. If human sight is required, make the exact final observation an escalation to Mac.',
     '- Otherwise default to FALSE: an agent earns a place by having work on THIS '
       + 'mission that no one else would do.',
     '- Start with Thor and one worker. Add another worker only when two ready checkpoints '
@@ -569,7 +580,7 @@ export function planningTask(mission, crew, board = null) {
     '- cw includes coding, wiring, linting, and a small meaningful commit.',
     '- A failed tw, aw, or rw stage requests a correction; it does not quietly edit another role\'s work.',
     '- Every required stage names its files, short plan, exact proof, and one owner.',
-    '- MINIMAC adds the final pre-push and GitHub push checkpoints. Do not add copies of them.',
+    '- MINIMAC adds pre-push and GitHub push checkpoints only when delivery is publish. Do not add copies.',
     '- Remove any work unit that is not necessary for the mission to finish.',
   ].join('\n');
 }

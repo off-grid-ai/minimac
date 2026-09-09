@@ -15,7 +15,7 @@ export function createWorkPlanningService({
   getAcceptance = () => null,
   workerLimitMs,
 }) {
-  function buildWorkPlan(specs) {
+  function buildWorkPlan(specs, acceptance = getAcceptance()) {
     const validated = validateWorkPlan(specs, getAgents(), workerLimitMs);
     if (validated.error) return validated;
     const board = createBoard();
@@ -27,7 +27,7 @@ export function createWorkPlanningService({
         board.items = added.board.items;
       }
     }
-    for (const checkpoint of createReleaseCheckpoints(board.workUnits, getAgents(), getAcceptance())) {
+    for (const checkpoint of createReleaseCheckpoints(board.workUnits, getAgents(), acceptance)) {
       const added = addItem(board, checkpoint);
       if (added.error) return added;
       board.items = added.board.items;
@@ -60,9 +60,9 @@ export function createWorkPlanningService({
     return { ...candidate, items };
   }
 
-  function publishWorkPlan(specs) {
+  function publishWorkPlan(specs, acceptance = getAcceptance()) {
     const mode = (getBoard()?.workUnits ?? []).length > 0 ? 'regroup' : 'initial';
-    const built = buildWorkPlan(specs);
+    const built = buildWorkPlan(specs, acceptance);
     if (built.error) return built;
     const board = reconcileWorkPlan(built.board);
     setBoard(board);

@@ -242,6 +242,7 @@ export function createClaudeDriver({
           workerId: session?.agent?.workerId ?? null,
         }),
       );
+      at(EVENT_KINDS.STATUS, { state: 'failed' });
       return;
     }
     if ((message.permission_denials ?? []).length > 0) {
@@ -255,6 +256,7 @@ export function createClaudeDriver({
         }),
       );
     }
+    at(EVENT_KINDS.STATUS, { state: 'idle' });
   }
 
   // ----------------------------------------------------------------- process

@@ -104,6 +104,11 @@ const TOOLS = Object.freeze({
     name: AGENT_TOOL.ASSEMBLE,
     description: 'Publish parallel work units and their sequential role stages. The application validates role ownership, dependencies, and stage size before work starts.',
     inputSchema: object({
+      delivery: {
+        type: 'string',
+        enum: ['local', 'publish'],
+        description: 'local keeps work in this checkout. publish also requires pre-push and GitHub push.',
+      },
       crew: {
         type: 'object',
         description: 'Every non-Thor Avenger id mapped to false, true, or a worker count from 1 to 4.',
@@ -131,7 +136,7 @@ const TOOLS = Object.freeze({
           },
         }, ['id', 'title', 'outcome', 'scope', 'blockedBy', 'stages']),
       },
-    }, ['crew', 'workUnits']),
+    }, ['delivery', 'crew', 'workUnits']),
   },
   [AGENT_TOOL.START]: {
     name: AGENT_TOOL.START,

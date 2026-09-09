@@ -129,7 +129,7 @@ import { AGENT_TOOL, roleCanUseTool } from './core/agent-tools.mjs';
 import { applyFleetEvent } from './core/fleet-reducer.mjs';
 import { activationPlan } from './core/crew.mjs';
 import { estimateDispatchTokens } from './core/token-estimate.mjs';
-import { reconcileReleaseCheckpoints } from './core/work-units.mjs';
+import { reconcileReleaseCheckpoints, STAGE_GATES } from './core/work-units.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const MIME = {
@@ -447,6 +447,10 @@ async function harvestWorkPlan(event) {
     return { applied: false, error: 'assemble payload is not valid JSON' };
   }
 
+  if (!['local', 'publish'].includes(parsed.delivery)) {
+    return { applied: false, error: 'assemble needs delivery: local or publish' };
+  }
+
   // Who the mission needs. An agent taken off sits it out entirely: startCrew
   // skips anything disabled, so this is the orchestrator sizing its own crew.
   // No crew call is a failed assemble, not a partial one. Silently leaving
@@ -504,7 +508,13 @@ async function harvestWorkPlan(event) {
   const activeBeforeRegroup = itemsOf(state.board)
     .filter((item) => item.lease?.state === 'running')
     .map((item) => ({ id: item.id, agentId: item.lease.agentId, workerId: item.lease.workerId }));
-  const planned = workPlanning.publishWorkPlan(parsed.workUnits);
+  const required = [...new Set((parsed.workUnits ?? []).flatMap((unit) =>
+    (unit.stages ?? [])
+      .filter((stage) => stage.required !== false)
+      .flatMap((stage) => STAGE_GATES[stage.stage] ?? [])))];
+  if (parsed.delivery === 'publish') required.push('prepush', 'push');
+  const nextAcceptance = createAcceptancePolicy({ required });
+  const planned = workPlanning.publishWorkPlan(parsed.workUnits, nextAcceptance);
   if (planned.error) {
     ingest(createEvent(event.agentId, EVENT_KINDS.STATUS, {
       text: `assemble refused: ${planned.error}; nobody was started`,
@@ -512,6 +522,8 @@ async function harvestWorkPlan(event) {
     }));
     return { applied: false, error: planned.error };
   }
+  state.acceptance = nextAcceptance;
+  store.saveMissionState({ acceptance: state.acceptance, completedAt: null });
   for (const previous of activeBeforeRegroup) {
     const current = findItem(state.board, previous.id);
     if (current?.lease?.workerId === previous.workerId && current.lease.state === 'running') continue;
@@ -585,14 +597,21 @@ function harvestReport(event) {
   // board.mjs refuses anything out of order or without a receipt - so an agent
   // cannot report a push over untested code however confidently it tries.
   for (const move of report.gates ?? []) {
+    const reportingWorker = event.payload?.workerId
+      ? ensureWorkers(state.agents[event.agentId])
+        .find((candidate) => candidate.id === event.payload.workerId)
+      : null;
+    const ownedMove = reportingWorker?.checkpointId
+      ? { ...move, item: reportingWorker.checkpointId }
+      : move;
     const result = workBoard.updateCheckpoint(
       event.agentId,
-      move,
+      ownedMove,
       event.payload?.workerId ?? null,
     );
     if (result.error) continue;
     if (result.item.closedAt) completedWork.push(result.item);
-    if (move.state === 'fail') failedWork.push({ item: result.item, move });
+    if (ownedMove.state === 'fail') failedWork.push({ item: result.item, move: ownedMove });
   }
 
   for (const failure of failedWork) {
@@ -688,9 +707,12 @@ function partitionAgentOutput(event) {
 }
 
 function identifyWorker(event) {
-  if (!event?.agentId || event.payload?.workerId) return event;
+  if (!event?.agentId) return event;
   const sessionId = event.payload?.sessionId;
-  const worker = sessionId && workerForSession(state.agents[event.agentId], sessionId);
+  const worker = event.payload?.workerId
+    ? ensureWorkers(state.agents[event.agentId])
+      .find((candidate) => candidate.id === event.payload.workerId)
+    : sessionId && workerForSession(state.agents[event.agentId], sessionId);
   return worker
     ? { ...event, payload: { ...event.payload, workerId: worker.id, checkpointId: worker.checkpointId } }
     : event;
@@ -1237,6 +1259,7 @@ function crewRoster() {
     // is judging who is needed without knowing who is already stood down.
     enabled: agent.enabled !== false,
     active: isActive(agent),
+    capabilities: { localShell: true, browserControl: false },
     claims: state.claims[agent.id] ?? [],
   }));
 }
@@ -1428,7 +1451,7 @@ const COMMANDS = {
     // The role templates above are only a floor, so nothing is ever goal-less
     // if the assemble turn fails or times out.
     await COMMANDS.assemble().catch(() => {});
-    return { mission, goals: state.goals, planning: true };
+    return { runId: store.runId, mission, goals: state.goals, planning: true };
   },
 
   // ASSEMBLE. Thor decides who this mission actually needs, brings them on,
@@ -2734,9 +2757,13 @@ async function executeAgentTool(principal, name, args) {
     return { recorded: true };
   }
   if (name === AGENT_TOOL.CHECKPOINT) {
-    const result = workBoard.updateCheckpoint(callerId, args, workerId);
+    const worker = workerId
+      ? ensureWorkers(caller).find((candidate) => candidate.id === workerId)
+      : null;
+    const move = worker?.checkpointId ? { ...args, item: worker.checkpointId } : args;
+    const result = workBoard.updateCheckpoint(callerId, move, workerId);
     if (result.error) throw new Error(result.error);
-    return { updated: args.item, gate: args.gate, state: args.state };
+    return { updated: move.item, gate: move.gate, state: move.state };
   }
   if (name === AGENT_TOOL.INSPECT) {
     const checkpoints = itemsOf(state.board);
@@ -2765,6 +2792,7 @@ async function executeAgentTool(principal, name, args) {
             .filter((item) => !canWork(state.board, item, agent.id))
             .map((item) => item.id),
           goal: getGoal(state.goals, agent.id)?.objective ?? null,
+          capabilities: { localShell: true, browserControl: false },
         };
       });
     return {
