@@ -1434,6 +1434,7 @@ function readyWork(agentId) {
 }
 
 function checkpointTask(item) {
+  const requiredGates = STAGE_GATES[item.stage] ?? Object.keys(item.gates ?? {});
   return [
     `# Assigned task: ${item.id}`,
     item.workUnitId ? `Work unit: ${item.workUnitId}` : null,
@@ -1451,7 +1452,10 @@ function checkpointTask(item) {
       'These checkpoint files replace any older file assignment in the saved goal.',
     ] : []),
     '',
-    'Finish this task within eight minutes. Report the gate receipts, then stand down.',
+    `Required gates for this checkpoint: ${requiredGates.join(', ')}.`,
+    'Do not give your final answer or stand down while one of these gates is pending, running, or failed.',
+    'Call update_checkpoint for every required gate, in order. Then call report_progress with the same complete gate list.',
+    'Finish this task within eight minutes. Report all gate receipts, then stand down.',
   ].filter((line) => line !== null).join('\n');
 }
 
@@ -2330,6 +2334,31 @@ const COMMANDS = {
     }
     state.agents = patchAgent(state.agents, item.owner, { enabled: true });
     return COMMANDS.start({ agentId: item.owner, checkpointIds: [id] });
+  },
+
+  // Local operator recovery for proof that already exists in the mission
+  // history. This uses the same board transition service as an agent report;
+  // it does not edit stored checkpoint JSON behind the running server.
+  async reconcileCheckpoint({ id, gates = [] }) {
+    const item = findItem(state.board, id);
+    if (!item) throw new Error(`no item ${id}`);
+    if (!Array.isArray(gates) || gates.length === 0) {
+      throw new Error('reconciliation needs gate receipts');
+    }
+    const boss = Object.values(state.agents)
+      .find((agent) => agent.role === ROLES.ORCHESTRATOR);
+    if (!boss) throw new Error('no orchestrator');
+
+    const resumed = reviseItem(state.board, id, { paused: false, pauseReason: null });
+    if (resumed.error) throw new Error(resumed.error);
+    state.board = resumed.board;
+    store.saveItem(resumed.item);
+
+    for (const move of gates) {
+      const result = workBoard.updateCheckpoint(boss.id, { ...move, item: id });
+      if (result.error) throw new Error(result.error);
+    }
+    return { item: findItem(state.board, id) };
   },
 
   // One command owns the mission switch. Off benches and stops the agent. On
