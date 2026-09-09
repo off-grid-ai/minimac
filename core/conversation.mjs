@@ -8,7 +8,9 @@ export const DELIVERY_STATE = Object.freeze({
   QUEUED: 'queued', DELIVERED: 'delivered', READ: 'read', FAILED: 'failed', STALE: 'stale',
 });
 
-const RECIPIENT_FAILURE_STATES = new Set(['stopped', 'failed', 'stale']);
+// A normal stand-down happens after an engine session ends. It does not undo
+// delivery that already happened; only abnormal endings can make it stale.
+const RECIPIENT_FAILURE_STATES = new Set(['failed', 'stale']);
 
 export const REFERENCE_KIND = Object.freeze({
   HERO: 'hero', CHECKPOINT: 'checkpoint', WORK_UNIT: 'work-unit', DECISION: 'decision',
@@ -116,7 +118,7 @@ export function applyConversationEvent(projection = {}, event) {
         ...delivery,
         state: DELIVERY_STATE.STALE,
         error: event.payload?.failureReason ?? event.payload?.reason
-          ?? 'Recipient stopped before reading this message',
+          ?? 'Recipient became unavailable before reading this message',
         updatedAt: event.ts,
       };
     }
