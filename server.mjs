@@ -119,6 +119,7 @@ import {
 } from './core/board.mjs';
 import {
   routeCard,
+  guardVerdict,
   governanceTask,
   parseVerdicts,
   VERDICT,
@@ -1101,6 +1102,7 @@ function harvestVerdicts(event) {
 // Only ever the verbs the floor already has, so nothing here can do something
 // you could not undo from the room.
 async function applyVerdict(verdict) {
+  verdict = guardVerdict(verdict, state.board);
   state.verdicts[verdict.id] = verdict;
 
   const agent = state.agents[verdict.agentId];
@@ -1498,6 +1500,18 @@ const COMMANDS = {
       if (state.awaitingGoals) startCrew('the orchestrator did not set goals in time', false);
     }, PLANNING_TIMEOUT_MS);
     return { planning: true };
+  },
+
+  // START ALL means "start all work that can run now". The scheduler owns
+  // readiness, dependencies, file conflicts, and capacity. Calling start on
+  // every seat made normal dependency waits look like failures and also tried
+  // to start Thor as a checkpoint worker.
+  async startReady() {
+    if (state.completedAt) throw new Error('mission is complete');
+    ensureRun();
+    const started = await scheduler.reconcile();
+    publish({ type: 'state', state: snapshot() });
+    return { started };
   },
 
   // A run is a conversation with the fleet. Starting a new one closes the old

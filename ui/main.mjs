@@ -1375,9 +1375,7 @@ function wireChrome() {
   dom.planAll?.addEventListener('click', () => send('assemble'));
 
   dom.startAll?.addEventListener('click', () => {
-    for (const agent of orderedAgents()) {
-      if (agent.enabled !== false) send('start', { agentId: agent.id });
-    }
+    send('startReady');
   });
 
   // The floor's voice. A switch, so it says which state it is in without a

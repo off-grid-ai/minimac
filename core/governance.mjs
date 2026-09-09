@@ -44,6 +44,24 @@ export function isVerdictAction(value) {
   return VERDICT_ACTIONS.has(value);
 }
 
+// Thor may stop an idle seat, but he must not discard work that a leased
+// checkpoint still says is in progress. A running gate is the board's
+// canonical record that the worker has started a change but has not reported
+// its result. Such a bench becomes a human escalation instead.
+export function guardVerdict(verdict, board) {
+  if (verdict?.action !== VERDICT.BENCH) return verdict;
+  const checkpoint = (board?.items ?? []).find((item) =>
+    item.owner === verdict.agentId
+    && item.lease?.state === 'running'
+    && Object.values(item.gates ?? {}).includes('running'));
+  if (!checkpoint) return verdict;
+  return {
+    ...verdict,
+    action: VERDICT.ESCALATE,
+    note: `${checkpoint.id} has active work that is not reported yet; review it before benching.`,
+  };
+}
+
 // ------------------------------------------------------------------ routing
 
 // Where one card goes, given the mode and whatever Thor said about it.
