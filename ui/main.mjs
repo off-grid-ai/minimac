@@ -165,6 +165,14 @@ async function send(type, payload = {}) {
   if (body.ok && ['postConversation', 'replyConversation', 'reactConversation', 'setInstances'].includes(type)) {
     setTimeout(() => refreshOpenEntity(), 0);
   }
+  if (body.ok && type === 'setMission' && body.result?.runId) {
+    state.selectedRunId = body.result.runId;
+    state.selectedMission = body.result.mission ?? '';
+    state.selectedMissionView = null;
+    seededRunId = body.result.runId;
+    setRunUrl(body.result.runId);
+    state.eventsByAgent = {};
+  }
   return body;
 }
 
