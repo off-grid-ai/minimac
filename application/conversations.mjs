@@ -14,14 +14,24 @@ export function createConversationService({
     const primary = normalizeContext(context, missionId());
     if (!primary) throw new Error('message context does not exist');
     if (validateContext && !validateContext(primary)) throw new Error(`${primary.kind} ${primary.id} does not exist`);
-    const audience = [...new Set((await resolveRecipients?.({
-      context: primary, authorId, recipients,
-    }) ?? recipients).filter(Boolean).map(String))];
+    const replyTo = replyToMessageId
+      ? getEvents().find((event) => event.payload?.message?.id === String(replyToMessageId))?.payload?.message
+      : null;
+    if (replyToMessageId && (!replyTo
+      || replyTo.context?.kind !== primary.kind || replyTo.context?.id !== primary.id)) {
+      throw new Error(`no message ${replyToMessageId} in this conversation`);
+    }
+    // A reply is addressed to the person being answered. The UI can still add
+    // explicit recipients, but it does not have to duplicate conversation logic.
+    const requested = recipients.length
+      ? recipients
+      : replyTo?.authorId && replyTo.authorId !== authorId ? [replyTo.authorId] : [];
+    const resolved = replyTo && !recipients.length
+      ? requested
+      : (await resolveRecipients?.({ context: primary, authorId, recipients: requested }) ?? requested);
+    const audience = [...new Set(resolved.filter(Boolean).map(String))];
     for (const recipientId of audience) {
       if (validateRecipient && !validateRecipient(recipientId)) throw new Error(`recipient ${recipientId} does not exist`);
-    }
-    if (replyToMessageId && !messageExists(getEvents(), primary, replyToMessageId)) {
-      throw new Error(`no message ${replyToMessageId} in this conversation`);
     }
     const parsed = await resolveMentions(body);
     const skills = await resolveSkills((parsed.references ?? [])

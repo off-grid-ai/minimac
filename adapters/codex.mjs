@@ -100,7 +100,9 @@ export function createCodexDriver({
     const entry = buffers.get(threadId);
     if (!entry && !String(fallback).trim()) return;
     if (entry?.timer) clearTimeout(entry.timer);
-    const text = final ? (entry?.complete || fallback) : entry?.pending;
+    // The completed turn contains the final agent message. Prefer it over the
+    // accumulated stream, which can contain several separate progress messages.
+    const text = final ? (String(fallback).trim() ? fallback : entry?.complete) : entry?.pending;
     if (final) buffers.delete(threadId);
     else if (entry) {
       entry.pending = '';
@@ -350,7 +352,7 @@ export function createCodexDriver({
         return at(EVENT_KINDS.STATUS, { state: 'running', turnId: params.turn?.id });
 
       case 'turn/completed':
-        flushDelta(params.threadId, true, finalText(params.turn?.items)); {
+        flushDelta(params.threadId, true, finalText(params.turn?.items)?.text ?? ''); {
         turnByThread.delete(threadId);
         const turn = params.turn ?? {};
         at(EVENT_KINDS.RESULT, {
