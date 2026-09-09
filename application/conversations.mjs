@@ -83,20 +83,18 @@ export function createConversationService({
   function acceptAgentOutput(event, context) {
     if (event.payload?.final !== true) return null;
     const events = getEvents();
-    const replyTo = [...events].reverse().find((candidate) => {
-      const message = candidate.payload?.message;
-      if (!message || message.authorId === event.agentId) return false;
-      if (!message.recipients?.includes(event.agentId)) return false;
-      return !events.some((possibleReply) =>
-        possibleReply.payload?.message?.authorId === event.agentId
-        && possibleReply.payload?.message?.replyToMessageId === message.id);
-    })?.payload?.message ?? null;
+    const requestedReplyId = event.payload?.replyToMessageId
+      ? String(event.payload.replyToMessageId)
+      : null;
+    const replyTo = requestedReplyId
+      ? events.find((candidate) => candidate.payload?.message?.id === requestedReplyId)?.payload?.message ?? null
+      : null;
     const primary = normalizeContext(replyTo?.context ?? context, missionId());
     const replyToMessageId = replyTo?.id ?? null;
     const explicitRecipients = event.payload?.recipients ?? [];
     const visibleRecipient = explicitRecipients.length
       ? null
-      : resolveVisibleRecipient?.({ context, authorId: event.agentId }) ?? null;
+      : replyTo?.authorId ?? resolveVisibleRecipient?.({ context: primary, authorId: event.agentId }) ?? null;
     const result = createMessage({
       id: id(), authorId: event.agentId, context: primary, replyToMessageId,
       recipients: explicitRecipients.length
