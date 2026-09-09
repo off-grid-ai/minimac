@@ -797,8 +797,12 @@ function repeatsUnchangedFact(event, withinMs = 300_000) {
 function ingest(rawIncoming) {
   const incoming = identifyWorker(rawIncoming);
   if (!acceptsWorkerEvent(incoming)) return;
+  // Engine adapters can announce IDLE before they deliver the turn result.
+  // IDLE means the session can accept another turn; it does not mean the
+  // checkpoint lease is over. Closing the lease here made the final report
+  // arrive one event too late and fail its stable worker-identity check.
   if (incoming.kind === EVENT_KINDS.STATUS
-    && [WORKER_STATE.IDLE, WORKER_STATE.STOPPED, WORKER_STATE.FAILED]
+    && [WORKER_STATE.STOPPED, WORKER_STATE.FAILED, WORKER_STATE.STALE]
       .includes(incoming.payload?.state)) {
     const worker = incoming.payload?.workerId
       ? ensureWorkers(state.agents[incoming.agentId])
