@@ -82,17 +82,16 @@ export function createConversationService({
 
   function acceptAgentOutput(event, context) {
     if (event.payload?.final !== true) return null;
-    const primary = normalizeContext(context, missionId());
     const events = getEvents();
     const replyTo = [...events].reverse().find((candidate) => {
       const message = candidate.payload?.message;
       if (!message || message.authorId === event.agentId) return false;
-      if (message.context?.kind !== primary?.kind || message.context?.id !== primary?.id) return false;
       if (!message.recipients?.includes(event.agentId)) return false;
       return !events.some((possibleReply) =>
         possibleReply.payload?.message?.authorId === event.agentId
         && possibleReply.payload?.message?.replyToMessageId === message.id);
     })?.payload?.message ?? null;
+    const primary = normalizeContext(replyTo?.context ?? context, missionId());
     const replyToMessageId = replyTo?.id ?? null;
     const explicitRecipients = event.payload?.recipients ?? [];
     const visibleRecipient = explicitRecipients.length
