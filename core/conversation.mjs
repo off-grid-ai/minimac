@@ -5,8 +5,10 @@ export const CONTEXT_KIND = Object.freeze({
 });
 
 export const DELIVERY_STATE = Object.freeze({
-  QUEUED: 'queued', DELIVERED: 'delivered', FAILED: 'failed', STALE: 'stale',
+  QUEUED: 'queued', DELIVERED: 'delivered', READ: 'read', FAILED: 'failed', STALE: 'stale',
 });
+
+const RECIPIENT_FAILURE_STATES = new Set(['stopped', 'failed', 'stale']);
 
 export const REFERENCE_KIND = Object.freeze({
   HERO: 'hero', CHECKPOINT: 'checkpoint', WORK_UNIT: 'work-unit', DECISION: 'decision',
@@ -99,7 +101,25 @@ export function applyConversationEvent(projection = {}, event) {
   }
   if (event?.kind === EVENT_KINDS.DELIVERY) {
     const payload = event.payload ?? {};
-    next.delivery[`${payload.messageId}:${payload.recipientId}`] = payload;
+    next.delivery[`${payload.messageId}:${payload.recipientId}`] = {
+      ...payload,
+      updatedAt: event.ts,
+    };
+  }
+  if (event?.kind === EVENT_KINDS.STATUS
+    && RECIPIENT_FAILURE_STATES.has(event.payload?.state)) {
+    for (const [key, delivery] of Object.entries(next.delivery)) {
+      if (delivery.recipientId !== event.agentId
+        || ![DELIVERY_STATE.QUEUED, DELIVERY_STATE.DELIVERED].includes(delivery.state)
+        || event.ts < delivery.updatedAt) continue;
+      next.delivery[key] = {
+        ...delivery,
+        state: DELIVERY_STATE.STALE,
+        error: event.payload?.failureReason ?? event.payload?.reason
+          ?? 'Recipient stopped before reading this message',
+        updatedAt: event.ts,
+      };
+    }
   }
   return next;
 }

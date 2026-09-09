@@ -1,5 +1,5 @@
 import {
-  DELIVERY_STATE, conversationReferences, createDelivery, createMessage, createReaction,
+  DELIVERY_STATE, conversationOf, conversationReferences, createDelivery, createMessage, createReaction,
   messageContent, messageExists, normalizeContext, reactionActive,
 } from '../core/conversation.mjs';
 
@@ -84,7 +84,7 @@ export function createConversationService({
     if (event.payload?.final !== true) return null;
     const primary = normalizeContext(context, missionId());
     const events = getEvents();
-    const replyToMessageId = [...events].reverse().find((candidate) => {
+    const replyTo = [...events].reverse().find((candidate) => {
       const message = candidate.payload?.message;
       if (!message || message.authorId === event.agentId) return false;
       if (message.context?.kind !== primary?.kind || message.context?.id !== primary?.id) return false;
@@ -92,7 +92,8 @@ export function createConversationService({
       return !events.some((possibleReply) =>
         possibleReply.payload?.message?.authorId === event.agentId
         && possibleReply.payload?.message?.replyToMessageId === message.id);
-    })?.payload?.message?.id ?? null;
+    })?.payload?.message ?? null;
+    const replyToMessageId = replyTo?.id ?? null;
     const explicitRecipients = event.payload?.recipients ?? [];
     const visibleRecipient = explicitRecipients.length
       ? null
@@ -107,6 +108,20 @@ export function createConversationService({
       from: event.payload?.from ?? 'agent', createdAt: event.ts,
     });
     if (result.error) return null;
+    const currentDelivery = replyTo
+      ? conversationOf(events).delivery[`${replyTo.id}:${event.agentId}`]
+      : null;
+    if (currentDelivery
+      && [DELIVERY_STATE.QUEUED, DELIVERY_STATE.DELIVERED].includes(currentDelivery.state)) {
+      emit(createDelivery({
+        id: currentDelivery.id,
+        authorId: replyTo.authorId,
+        messageId: replyTo.id,
+        recipientId: event.agentId,
+        state: DELIVERY_STATE.READ,
+        createdAt: event.ts,
+      }).event);
+    }
     emit(result.event);
     return result.message;
   }
