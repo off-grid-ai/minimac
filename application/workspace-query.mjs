@@ -1,5 +1,5 @@
 import { statusOf } from '../core/board.mjs';
-import { CONTEXT_KIND, messagesForContext, messagesForHero, threadSummary } from '../core/conversation.mjs';
+import { CONTEXT_KIND, messagesForContext, threadSummary } from '../core/conversation.mjs';
 import { missionNarrative } from '../core/activity.mjs';
 
 export function createWorkspaceQuery({ getState, resolveResource = async () => null }) {
@@ -25,7 +25,6 @@ export function createWorkspaceQuery({ getState, resolveResource = async () => n
       running: checkpoints.filter((candidate) => candidate.lease?.state === 'running'),
       queued: checkpoints.filter((candidate) => !candidate.closedAt && candidate.lease?.state !== 'running'),
       completed: checkpoints.filter((candidate) => Boolean(candidate.closedAt)),
-      messages: messagesForHero(state.events, id),
       decisions: state.cards.filter((card) => card.agentId === id) };
   }
   function checkpoint(id) {
