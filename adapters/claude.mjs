@@ -54,6 +54,7 @@ const PLAN_STATUS = Object.freeze({
 });
 
 const HISTORY_LIMIT = 16_000;
+const REPLY_TO_MESSAGE = /^Reply-To-Message:\s*(\S+)$/m;
 
 // MINIMAC keeps every Claude seat inside the same bounded context policy.
 // Claude Code gives environment settings precedence over interactive commands
@@ -118,7 +119,11 @@ export function createClaudeDriver({
 
     if (message.type === 'assistant') {
       for (const block of message.message?.content ?? []) {
-        if (block.type === 'text' && block.text) at(EVENT_KINDS.ENGINE_OUTPUT, { text: block.text, final: true });
+        if (block.type === 'text' && block.text) at(EVENT_KINDS.ENGINE_OUTPUT, {
+          text: block.text,
+          final: true,
+          replyToMessageId: sessions.get(sessionId)?.replyToMessageId ?? null,
+        });
         if (block.type === 'tool_use') normalizeToolUse(at, block);
       }
       return;
@@ -136,6 +141,8 @@ export function createClaudeDriver({
 
     if (message.type === 'result') {
       normalizeResult(agentId, at, message, sessionId);
+      const session = sessions.get(sessionId);
+      if (session) session.replyToMessageId = null;
       return;
     }
 
@@ -391,6 +398,7 @@ export function createClaudeDriver({
   function write(sessionId, text) {
     const session = sessions.get(sessionId);
     if (!session || !session.alive || session.child.stdin.destroyed) return false;
+    session.replyToMessageId = text.match(REPLY_TO_MESSAGE)?.[1] ?? null;
     session.child.stdin.write(
       `${JSON.stringify({
         type: 'user',

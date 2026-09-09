@@ -131,6 +131,7 @@ export function conversationPrompt(message) {
     '# Conversation',
     `Context: ${message.context.kind}:${message.context.id}`,
     `From: ${message.authorId}`,
+    `Reply-To-Message: ${message.id}`,
     '',
     messageContent(message),
   ].filter(Boolean).join('\n');
