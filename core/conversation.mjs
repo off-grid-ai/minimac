@@ -153,3 +153,16 @@ export function conversationReferences({ context, parsed, attachments = [], skil
     ...attachments.map((file) => ({ kind: 'attachment', id: file.path, label: file.name })),
   ].filter(Boolean));
 }
+
+export function messageContent(message) {
+  const references = (message.references ?? [])
+    .filter((reference) => reference.kind !== REFERENCE_KIND.ATTACHMENT)
+    .map((reference) => `- ${reference.kind}:${reference.id}`);
+  const attachments = (message.attachments ?? [])
+    .map((file) => `- ${file.path} (${file.type ?? 'file'}, ${file.name ?? 'attachment'})`);
+  return [
+    String(message.body ?? '').trim(),
+    references.length ? `References:\n${references.join('\n')}` : null,
+    attachments.length ? `Attachments:\n${attachments.join('\n')}` : null,
+  ].filter(Boolean).join('\n\n');
+}

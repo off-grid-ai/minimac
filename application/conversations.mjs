@@ -1,10 +1,11 @@
 import {
   DELIVERY_STATE, conversationReferences, createDelivery, createMessage, createReaction,
-  messageExists, normalizeContext, reactionActive,
+  messageContent, messageExists, normalizeContext, reactionActive,
 } from '../core/conversation.mjs';
 
 export function createConversationService({
-  getEvents, emit, id, missionId, resolveMentions, resolveSkills, validateContext, validateRecipient, deliver,
+  getEvents, emit, id, missionId, resolveMentions, resolveSkills, resolveRecipients,
+  validateContext, validateRecipient, deliver,
 }) {
   async function post({
     authorId, context, recipients = [], body = '', attachments = [], references = [],
@@ -13,7 +14,10 @@ export function createConversationService({
     const primary = normalizeContext(context, missionId());
     if (!primary) throw new Error('message context does not exist');
     if (validateContext && !validateContext(primary)) throw new Error(`${primary.kind} ${primary.id} does not exist`);
-    for (const recipientId of recipients) {
+    const audience = [...new Set((await resolveRecipients?.({
+      context: primary, authorId, recipients,
+    }) ?? recipients).filter(Boolean).map(String))];
+    for (const recipientId of audience) {
       if (validateRecipient && !validateRecipient(recipientId)) throw new Error(`recipient ${recipientId} does not exist`);
     }
     if (replyToMessageId && !messageExists(getEvents(), primary, replyToMessageId)) {
@@ -23,7 +27,7 @@ export function createConversationService({
     const skills = await resolveSkills((parsed.references ?? [])
       .filter((reference) => reference.kind === 'skill').map((reference) => reference.id));
     const result = createMessage({
-      id: id(), authorId, context: primary, recipients, replyToMessageId, body, attachments, from,
+      id: id(), authorId, context: primary, recipients: audience, replyToMessageId, body, attachments, from,
       references: [...references, ...conversationReferences({ context: primary, parsed, attachments, skills })],
     });
     if (result.error) throw new Error(result.error);
@@ -76,6 +80,11 @@ export function createConversationService({
 }
 
 export function conversationPrompt(message) {
-  return [`# Conversation`, `Context: ${message.context.kind}:${message.context.id}`,
-    `From: ${message.authorId}`, '', message.body].join('\n');
+  return [
+    '# Conversation',
+    `Context: ${message.context.kind}:${message.context.id}`,
+    `From: ${message.authorId}`,
+    '',
+    messageContent(message),
+  ].filter(Boolean).join('\n');
 }

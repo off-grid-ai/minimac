@@ -1690,11 +1690,14 @@ const COMMANDS = {
     });
     context.tasks = tasks;
     context.workItems = assignedItems;
+    const missionConversation = messagesForContext(state.events, {
+      kind: CONTEXT_KIND.MISSION, id: String(store.runId),
+    });
     context.conversations = agent.role === ROLES.ORCHESTRATOR
-      ? [messagesForContext(state.events, { kind: CONTEXT_KIND.MISSION, id: String(store.runId) })]
-      : assignedItems.map((item) => messagesForContext(state.events, {
+      ? [missionConversation]
+      : assignedItems.map((item) => [...missionConversation, ...messagesForContext(state.events, {
         kind: CONTEXT_KIND.CHECKPOINT, id: item.id,
-      }));
+      })].sort((left, right) => left.createdAt - right.createdAt));
     let startedWorkers;
     try {
       startedWorkers = await startWorkers(agent, cwd, context);
@@ -2260,6 +2263,20 @@ conversations = createConversationService({
     const skills = await repoIndex.skills(options.repo);
     return names.map((name) => skills.find((skill) => skill.label === name)).filter(Boolean);
   },
+  resolveRecipients: ({ context, authorId, recipients }) => {
+    if (recipients.length) return recipients.filter((id) => id !== authorId);
+    if (context.kind === CONTEXT_KIND.MISSION) {
+      return Object.values(state.agents)
+        .filter((agent) => agent.id !== authorId && hasLiveWorker(agent))
+        .map((agent) => agent.id);
+    }
+    if (context.kind === CONTEXT_KIND.CHECKPOINT) {
+      const owner = findItem(state.board, context.id)?.owner;
+      return owner && owner !== authorId ? [owner] : [];
+    }
+    const owner = state.cards.find((card) => String(card.key ?? card.id) === context.id)?.agentId;
+    return owner && owner !== authorId ? [owner] : [];
+  },
   deliver: async (agentId, text, { wake = false } = {}) => {
     const agent = state.agents[agentId];
     if (!agent) throw new Error(`unknown agent: ${agentId}`);
@@ -2783,7 +2800,7 @@ async function executeAgentTool(principal, name, args) {
     return writeConversation({
       context: { kind: args.contextKind, id: args.contextId }, text: args.text,
       replyToMessageId: args.replyToMessageId ?? null, recipients: args.recipients ?? [],
-      from: callerId, authorId: callerId,
+      attachments: args.attachments ?? [], from: callerId, authorId: callerId,
     });
   }
   if (name === AGENT_TOOL.REACT) {

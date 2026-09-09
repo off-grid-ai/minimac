@@ -46,7 +46,7 @@ import {
 } from '../core/readable.mjs';
 import {
   DETAIL_LEVELS as FEED_LEVELS, ACTIVITY_FILTERS as FEED_PRESETS,
-  missionNarrative,
+  checkpointThreadSummary, missionNarrative,
 } from '../core/activity.mjs';
 
 const PULSE_MS = 900;
@@ -1493,9 +1493,18 @@ function renderFeed() {
   const position = feedView === renderedFeedView
     ? captureScrollAnchor(feedBody)
     : { mode: 'tail' };
-  const rows = narrative.slice(-400).map((entry) => {
+  const entries = narrative.slice(-400);
+  const rows = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
     if (entry.kind === 'message') {
-      return renderMessageGroup([entry.message], {
+      const messages = [entry.message];
+      while (entries[index + 1]?.kind === 'message'
+        && entries[index + 1].message.authorId === entry.message.authorId) {
+        messages.push(entries[index + 1].message);
+        index += 1;
+      }
+      rows.push(renderMessageGroup(messages, {
         agents: state.agents,
         events: allMissionEvents,
         onReply: (message) => { state.feedReplyTo = message.id; feedChat?.focus(); },
@@ -1503,16 +1512,17 @@ function renderFeed() {
           context: message.context, messageId: message.id, reaction,
         }),
         onOpen: (reference) => openConnectedEntity(reference.kind, reference.id),
-      });
+      }));
+      continue;
     }
     const event = entry.event;
     const view = feedEntry(state.agents[event.agentId], event);
-    if (!view) return null;
+    if (!view) continue;
     const checkpointId = view.checkpointId ?? event.payload?.checkpointId ?? null;
     const item = checkpointId ? feedBoard.find((candidate) => candidate.id === checkpointId) : null;
     const workUnit = feedFlows.find((candidate) => candidate.workUnitId === item?.workUnitId);
     const checkpoint = workUnit?.checkpoints?.find((candidate) => candidate.id === item?.id);
-    return feedRow({
+    rows.push(feedRow({
       ...view, agentId: event.agentId, checkpointId,
       workUnitId: item?.workUnitId ?? null,
       workUnitDisplayId: workUnit?.displayId ?? item?.workUnitId ?? null,
@@ -1526,15 +1536,41 @@ function renderFeed() {
         : 0,
       reactions: {}, reactionActors: {}, ts: event.ts,
       key: feedEventKey(event.agentId, event),
-    });
-  }).filter(Boolean);
+    }));
+  }
   const header = [missionFeedContext(), feedLevelBar(), state.feedFiltersOpen ? feedFilterPanel() : null,
+    checkpointThreadsBar(feedBoard, allMissionEvents),
     readingLiveMission ? checkpointCard() : null, ...(state.feedFilter ? [filterChip()] : [])]
     .filter(Boolean);
   feedControls?.replaceChildren(...header);
   feedBody.replaceChildren(...rows);
   restoreScrollAnchor(feedBody, position);
   renderedFeedView = feedView;
+}
+
+function checkpointThreadsBar(board, events) {
+  const projected = new Map((state.workspace?.checkpoints ?? []).map((item) => [item.id, item]));
+  const threads = board.map((item) => ({
+    id: item.id,
+    label: projected.get(item.id)?.displayId ?? item.displayId ?? item.id,
+    ...checkpointThreadSummary(events, item.id),
+  })).filter((thread) => thread.count > 0)
+    .sort((left, right) => right.latestAt - left.latestAt);
+  if (!threads.length) return null;
+
+  const nav = document.createElement('nav');
+  nav.className = 'feed-thread-index';
+  nav.setAttribute('aria-label', 'Active checkpoint threads');
+  const label = document.createElement('span');
+  label.textContent = 'THREADS';
+  nav.append(label);
+  for (const thread of threads) {
+    const button = createControlButton(`#${thread.label}  ${thread.count}`, { variant: 'quiet' });
+    button.title = `${thread.count} message${thread.count === 1 ? '' : 's'}`;
+    button.onclick = () => openCheckpointThread(thread.id);
+    nav.append(button);
+  }
+  return nav;
 }
 
 function feedFilterPanel() {

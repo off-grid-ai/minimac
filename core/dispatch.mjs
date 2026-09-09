@@ -6,6 +6,7 @@ import { ROLES } from './roster.mjs';
 import { GATES } from './flows.mjs';
 import { boardBrief } from './board.mjs';
 import { createPipeline, defineStep } from './middleware.mjs';
+import { messageContent } from './conversation.mjs';
 
 // Three roles pick an implementation approach, so three roles plan before they
 // act. The rest judge, route or specify - "pick one of three ways to build it"
@@ -397,7 +398,7 @@ export function dispatchPipeline(extraSteps = []) {
     defineStep('conversation', ({ conversation = [] }) => {
       if (!conversation.length) return null;
       const lines = conversation.slice(-12).map((message) =>
-        `- ${message.authorId}: ${String(message.body ?? '').trim()}`);
+        `- ${message.authorId}: ${messageContent(message)}`);
       return `# Relevant conversation\n\n${lines.join('\n')}`;
     }),
 

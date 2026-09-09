@@ -37,6 +37,12 @@ const object = (properties, required = []) => ({
   additionalProperties: false,
 });
 
+const attachment = object({
+  path: { type: 'string', description: 'Absolute path to the shared local artifact.' },
+  name: { type: 'string' },
+  type: { type: 'string' },
+}, ['path', 'name', 'type']);
+
 const TOOLS = Object.freeze({
   [AGENT_TOOL.REPORT]: {
     name: AGENT_TOOL.REPORT,
@@ -71,6 +77,7 @@ const TOOLS = Object.freeze({
       contextKind: { type: 'string', enum: ['mission', 'checkpoint', 'decision'] },
       contextId: { type: 'string' }, text: { type: 'string' },
       recipients: { type: 'array', items: { type: 'string' } },
+      attachments: { type: 'array', items: attachment },
     }, ['contextKind', 'contextId', 'text']),
   },
   [AGENT_TOOL.REPLY]: {
@@ -80,6 +87,7 @@ const TOOLS = Object.freeze({
       contextKind: { type: 'string', enum: ['mission', 'checkpoint', 'decision'] },
       contextId: { type: 'string' }, text: { type: 'string' }, replyToMessageId: { type: 'string' },
       recipients: { type: 'array', items: { type: 'string' } },
+      attachments: { type: 'array', items: attachment },
     }, ['contextKind', 'contextId', 'text', 'replyToMessageId']),
   },
   [AGENT_TOOL.REACT]: {

@@ -353,6 +353,21 @@ function style() {
     .conversation-attachment { color: var(--accent, #34d399); font-size: 9px; text-decoration: none; }
     .conversation-attachment img { display: block; width: 112px; height: 72px; object-fit: cover; border: 1px solid var(--line, #262626); }
     .conversation-empty { margin: 0; padding: 8px 0; color: var(--faint, #5a5a5a); font-size: 10px; }
+    .feed-thread-index {
+      display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto;
+      padding: 4px 0 6px; border-bottom: 1px solid var(--line, #262626);
+    }
+    .feed-thread-index > span {
+      flex: 0 0 auto; margin-right: 2px; color: var(--faint, #5a5a5a);
+      font-size: 9px; letter-spacing: .1em;
+    }
+    .feed-thread-index .control-button { flex: 0 0 auto; min-height: 22px; padding: 1px 6px; }
+    .feed-thread-button {
+      width: 22px; min-height: 20px; padding: 0; border: 0; background: transparent;
+      color: var(--faint, #5a5a5a); cursor: pointer;
+    }
+    .feed-thread-button:hover, .feed-thread-button:focus-visible { color: var(--accent, #34d399); }
+    .feed-thread-button svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.2; }
     .connected-entity-composer {
       position: sticky; bottom: -12px; z-index: 2; display: grid; gap: 4px;
       padding: 6px 0 0; background: var(--surface, #121212); border-top: 1px solid var(--line, #262626);
