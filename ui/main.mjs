@@ -2069,9 +2069,7 @@ async function openConnectedEntity(kind, id, { replace = false } = {}) {
       context: message.context, messageId: message.id, reaction,
     }),
     onOpen: (reference) => openConnectedEntity(reference.kind, reference.id),
-    onCapacity: kind === 'hero'
-      ? (instances) => send('setInstances', { agentId: id, instances })
-      : null,
+    runtimeHandlers: kind === 'hero' ? handlers : null,
   });
   if (conversational) {
     const context = kind === 'message'

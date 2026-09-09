@@ -1,13 +1,14 @@
 import { createControlButton } from './controls.mjs';
 import { renderThread } from './conversation.mjs';
+import { runtimeControls } from './panels.mjs';
 import { checkpointDisplayTitle, stageLabel } from '../core/work-units.mjs';
 
 export function renderEntityDetail({
-  kind, source, agents = {}, events = [], onOpen, onReply, onReact, onCapacity,
+  kind, source, agents = {}, events = [], onOpen, onReply, onReact, runtimeHandlers,
 }) {
   const content = el('div', 'connected-entity-content');
   const detail = kind === 'hero'
-    ? heroDetail(source, onOpen, onCapacity)
+    ? heroDetail(source, onOpen, runtimeHandlers)
     : kind === 'checkpoint'
       ? checkpointDetail(source, onOpen)
       : kind === 'decision'
@@ -30,24 +31,12 @@ export function renderEntityDetail({
   };
 }
 
-function heroDetail(hero, onOpen, onCapacity) {
+function heroDetail(hero, onOpen, runtimeHandlers) {
   const checkpoints = hero.checkpoints ?? [];
   const goal = hero.goal?.objective ?? hero.goal ?? 'No goal set';
   const trailing = el('div', 'connected-context-trailing');
   trailing.append(status(hero.status ?? 'idle'));
-  if (onCapacity) {
-    const select = document.createElement('select');
-    select.setAttribute('aria-label', `${hero.label ?? hero.name} capacity`);
-    for (let value = 1; value <= 4; value += 1) {
-      const option = document.createElement('option');
-      option.value = String(value);
-      option.textContent = `×${value}`;
-      option.selected = Number(hero.instances ?? 1) === value;
-      select.append(option);
-    }
-    select.onchange = () => onCapacity(Number(select.value));
-    trailing.append(select);
-  }
+  if (runtimeHandlers && !hero.readOnly) trailing.append(runtimeControls(hero, runtimeHandlers));
   return {
     title: hero.label ?? hero.name ?? hero.id,
     subtitle: hero.role ?? '',

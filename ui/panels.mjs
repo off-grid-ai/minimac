@@ -121,7 +121,7 @@ function statusChip(agent) {
   return chip;
 }
 
-function runtimeControls(agent, handlers) {
+export function runtimeControls(agent, handlers) {
   const group = el('div', 'agent-runtime');
   group.append(engineToggle(agent, handlers));
   group.append(runtimeSelect(

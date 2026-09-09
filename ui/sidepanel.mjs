@@ -291,6 +291,8 @@ function style() {
     }
     .connected-context-actions,
     .connected-context-trailing { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .connected-context-trailing .agent-runtime { margin-left: 0; }
+    .connected-context-trailing .agent-runtime select { padding: 2px 16px 2px 5px; }
     .connected-context-trailing > span:last-child { color: var(--faint, #5a5a5a); font-size: 9px; }
     .connected-context-trailing select {
       min-height: 24px; border: 1px solid var(--line, #262626); background: var(--bg, #0a0a0a);
