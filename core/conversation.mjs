@@ -116,6 +116,15 @@ export function messagesForContext(events, context) {
     .sort((left, right) => left.createdAt - right.createdAt);
 }
 
+export function messagesForThread(events, context, rootMessageId) {
+  const messages = messagesForContext(events, context);
+  const included = new Set([String(rootMessageId)]);
+  for (const message of messages) {
+    if (included.has(message.replyToMessageId)) included.add(message.id);
+  }
+  return messages.filter((message) => included.has(message.id));
+}
+
 export function messagesForHero(events, heroId) {
   return conversationOf(events).messages.filter((message) =>
     message.authorId === heroId || message.recipients.includes(heroId)

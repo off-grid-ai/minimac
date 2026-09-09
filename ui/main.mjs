@@ -30,7 +30,9 @@ import { createGoalStrip } from './goalstrip.mjs';
 import { createSound } from './sound.mjs';
 import { renderMarkdown, markdownReady } from './markdown.mjs';
 import { createControlButton } from './controls.mjs';
-import { CONTEXT_KIND, messagesForContext, messagesForHero } from '../core/conversation.mjs';
+import {
+  CONTEXT_KIND, messagesForContext, messagesForHero, messagesForThread,
+} from '../core/conversation.mjs';
 import { renderMessageGroup } from './conversation.mjs';
 import { renderEntityDetail } from './entity-detail.mjs';
 import { captureScrollAnchor, restoreScrollAnchor } from './scroll-anchor.mjs';
@@ -2042,9 +2044,12 @@ async function openConnectedEntity(kind, id, { replace = false } = {}) {
   if (kind === 'checkpoint' || kind === 'decision') {
     source = { ...source, messages: messagesForContext(events, { kind, id }) };
   }
-  let replyToMessageId = null;
+  if (kind === 'message') {
+    source = { ...source, messages: messagesForThread(events, source.context, source.id) };
+  }
+  let replyToMessageId = kind === 'message' ? source.id : null;
   let detailComposer = null;
-  const conversational = ['hero', 'checkpoint', 'decision'].includes(kind);
+  const conversational = ['hero', 'checkpoint', 'decision', 'message'].includes(kind);
   const detail = renderEntityDetail({
     kind, source, agents: state.agents, events,
     onReply: conversational
@@ -2059,11 +2064,14 @@ async function openConnectedEntity(kind, id, { replace = false } = {}) {
       : null,
   });
   if (conversational) {
-    const context = { kind: kind === 'hero' ? CONTEXT_KIND.MISSION : kind,
-      id: kind === 'hero' ? String(state.runId) : id };
+    const context = kind === 'message'
+      ? source.context
+      : { kind: kind === 'hero' ? CONTEXT_KIND.MISSION : kind,
+        id: kind === 'hero' ? String(state.runId) : id };
     const recipients = kind === 'hero' ? [id]
       : kind === 'checkpoint' && source.owner?.id ? [source.owner.id]
-        : kind === 'decision' && source.agentId ? [source.agentId] : [];
+        : kind === 'decision' && source.agentId ? [source.agentId]
+          : kind === 'message' && source.authorId !== 'you' ? [source.authorId] : [];
     const host = document.createElement('footer');
     host.className = 'connected-entity-composer';
     detail.content.append(host);
