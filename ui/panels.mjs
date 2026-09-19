@@ -83,7 +83,9 @@ function agentRow(agent, handlers) {
   );
 
   const header = el('div', 'agent-header');
-  header.append(ident, statusChip(agent));
+  header.append(ident);
+  if (agent.readOnly) header.append(engineLabel(agent));
+  header.append(statusChip(agent));
   if (!agent.readOnly) header.append(runtimeControls(agent, handlers));
   const details = el('button', 'agent-details-toggle', '›');
   details.type = 'button';
@@ -94,6 +96,13 @@ function agentRow(agent, handlers) {
 
   row.append(header);
   return row;
+}
+
+function engineLabel(agent) {
+  const engine = String(agent.engine ?? 'unknown');
+  const label = el('span', 'agent-engine-label', engine.toUpperCase());
+  label.title = `${nameOf(agent)} uses ${engine}`;
+  return label;
 }
 
 // The one word for where this seat stands. A benched agent is never dispatched,
