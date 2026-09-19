@@ -14,12 +14,22 @@ import {
 import {
   createQueue as createErrands,
   enqueue as enqueueErrand,
+  cancelFor as cancelErrandsFor,
   advance as advanceErrands,
   waypointFor as errandWaypoint,
   speaker as errandSpeaker,
   spoken as errandSpoken,
   ERRAND,
 } from '../core/errands.mjs';
+import {
+  decisionBubbleKey,
+  dismiss as dismissBubbles,
+  errandBubbleKey,
+  eventBubbleKey,
+  isDismissed as bubbleIsDismissed,
+  restoreDismissed,
+  serializeDismissed,
+} from '../core/bubbles.mjs';
 import { createScene, deskSpot } from './scene.mjs';
 import { seatOf } from './layout.mjs';
 import * as panels from './panels.mjs';
@@ -75,6 +85,7 @@ const state = {
   workspace: null,
   // Orders being carried across the floor, one at a time.
   errands: createErrands(),
+  dismissedBubbles: loadDismissedBubbles(),
   errandPhase: null,
   hovered: null,
   feedPreset: 'all',
@@ -107,6 +118,28 @@ const state = {
   waiting: {},
   neglect: 0,
 };
+
+const DISMISSED_BUBBLES_KEY = 'minimac.dismissed-bubbles';
+
+function loadDismissedBubbles() {
+  try {
+    return restoreDismissed(localStorage.getItem(DISMISSED_BUBBLES_KEY));
+  } catch {
+    return restoreDismissed();
+  }
+}
+
+function closeBubbles(keys) {
+  state.dismissedBubbles = dismissBubbles(state.dismissedBubbles, keys);
+  try {
+    localStorage.setItem(DISMISSED_BUBBLES_KEY, serializeDismissed(state.dismissedBubbles));
+  } catch {
+    // A private or full store must not make the close control fail.
+  }
+  for (const bubble of dom.bubbles?.querySelectorAll('[data-bubble-key]') ?? []) {
+    if (state.dismissedBubbles.has(bubble.dataset.bubbleKey)) bubble.remove();
+  }
+}
 
 const palette = readPalette();
 let scene = null;
@@ -189,6 +222,11 @@ function subscribe() {
 }
 
 function applySnapshot(snapshot) {
+  for (const [agentId, agent] of Object.entries(snapshot.agents)) {
+    if (agent.enabled === false || agent.status === 'stopped') {
+      state.errands = cancelErrandsFor(state.errands, agentId);
+    }
+  }
   state.agents = snapshot.agents;
   noticeHandouts(state.goals, snapshot.goals);
   state.goals = snapshot.goals;
@@ -249,7 +287,12 @@ function createLocalEvent(agentId, kind, payload) {
 }
 
 function ingest(event, agent) {
-  if (agent) state.agents = { ...state.agents, [agent.id]: agent };
+  if (agent) {
+    state.agents = { ...state.agents, [agent.id]: agent };
+    if (agent.enabled === false || agent.status === 'stopped') {
+      state.errands = cancelErrandsFor(state.errands, agent.id);
+    }
+  }
   const list = state.eventsByAgent[event.agentId] ?? [];
   state.eventsByAgent[event.agentId] = [...list.slice(-800), event];
 
@@ -813,23 +856,24 @@ function renderStrip(agents, queue = []) {
 // A bubble is for reading, so it holds still briefly. An agent may change what
 // its bubble says at most once every five seconds, however fast it is working.
 const BUBBLE_HOLD_MS = 5_000;
-const shownBubble = new Map(); // agentId -> { text, at }
+const shownBubble = new Map(); // agentId -> { text, key, at }
 
 const FRESH_MS = 8_000; // how long a bubble reads as newly arrived
 
 function bubbleTextFor(agentId, latest, now) {
   const held = shownBubble.get(agentId);
   if (held && now - held.at < BUBBLE_HOLD_MS) {
-    return { text: held.text, fresh: now - held.at < FRESH_MS };
+    return { text: held.text, key: held.key, fresh: now - held.at < FRESH_MS };
   }
   const text = plainText(describeEvent(latest));
   // The server strips a report block before it is ever spoken, but history
   // recorded before that fix still holds the fragments, and a bubble is the
   // one surface where a stray "] }" is unmissable. Never speak payload: keep
   // whatever the agent last actually said instead.
-  if (isMachineNoise(text)) return held ? { text: held.text, fresh: false } : null;
-  if (!held || held.text !== text) shownBubble.set(agentId, { text, at: now });
-  return { text, fresh: true };
+  if (isMachineNoise(text)) return held ? { text: held.text, key: held.key, fresh: false } : null;
+  const key = eventBubbleKey(latest);
+  if (!held || held.key !== key) shownBubble.set(agentId, { text, key, at: now });
+  return { text, key, fresh: true };
 }
 
 function renderActivity(agents, covered = new Set()) {
@@ -846,6 +890,8 @@ function renderActivity(agents, covered = new Set()) {
   const order = errandSpoken(state.errands, state.hovered);
 
   if (order) {
+    const key = errandBubbleKey(order);
+    if (bubbleIsDismissed(state.dismissedBubbles, key)) return [];
     const at = scene?.screenPos?.(order.agentId);
     if (!at) return [];
     const to = state.agents[order.toId];
@@ -855,6 +901,7 @@ function renderActivity(agents, covered = new Set()) {
       x: at.x,
       y: at.y,
       tone: 'live',
+      bubbleKey: key,
       onClick: () => openConnectedEntity('hero', order.agentId),
     })];
   }
@@ -884,12 +931,14 @@ function renderActivity(agents, covered = new Set()) {
       if (!at) return null;
       const said = bubbleTextFor(agent.id, last, now);
       if (!said?.text) return null; // nothing this agent said is worth speaking
+      if (bubbleIsDismissed(state.dismissedBubbles, said.key)) return null;
       return speechBubble({
         text: said.text,
         fresh: said.fresh,
         x: at.x,
         y: at.y,
         tone: agent.status === 'running' ? 'live' : 'quiet',
+        bubbleKey: said.key,
         onClick: () => openConnectedEntity('hero', agent.id),
       });
     })
@@ -898,10 +947,31 @@ function renderActivity(agents, covered = new Set()) {
 
 // A speech bubble: rounded, wrapping, sitting ABOVE the head with a tail
 // pointing down at it - so it never lands on the nameplate under the desk.
-function speechBubble({ text, x, y, tone, onClick, fresh = false }) {
+function speechBubble({ text, x, y, tone, bubbleKey, onClick, fresh = false }) {
   const bubble = document.createElement('div');
   bubble.className = `bubble ${tone}`;
-  bubble.textContent = text;
+  bubble.dataset.bubbleKey = bubbleKey;
+
+  const words = document.createElement('span');
+  words.textContent = text;
+  bubble.append(words);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'bubble-close';
+  close.setAttribute('aria-label', 'Close message');
+  close.textContent = '\u00d7';
+  close.style.cssText = [
+    'position:absolute', 'top:0', 'right:0', 'z-index:2',
+    'width:44px', 'height:44px', 'padding:0', 'border:0',
+    'background:transparent', 'color:inherit', 'font:18px/1 Menlo, monospace',
+    'cursor:pointer',
+  ].join(';');
+  close.addEventListener('click', (event) => {
+    event.stopPropagation();
+    closeBubbles([bubbleKey]);
+  });
+  bubble.append(close);
 
   const live = tone === 'live';
   const edge = tone === 'alert' ? 'var(--danger,#f87171)' : live
@@ -912,7 +982,7 @@ function speechBubble({ text, x, y, tone, onClick, fresh = false }) {
     'position:absolute', `left:${x}px`, `top:${y - 18}px`,
     'transform:translate(-50%, -100%)', 'z-index:30',
     'width:260px',
-    'padding:7px 11px', 'border-radius:12px',
+    'padding:7px 40px 7px 11px', 'border-radius:12px',
     `border:1px solid ${edge}`, 'background:var(--surface,#121212)',
     `color:var(--${live || tone === 'alert' ? 'text' : 'muted'}, #8a8a8a)`,
     'font:11px/1.45 Menlo, monospace',
@@ -1003,9 +1073,10 @@ function renderBubbles(queue) {
         x: at.x,
         y: at.y,
         tone: 'alert',
+        bubbleKey: decisionBubbleKey(decision),
         onClick: () => openConnectedEntity('hero', decision.agentId),
       });
-      return bubble;
+      return bubbleIsDismissed(state.dismissedBubbles, bubble.dataset.bubbleKey) ? null : bubble;
     })
     .filter(Boolean);
 
@@ -1456,6 +1527,15 @@ function wireChrome() {
   // and hides the panel. Everything else belongs to the browser and to
   // whatever is being typed.
   addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      const keys = [...(dom.bubbles?.querySelectorAll('[data-bubble-key]') ?? [])]
+        .map((bubble) => bubble.dataset.bubbleKey);
+      if (keys.length) {
+        event.preventDefault();
+        closeBubbles(keys);
+        return;
+      }
+    }
     if (event.key === 'Escape' && state.focus) {
       event.preventDefault();
       focus(null);

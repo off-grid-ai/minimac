@@ -54,6 +54,25 @@ export function enqueue(queue, errand, now = Date.now()) {
   return { ...queue, seen, pending: [...queue.pending, item] };
 }
 
+// Taking a hero off duty cancels every walk they would carry. The next queued
+// hero starts on a later tick, after the cancelled hero is back at their seat.
+export function cancelFor(queue, heroId) {
+  const active = queue.active?.heroId === heroId ? null : queue.active;
+  const pending = queue.pending.filter((item) => item.heroId !== heroId);
+  if (active === queue.active && pending.length === queue.pending.length) return queue;
+
+  const retainedKeys = new Set([
+    ...(active ? [active.key] : []),
+    ...pending.map((item) => item.key),
+  ]);
+  return {
+    ...queue,
+    active,
+    pending,
+    seen: queue.seen.filter((key) => retainedKeys.has(key)),
+  };
+}
+
 // Move the clock forward. Returns the same object when nothing changed, so a
 // caller can cheaply tell whether the room needs redrawing.
 export function advance(queue, now = Date.now()) {
@@ -72,7 +91,10 @@ export function advance(queue, now = Date.now()) {
   }
   // Home again. The next errand starts on the following tick, so there is
   // always one beat of stillness between two walks.
-  return { ...queue, active: null };
+  return {
+    ...queue,
+    active: null,
+  };
 }
 
 // Everything waiting, for the caller that wants to show a backlog.
@@ -108,5 +130,11 @@ export function spoken(queue, hoveredId = null) {
   if (hoveredId) return null; // a hovered agent shows its own latest line
   const active = queue.active;
   if (!active || active.phase !== ERRAND.TALKING) return null;
-  return { agentId: active.heroId, toId: active.toId, text: active.message };
+  return {
+    agentId: active.heroId,
+    toId: active.toId,
+    text: active.message,
+    key: active.key,
+    queuedAt: active.queuedAt,
+  };
 }
