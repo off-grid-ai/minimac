@@ -83,12 +83,20 @@ export function createConversationService({
   function acceptAgentOutput(event, context) {
     if (event.payload?.final !== true) return null;
     const events = getEvents();
+    const conversation = conversationOf(events);
+    const requestedContext = normalizeContext(context, missionId());
     const requestedReplyId = event.payload?.replyToMessageId
       ? String(event.payload.replyToMessageId)
       : null;
-    const replyTo = requestedReplyId
-      ? events.find((candidate) => candidate.payload?.message?.id === requestedReplyId)?.payload?.message ?? null
+    const explicitReply = requestedReplyId
+      ? conversation.messages.find((message) => message.id === requestedReplyId) ?? null
       : null;
+    const replyTo = explicitReply ?? [...conversation.messages].reverse().find((message) => {
+      const delivery = conversation.delivery[`${message.id}:${event.agentId}`];
+      return message.context?.kind === requestedContext?.kind
+        && message.context?.id === requestedContext?.id
+        && [DELIVERY_STATE.QUEUED, DELIVERY_STATE.DELIVERED].includes(delivery?.state);
+    }) ?? null;
     const primary = normalizeContext(replyTo?.context ?? context, missionId());
     const replyToMessageId = replyTo?.id ?? null;
     const explicitRecipients = event.payload?.recipients ?? [];
@@ -106,7 +114,7 @@ export function createConversationService({
     });
     if (result.error) return null;
     const currentDelivery = replyTo
-      ? conversationOf(events).delivery[`${replyTo.id}:${event.agentId}`]
+      ? conversation.delivery[`${replyTo.id}:${event.agentId}`]
       : null;
     if (currentDelivery
       && [DELIVERY_STATE.QUEUED, DELIVERY_STATE.DELIVERED].includes(currentDelivery.state)) {
