@@ -1074,7 +1074,7 @@ export function renderRuns(root, runs, currentId, handlers, selectedId = current
 function missionOverview(run, view, handlers) {
   const section = el('section', 'mission-overview');
   section.append(el('span', 'mission-overline', run ? `MISSION ${run.id}` : 'MISSION'));
-  section.append(el('h2', 'mission-title', run?.mission || 'No mission selected'));
+  section.append(missionTitle(run?.mission || 'No mission selected'));
   if (!run) return section;
   const work = view?.progress?.work;
   if (work) {
@@ -1090,6 +1090,24 @@ function missionOverview(run, view, handlers) {
   if (view?.acceptance) section.append(acceptanceControls(view.acceptance, handlers, view.readOnly));
   if (view?.quality?.length) section.append(qualitySummary(view.quality));
   return section;
+}
+
+function missionTitle(text) {
+  const wrap = el('div', 'mission-title-wrap');
+  const title = el('h2', 'mission-title', text);
+  wrap.append(title);
+  if (text.length <= 140) return wrap;
+
+  const toggle = el('button', 'mission-title-toggle', 'SEE MORE');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.onclick = () => {
+    const expanded = wrap.classList.toggle('is-expanded');
+    toggle.textContent = expanded ? 'SEE LESS' : 'SEE MORE';
+    toggle.setAttribute('aria-expanded', String(expanded));
+  };
+  wrap.append(toggle);
+  return wrap;
 }
 
 function qualitySummary(repositories) {
