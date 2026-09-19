@@ -1883,15 +1883,17 @@
   }
   #composerInput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 12px -4px var(--accent-glow); }
   #composer.is-collapsed #composerInput {
-    display: none;
+    height: calc(2lh + 14px);
+    min-height: calc(2lh + 14px);
+    max-height: calc(2lh + 14px);
+    overflow: hidden;
   }
   #composer.is-collapsed {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "dock";
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "input send" "dock dock";
   }
   #composer.is-collapsed > #attachments,
   #composer.is-collapsed > #composerTarget,
-  #composer.is-collapsed > #composerSend,
   #composer.is-collapsed > #mentionMenu { display: none; }
   #composerSend { grid-area: send; }
 
